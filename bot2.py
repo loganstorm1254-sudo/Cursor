@@ -17,6 +17,7 @@ Discord:
 
 Commands:
   !html / /html <description>   Generate a website (code + .html file)
+  Reply to the .html file msg   Continue editing that website
   !help                         Show help
   @Bot <description>            Same as !html
 
@@ -54,6 +55,7 @@ COOLDOWN_SECONDS = 8.0
 MAX_PROMPT_CHARS = 1500
 AI_RETRIES = 3
 MAX_HTML_CHARS = 100_000
+MAX_CONTEXT_HTML_CHARS = 80_000  # how much existing HTML to send back to the AI
 DISCORD_FILE_LIMIT = 8 * 1024 * 1024  # 8 MB soft upload
 # Discord message limit is 2000; leave room for ```html fences and part labels
 CODE_CHUNK_CHARS = 1800
@@ -72,6 +74,7 @@ STRICT RULES:
    still reply with a tiny HTML page that politely says you only generate websites.
 8. Never output Python, JSON, shell, or any non-HTML content.
 9. Keep the page focused on the user's description. Prefer one strong visual composition over cluttered dashboards.
+10. When revising an existing page, keep what still works and apply the requested changes. Return the FULL updated HTML document, not a patch or diff.
 """
 
 intents = discord.Intents.default()
@@ -233,13 +236,96 @@ async def send_code_and_file(
             await channel.send(part)
 
 
-async def generate_html(description: str) -> str:
+def is_html_attachment(att: discord.Attachment) -> bool:
+    name = (att.filename or "").lower()
+    ctype = (att.content_type or "").lower()
+    return name.endswith(".html") or name.endswith(".htm") or "html" in ctype
+
+
+def find_html_attachment(message: discord.Message | None) -> discord.Attachment | None:
+    if message is None:
+        return None
+    for att in message.attachments:
+        if is_html_attachment(att):
+            return att
+    return None
+
+
+async def resolve_replied_message(message: discord.Message | None) -> discord.Message | None:
+    """Get the message this one replies to (fetch if needed)."""
+    if message is None or message.reference is None:
+        return None
+    resolved = message.reference.resolved
+    if isinstance(resolved, discord.Message):
+        return resolved
+    # Deleted / failed resolve
+    if isinstance(resolved, discord.DeletedReferencedMessage):
+        return None
+    msg_id = message.reference.message_id
+    if msg_id is None:
+        return None
+    try:
+        return await message.channel.fetch_message(msg_id)
+    except (discord.NotFound, discord.HTTPException, AttributeError):
+        return None
+
+
+async def load_html_from_message(message: discord.Message | None) -> str | None:
+    """Download .html from a message attachment, if present."""
+    att = find_html_attachment(message)
+    if att is None:
+        return None
+    try:
+        data = await att.read()
+        text = data.decode("utf-8", errors="replace").strip()
+        if "<html" not in text.lower() and "<!doctype" not in text.lower():
+            # Still treat as HTML source if it's clearly a page-ish file
+            if not text:
+                return None
+        return text[:MAX_HTML_CHARS]
+    except Exception:
+        return None
+
+
+async def get_previous_html(source_message: discord.Message | None) -> tuple[str | None, str | None]:
+    """
+    If the user replied to a message with an .html file, return (html, filename).
+    """
+    replied = await resolve_replied_message(source_message)
+    html = await load_html_from_message(replied)
+    if html is None:
+        return None, None
+    att = find_html_attachment(replied)
+    name = att.filename if att else "website.html"
+    return html, name
+
+
+def finish_html(raw: str) -> str:
+    html = extract_html(raw)
+    if len(html) > MAX_HTML_CHARS:
+        html = html[:MAX_HTML_CHARS] + "\n</body>\n</html>"
+    if "<html" not in html.lower():
+        raise RuntimeError("response was not HTML")
+    return html
+
+
+async def generate_html(description: str, previous_html: str | None = None) -> str:
     description = description.strip()[:MAX_PROMPT_CHARS]
-    user_msg = (
-        "Create a complete single-file HTML website for this description:\n\n"
-        f"{description}\n\n"
-        "Remember: output ONLY the HTML document, starting with <!DOCTYPE html>."
-    )
+    if previous_html:
+        clipped = previous_html[:MAX_CONTEXT_HTML_CHARS]
+        user_msg = (
+            "Revise this existing single-file HTML website.\n"
+            "Apply the user's changes. Keep the rest intact when it still fits.\n"
+            "Return the COMPLETE updated HTML document only.\n\n"
+            f"CHANGES REQUESTED:\n{description}\n\n"
+            f"EXISTING HTML:\n{clipped}\n"
+        )
+    else:
+        user_msg = (
+            "Create a complete single-file HTML website for this description:\n\n"
+            f"{description}\n\n"
+            "Remember: output ONLY the HTML document, starting with <!DOCTYPE html>."
+        )
     last_error: Exception | None = None
     for attempt in range(AI_RETRIES):
         try:
@@ -251,12 +337,7 @@ async def generate_html(description: str) -> str:
                 ],
             )
             raw = (response.choices[0].message.content or "").strip()
-            html = extract_html(raw)
-            if len(html) > MAX_HTML_CHARS:
-                html = html[:MAX_HTML_CHARS] + "\n</body>\n</html>"
-            if "<html" not in html.lower():
-                raise RuntimeError("response was not HTML")
-            return html
+            return finish_html(raw)
         except Exception as exc:
             last_error = exc
             if attempt + 1 < AI_RETRIES:
@@ -271,6 +352,8 @@ async def handle_html(
     description: str,
     source_message: discord.Message | None = None,
     interaction: discord.Interaction | None = None,
+    previous_html: str | None = None,
+    previous_filename: str | None = None,
 ):
     if not ai_enabled:
         msg = "HTML generation is paused by the owner. Try again later."
@@ -293,12 +376,23 @@ async def handle_html(
             await channel.send(msg)
         return
 
+    # Auto-load previous HTML when the user replied to a .html file message
+    if previous_html is None and source_message is not None:
+        previous_html, previous_filename = await get_previous_html(source_message)
+
     description = (description or "").strip()
     if not description:
-        tip = (
-            "Describe the website you want.\n"
-            "Example: `!html a portfolio for a photographer with dark theme and a gallery`"
-        )
+        if previous_html:
+            tip = (
+                "You're editing a previous site. Tell me what to change.\n"
+                "Example: reply with `make the background dark and add a contact form`"
+            )
+        else:
+            tip = (
+                "Describe the website you want.\n"
+                "Example: `!html a portfolio for a photographer with dark theme and a gallery`\n"
+                "To continue editing: **reply** to the message with the `.html` file and describe changes."
+            )
         if interaction:
             await interaction.followup.send(tip, ephemeral=True)
         elif source_message:
@@ -307,15 +401,20 @@ async def handle_html(
             await channel.send(tip)
         return
 
-    status = "Generating your HTML website… (free AI, may take a few seconds)"
+    revising = previous_html is not None
+    status = (
+        "Updating your HTML website from the previous file… (free AI, may take a few seconds)"
+        if revising
+        else "Generating your HTML website… (free AI, may take a few seconds)"
+    )
     status_msg = None
     try:
         if interaction is None and source_message is not None:
             async with channel.typing():
                 status_msg = await source_message.reply(status, mention_author=False)
-                html = await generate_html(description)
+                html = await generate_html(description, previous_html=previous_html)
         else:
-            html = await generate_html(description)
+            html = await generate_html(description, previous_html=previous_html)
     except Exception as exc:
         err = f"Could not generate HTML: {exc}"
         if status_msg:
@@ -328,17 +427,23 @@ async def handle_html(
             await channel.send(err)
         return
 
-    filename = f"{slugify(description)}.html"
+    if revising and previous_filename:
+        base = previous_filename.rsplit(".", 1)[0]
+        filename = f"{slugify(base, fallback='website')}-updated.html"
+    else:
+        filename = f"{slugify(description)}.html"
     data = html.encode("utf-8")
     if len(data) > DISCORD_FILE_LIMIT:
         data = data[: DISCORD_FILE_LIMIT - 64] + b"\n</body>\n</html>"
         filename = "website-truncated.html"
 
     file = discord.File(io.BytesIO(data), filename=filename)
+    action = "updated" if revising else "ready"
     caption = (
-        f"**HTML website ready** — code below + download `{filename}`.\n"
-        f"Prompt: {description[:200]}"
+        f"**HTML website {action}** — code below + download `{filename}`.\n"
+        f"{'Changes' if revising else 'Prompt'}: {description[:200]}"
         + ("…" if len(description) > 200 else "")
+        + "\n_Reply to this message (the one with the file) to keep editing._"
     )
 
     if status_msg:
@@ -380,6 +485,7 @@ async def help_cmd(ctx: commands.Context):
     await ctx.send(
         "**HTML Website Bot** — I only make HTML websites.\n\n"
         "`!html <description>` / `/html` — generate a single-file website\n"
+        "**Reply** to the message with the `.html` file + your changes — continue editing\n"
         "`!help` — show this message\n"
         f"Or mention me: `@{bot.user.display_name} a landing page for a coffee shop`\n\n"
         "Replies with the HTML **code in chat** plus a downloadable `.html` file.\n"
@@ -435,16 +541,40 @@ async def status_cmd(ctx: commands.Context):
     )
 
 
+def strip_bot_mentions(content: str) -> str:
+    prompt = content or ""
+    for mention in getattr(bot, "user", None) and [] or []:
+        pass
+    if bot.user:
+        prompt = prompt.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "")
+    return prompt.strip()
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
+    # Continue editing: reply to a message that has the downloadable .html file
+    if message.reference is not None:
+        # Don't steal !commands — let process_commands handle those (they still load previous HTML)
+        content = (message.content or "").strip()
+        is_command = content.startswith("!")
+        if not is_command:
+            replied = await resolve_replied_message(message)
+            if find_html_attachment(replied) is not None:
+                prompt = strip_bot_mentions(content)
+                if prompt:
+                    await handle_html(
+                        user=message.author,
+                        channel=message.channel,
+                        description=prompt,
+                        source_message=message,
+                    )
+                    return
+
     if bot.user and bot.user.mentioned_in(message) and not message.mention_everyone:
-        prompt = message.content
-        for mention in message.mentions:
-            prompt = prompt.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
-        prompt = prompt.strip()
+        prompt = strip_bot_mentions(message.content)
         if prompt:
             await handle_html(
                 user=message.author,

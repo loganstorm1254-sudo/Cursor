@@ -3,7 +3,7 @@ Discord AI bot — one file, Termux-friendly, no AI API keys.
 
 Termux setup:
   pkg update && pkg install python
-  pip install discord.py
+  pip install discord.py g4f
   python bot.py
 
 Discord setup:
@@ -20,18 +20,16 @@ Commands:
 
 from __future__ import annotations
 
-import asyncio
 import os
-import urllib.parse
 
 try:
-    import aiohttp
     import discord
     from discord.ext import commands
+    from g4f.client import AsyncClient
 except ImportError:
     raise SystemExit(
         "Missing packages. In Termux run:\n"
-        "  pip install discord.py\n"
+        "  pip install discord.py g4f\n"
         "Then run this file again."
     )
 
@@ -39,8 +37,6 @@ except ImportError:
 # Leave empty to use the DISCORD_TOKEN environment variable instead.
 TOKEN = ""
 
-# Free AI — no OpenAI / API key needed
-AI_URL = "https://text.pollinations.ai/{prompt}?model=openai&system={system}"
 SYSTEM_PROMPT = (
     "You are a helpful Discord bot assistant. "
     "Keep replies concise and friendly. "
@@ -51,45 +47,29 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
-http_session = None  # type: aiohttp.ClientSession | None
+ai = AsyncClient()
 
 
 async def ask_ai(prompt: str) -> str:
-    """Call the free Pollinations text API (no token required)."""
-    if http_session is None or http_session.closed:
-        return "HTTP session is not ready yet. Try again in a moment."
-
-    url = AI_URL.format(
-        prompt=urllib.parse.quote(prompt[:2000]),
-        system=urllib.parse.quote(SYSTEM_PROMPT),
-    )
+    """Get an AI reply via g4f (no API key required)."""
     try:
-        timeout = aiohttp.ClientTimeout(total=60)
-        async with http_session.get(url, timeout=timeout) as resp:
-            if resp.status != 200:
-                return f"AI request failed (HTTP {resp.status}). Try again in a moment."
-            text = await resp.text()
-            return (text or "No response from AI.").strip()[:1900]
-    except asyncio.TimeoutError:
-        return "The AI took too long to respond. Try again."
+        response = await ai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt[:2000]},
+            ],
+        )
+        text = response.choices[0].message.content
+        return (text or "No response from AI.").strip()[:1900]
     except Exception as exc:
         return f"Could not reach the AI: {exc}"
 
 
 @bot.event
 async def on_ready():
-    global http_session
-    if http_session is None or http_session.closed:
-        http_session = aiohttp.ClientSession()
     print(f"Logged in as {bot.user} (id={bot.user.id})")
     print("Ready. Use !ai or mention me. AI needs no API key.")
-
-
-@bot.event
-async def on_close():
-    global http_session
-    if http_session and not http_session.closed:
-        await http_session.close()
 
 
 @bot.command(name="help")

@@ -1,18 +1,21 @@
 """
-Simple Discord AI bot — no AI API keys needed.
-Uses Pollinations free text API for replies.
+Discord AI bot — one file, Termux-friendly, no AI API keys.
 
-Setup:
-  1. pip install -r requirements.txt
-  2. Create a bot at https://discord.com/developers/applications
-  3. Enable Message Content Intent under Bot settings
-  4. export DISCORD_TOKEN="your-bot-token"
-  5. python bot.py
+Termux setup:
+  pkg update && pkg install python
+  pip install discord.py
+  python bot.py
+
+Discord setup:
+  1. https://discord.com/developers/applications → New Application → Bot
+  2. Copy the bot token into TOKEN below
+  3. Enable MESSAGE CONTENT INTENT under Bot → Privileged Gateway Intents
+  4. Invite the bot (OAuth2 → URL Generator → bot + Send Messages)
 
 Commands:
-  !ai <prompt>     Ask the AI anything
-  !help            Show commands
-  @Bot <prompt>    Mention the bot to chat
+  !ai <prompt>   Ask the AI
+  !help          Show help
+  @Bot <prompt>  Chat by mention
 """
 
 from __future__ import annotations
@@ -21,13 +24,23 @@ import asyncio
 import os
 import urllib.parse
 
-import aiohttp
-import discord
-from discord.ext import commands
+try:
+    import aiohttp
+    import discord
+    from discord.ext import commands
+except ImportError:
+    raise SystemExit(
+        "Missing packages. In Termux run:\n"
+        "  pip install discord.py\n"
+        "Then run this file again."
+    )
 
-# Free AI endpoint — no API token required
+# Paste your Discord bot token here (from the Developer Portal).
+# Leave empty to use the DISCORD_TOKEN environment variable instead.
+TOKEN = ""
+
+# Free AI — no OpenAI / API key needed
 AI_URL = "https://text.pollinations.ai/{prompt}?model=openai&system={system}"
-
 SYSTEM_PROMPT = (
     "You are a helpful Discord bot assistant. "
     "Keep replies concise and friendly. "
@@ -38,7 +51,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
-http_session: aiohttp.ClientSession | None = None
+http_session = None  # type: aiohttp.ClientSession | None
 
 
 async def ask_ai(prompt: str) -> str:
@@ -51,7 +64,8 @@ async def ask_ai(prompt: str) -> str:
         system=urllib.parse.quote(SYSTEM_PROMPT),
     )
     try:
-        async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with http_session.get(url, timeout=timeout) as resp:
             if resp.status != 200:
                 return f"AI request failed (HTTP {resp.status}). Try again in a moment."
             text = await resp.text()
@@ -68,7 +82,7 @@ async def on_ready():
     if http_session is None or http_session.closed:
         http_session = aiohttp.ClientSession()
     print(f"Logged in as {bot.user} (id={bot.user.id})")
-    print("AI ready — no AI API token needed. Use !ai or mention me.")
+    print("Ready. Use !ai or mention me. AI needs no API key.")
 
 
 @bot.event
@@ -104,7 +118,6 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # Allow chatting by mentioning the bot
     if bot.user and bot.user.mentioned_in(message) and not message.mention_everyone:
         prompt = message.content
         for mention in message.mentions:
@@ -120,12 +133,14 @@ async def on_message(message: discord.Message):
 
 
 def main():
-    token = os.getenv("DISCORD_TOKEN", "").strip()
+    token = (TOKEN or os.getenv("DISCORD_TOKEN", "")).strip()
     if not token:
         raise SystemExit(
-            "Set DISCORD_TOKEN to your Discord bot token.\n"
-            "Get one free at https://discord.com/developers/applications\n"
-            "AI itself needs no API key."
+            "Add your Discord bot token:\n"
+            "  1. Open bot.py\n"
+            "  2. Paste it into TOKEN = \"...\" near the top\n"
+            "  Or: export DISCORD_TOKEN=\"your-token\"\n"
+            "Get a free token at https://discord.com/developers/applications"
         )
     bot.run(token)
 

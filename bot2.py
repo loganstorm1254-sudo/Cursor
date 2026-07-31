@@ -543,8 +543,6 @@ async def status_cmd(ctx: commands.Context):
 
 def strip_bot_mentions(content: str) -> str:
     prompt = content or ""
-    for mention in getattr(bot, "user", None) and [] or []:
-        pass
     if bot.user:
         prompt = prompt.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "")
     return prompt.strip()

@@ -22,3 +22,5 @@ python bot2.py
 4. Invite with scopes `bot` + `applications.commands` (Send Messages + Attach Files)
 
 Commands: `!html <description>` / `/html` / `@Bot <description>`
+
+**Continue editing:** reply to the bot message that has the `.html` file and describe your changes (e.g. `make it darker and add a pricing section`). You can also use `!html …` as a reply to that file message.

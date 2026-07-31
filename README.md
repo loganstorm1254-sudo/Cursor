@@ -37,7 +37,7 @@ python bot.py
 !website minimal personal blog about hiking
 ```
 
-Download the attached `.html` file and open it in a browser.
+The bot posts the HTML **source code in chat** and attaches a downloadable `.html` file — open the file in a browser to view the site.
 
 ## Notes
 

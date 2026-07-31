@@ -55,6 +55,9 @@ MAX_PROMPT_CHARS = 1500
 AI_RETRIES = 3
 MAX_HTML_CHARS = 100_000
 DISCORD_FILE_LIMIT = 8 * 1024 * 1024  # 8 MB soft upload
+# Discord message limit is 2000; leave room for ```html fences and part labels
+CODE_CHUNK_CHARS = 1800
+MAX_CODE_MESSAGES = 8  # after this, point users to the file
 
 HTML_SYSTEM = """You are an HTML website generator. You ONLY create complete, self-contained HTML websites.
 
@@ -160,6 +163,76 @@ def slugify(text: str, fallback: str = "website") -> str:
     return slug
 
 
+def html_code_chunks(html: str) -> list[str]:
+    """Split HTML into Discord ```html code-block messages (≤2000 chars each)."""
+    html = html or ""
+    if not html:
+        return ["```html\n<!-- empty -->\n```"]
+
+    # Prefer splitting on newlines so blocks stay readable
+    lines = html.splitlines(keepends=True)
+    raw_chunks: list[str] = []
+    buf = ""
+    for line in lines:
+        if len(buf) + len(line) > CODE_CHUNK_CHARS and buf:
+            raw_chunks.append(buf)
+            buf = line
+        elif len(line) > CODE_CHUNK_CHARS:
+            if buf:
+                raw_chunks.append(buf)
+                buf = ""
+            for i in range(0, len(line), CODE_CHUNK_CHARS):
+                raw_chunks.append(line[i : i + CODE_CHUNK_CHARS])
+        else:
+            buf += line
+    if buf:
+        raw_chunks.append(buf)
+
+    total = len(raw_chunks)
+    messages: list[str] = []
+    for i, chunk in enumerate(raw_chunks[:MAX_CODE_MESSAGES], start=1):
+        label = f"HTML code ({i}/{min(total, MAX_CODE_MESSAGES)})"
+        if total > MAX_CODE_MESSAGES and i == MAX_CODE_MESSAGES:
+            label += " — truncated; full page is in the file"
+        block = f"**{label}**\n```html\n{chunk.rstrip()}\n```"
+        if len(block) > 2000:
+            # Absolute safety: trim code so the message fits
+            overhead = len(f"**{label}**\n```html\n\n```")
+            block = f"**{label}**\n```html\n{chunk[: 2000 - overhead - 1].rstrip()}\n```"
+        messages.append(block)
+
+    if total > MAX_CODE_MESSAGES:
+        messages.append(
+            f"_Showing first {MAX_CODE_MESSAGES} of {total} code parts. "
+            "Download the `.html` file for the full website._"
+        )
+    return messages
+
+
+async def send_code_and_file(
+    *,
+    channel: discord.abc.Messageable,
+    caption: str,
+    file: discord.File,
+    html: str,
+    source_message: discord.Message | None = None,
+    interaction: discord.Interaction | None = None,
+):
+    """Send downloadable file first, then the HTML source in chat."""
+    if interaction:
+        await interaction.followup.send(content=caption, file=file)
+        for part in html_code_chunks(html):
+            await interaction.followup.send(part)
+    elif source_message:
+        await source_message.reply(content=caption, file=file, mention_author=False)
+        for part in html_code_chunks(html):
+            await channel.send(part)
+    else:
+        await channel.send(content=caption, file=file)
+        for part in html_code_chunks(html):
+            await channel.send(part)
+
+
 async def generate_html(description: str) -> str:
     description = description.strip()[:MAX_PROMPT_CHARS]
     user_msg = (
@@ -263,19 +336,25 @@ async def handle_html(
 
     file = discord.File(io.BytesIO(data), filename=filename)
     caption = (
-        f"**HTML website ready** — download `{filename}` and open it in a browser.\n"
+        f"**HTML website ready** — code below + download `{filename}`.\n"
         f"Prompt: {description[:200]}"
         + ("…" if len(description) > 200 else "")
     )
 
     if status_msg:
-        await status_msg.delete()
-    if interaction:
-        await interaction.followup.send(content=caption, file=file)
-    elif source_message:
-        await source_message.reply(content=caption, file=file, mention_author=False)
-    else:
-        await channel.send(content=caption, file=file)
+        try:
+            await status_msg.delete()
+        except discord.HTTPException:
+            pass
+
+    await send_code_and_file(
+        channel=channel,
+        caption=caption,
+        file=file,
+        html=html,
+        source_message=source_message,
+        interaction=interaction,
+    )
 
 
 @bot.event
@@ -303,7 +382,7 @@ async def help_cmd(ctx: commands.Context):
         "`!html <description>` / `/html` — generate a single-file website\n"
         "`!help` — show this message\n"
         f"Or mention me: `@{bot.user.display_name} a landing page for a coffee shop`\n\n"
-        "Download the `.html` file and open it in your browser.\n"
+        "Replies with the HTML **code in chat** plus a downloadable `.html` file.\n"
         "Free AI (no OpenAI key). HTML only — I won't chat or write other code."
     )
 

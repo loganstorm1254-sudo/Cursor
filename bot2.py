@@ -17,7 +17,7 @@ Discord:
      Permissions: Send Messages, Attach Files, Read Message History
 
 Commands:
-  !html / /html <description>   Generate a website (code + .html file)
+  !html / /html <description>   Generate a website (.html file only)
   !ping                         Check the bot is online
   Reply to my bot message       Continue editing that website
   !help                         Show help
@@ -63,8 +63,6 @@ MAX_PROMPT_CHARS = 1500
 MAX_HTML_CHARS = 100_000
 MAX_CONTEXT_HTML_CHARS = 60_000
 DISCORD_FILE_LIMIT = 8 * 1024 * 1024
-CODE_CHUNK_CHARS = 1800
-MAX_CODE_MESSAGES = 8
 
 # Free backends (no paid API keys / credit packs).
 # g4f first — handles long HTML. Pollinations anonymous often 402s on big prompts.
@@ -103,30 +101,66 @@ QUALITY / INTERACTIVITY (must do well):
 12. Smooth small animations (CSS transitions) — presence, not noise.
 13. Include enough real-looking content for the theme (not just "Lorem ipsum" walls).
 14. If revising an existing page: keep what works, apply the requested changes, return the FULL document.
-15. If the user asks for non-website stuff, still return a tiny HTML page saying you only make websites.
-16. SAFETY: Never create porn, nude, sexual, fetish, or adult-only websites. If asked, output a tiny HTML page that says adult content is not allowed.
+15. If the user asks for non-website stuff, still return a tiny HTML page that says you only make websites.
+16. SAFETY: Never create porn, nude, sexual, fetish, adult-only, CSAM, gore, scam/phishing, malware,
+    hate, or illegal-goods websites. If asked, output a tiny HTML page that says that content is not allowed.
 """
 
-# Block NSFW / porn website requests (prompt filter).
-NSFW_BLOCK_MESSAGE = (
-    "Blocked — I won't make porn or adult/NSFW websites.\n"
-    "Describe a normal site instead (portfolio, shop, blog, landing page, etc.)."
-)
+# --- Content moderation -----------------------------------------------------
 
-# Whole-word / phrase patterns (case-insensitive). Focused on sexual / illegal content.
-_NSFW_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(p, re.IGNORECASE)
-    for p in (
+BLOCK_MESSAGES = {
+    "adult": (
+        "Blocked — I won't make porn or adult/NSFW websites.\n"
+        "Try a normal site (portfolio, shop, blog, landing page, etc.)."
+    ),
+    "csam": (
+        "Blocked — that request is not allowed.\n"
+        "I will not create sexual content involving minors."
+    ),
+    "violence": (
+        "Blocked — I won't make gore / extreme-violence websites."
+    ),
+    "scam": (
+        "Blocked — I won't make phishing, scam, or malware websites."
+    ),
+    "illegal": (
+        "Blocked — I won't make sites for illegal drugs, weapons trafficking, or similar."
+    ),
+    "hate": (
+        "Blocked — I won't make hate / extremist websites."
+    ),
+}
+
+# category -> regex patterns (matched against normalized text)
+_MOD_RULES: dict[str, tuple[str, ...]] = {
+    "csam": (
+        r"\bchild\s*porn\b",
+        r"\bcp\s*porn\b",
+        r"\bcsam\b",
+        r"\bloli(?:con)?\b",
+        r"\bshota(?:con)?\b",
+        r"\bunderage\b",
+        r"\bpedophil",
+        r"\bpaedophil",
+        r"\bminor\s*(?:porn|nude|sex|sexual)\b",
+        r"\bkids?\s*(?:porn|nude|sex)\b",
+        r"\bpreteen\b",
+        r"\bchild\s*(?:nude|sexual|sex)\b",
+    ),
+    "adult": (
         r"\bporn\b",
         r"\bporno\b",
         r"\bpornography\b",
+        r"\bp0rn\b",
+        r"\bpr0n\b",
         r"\bxxx\b",
         r"\bnsfw\b",
+        r"\bn\s*s\s*f\s*w\b",
         r"\bonlyfans\b",
         r"\bfansly\b",
         r"\bhentai\b",
         r"\brule\s*34\b",
-        r"\br34\b",
+        r"\br\s*34\b",
         r"\berotic\b",
         r"\berotica\b",
         r"\bnaked\b",
@@ -152,38 +186,130 @@ _NSFW_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bthreesome\b",
         r"\borgy\b",
         r"\bescort\b",
+        r"\bbrothel\b",
         r"\bcamgirl\b",
         r"\bcamboy\b",
         r"\bstrip(?:per|ping|club)\b",
-        r"\badult\s+(?:site|website|content|video|videos|film|films|store|shop|dating)\b",
-        r"\b18\s*\+\s*(?:site|website|only|content)?\b",
+        r"\badult\s+(?:site|website|content|video|videos|film|films|store|shop|dating|webcam)\b",
+        r"\b18\s*\+\s*(?:site|website|only|content|porn)?\b",
         r"\bpornhub\b",
         r"\bxvideos?\b",
         r"\bxhamster\b",
         r"\bredtube\b",
         r"\bspankbang\b",
-        r"\bchild\s*porn\b",
-        r"\bloli\b",
-        r"\bshota\b",
-        r"\bunderage\b",
-        r"\bpedophil",
         r"\bincest\b",
         r"\brape\b",
-        r"\bnon[\s-]?consensual\b",
+        r"\bnon\s*consensual\b",
+        r"\bbukkake\b",
+        r"\bcumshot\b",
+        r"\borgasm\b",
+        r"\bdeepthroat\b",
+        r"\bfutanari\b",
+        r"\bgoatse\b",
+        r"\bsex\s*(?:shop|toy|cam|chat|work|worker|tape|tapes)\b",
+        r"\bporn\s*(?:site|website|hub|tube|star|stars)\b",
+    ),
+    "violence": (
+        r"\bgore\b",
+        r"\bgorey\b",
+        r"\bgory\s+(?:site|website|gallery|images?|videos?)\b",
+        r"\bguro\b",
+        r"\bbestiality\b",
+        r"\bsnuff\s*(?:film|video|site)?\b",
+        r"\btorture\s*(?:porn|site|gallery)\b",
+        r"\bbeheading\s*(?:video|videos|site)\b",
+    ),
+    "scam": (
+        r"\bphish(?:ing|er|ers)?\b",
+        r"\bmalware\b",
+        r"\bransomware\b",
+        r"\bkeylogger\b",
+        r"\bstealer\b",
+        r"\binfostealer\b",
+        r"\bcredential\s*harvest",
+        r"\bfake\s+(?:login|bank|paypal|steam|discord)\b",
+        r"\bclone\s+(?:paypal|bank|steam|discord)\s*(?:login|page|site)?\b",
+        r"\bdiscord\s*token\s*(?:grab|stealer|logger)\b",
+        r"\bscam\s+(?:site|website|page)\b",
+        r"\bqr\s*code\s*scam\b",
+    ),
+    "illegal": (
+        r"\bdark\s*web\s*(?:market|shop|store)\b",
+        r"\bdrug\s*(?:market|shop|store|cartel)\b",
+        r"\bcocaine\s*(?:shop|store|market)\b",
+        r"\bfentanyl\s*(?:shop|store|market)\b",
+        r"\bhitman\s*(?:hire|for\s*hire|site)\b",
+        r"\bweapon(?:s)?\s*(?:black\s*market|traffick)",
+        r"\bcarding\s*(?:site|shop|store)\b",
+        r"\bcvv\s*(?:shop|store|market)\b",
+        r"\bransomware\s*(?:as\s*a\s*service|site)\b",
+    ),
+    "hate": (
+        r"\bneo\s*nazi\b",
+        r"\bwhite\s*power\b",
+        r"\bkill\s+all\s+\w+\b",
+        r"\bgenocide\s+(?:guide|site|manual)\b",
+        r"\bhate\s*(?:group|site|website)\b",
+    ),
+}
+
+_MOD_COMPILED: dict[str, tuple[re.Pattern[str], ...]] = {
+    cat: tuple(re.compile(p, re.IGNORECASE) for p in pats)
+    for cat, pats in _MOD_RULES.items()
+}
+
+_LEET_MAP = str.maketrans({
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "5": "s",
+    "7": "t",
+    "@": "a",
+    "$": "s",
+    "!": "i",
+})
+
+
+def normalize_for_moderation(text: str) -> str:
+    """Lowercase, strip zero-widths, map light leetspeak, collapse 'p o r n' evasion."""
+    if not text:
+        return ""
+    text = text.lower()
+    text = re.sub(r"[\u200b-\u200f\u202a-\u202e\ufeff]", "", text)
+    text = text.translate(_LEET_MAP)
+
+    def _collapse_spaced_letters(match: re.Match[str]) -> str:
+        return re.sub(r"[\s\-_\.]+", "", match.group(0))
+
+    # "p o r n", "n-s-f-w", "p.o.r.n"
+    text = re.sub(
+        r"\b(?:[a-z](?:[\s\-_\.]+)){2,}[a-z]\b",
+        _collapse_spaced_letters,
+        text,
     )
-)
+    text = re.sub(r"[\W_]+", " ", text)
+    return text.strip()
+
+
+def moderation_hit(text: str) -> str | None:
+    """Return a block category if the prompt violates policy, else None."""
+    if not text or not text.strip():
+        return None
+    norm = normalize_for_moderation(text)
+    variants = {text.lower(), norm, norm.replace(" ", "")}
+    order = ("csam", "adult", "violence", "scam", "illegal", "hate")
+    for cat in order:
+        for hay in variants:
+            for pattern in _MOD_COMPILED[cat]:
+                if pattern.search(hay):
+                    return cat
+    return None
 
 
 def is_nsfw_request(text: str) -> bool:
-    """Return True if the prompt looks like an adult/porn site request."""
-    if not text:
-        return False
-    normalized = re.sub(r"[\W_]+", " ", text.lower())
-    for hay in (text, normalized):
-        for pattern in _NSFW_PATTERNS:
-            if pattern.search(hay):
-                return True
-    return False
+    """Back-compat helper: True if any moderation category hits."""
+    return moderation_hit(text) is not None
 
 
 async def deny(
@@ -304,72 +430,21 @@ def slugify(text: str, fallback: str = "website") -> str:
     return slug
 
 
-def html_code_chunks(html: str) -> list[str]:
-    """Split HTML into Discord ```html code-block messages (≤2000 chars each)."""
-    html = html or ""
-    if not html:
-        return ["```html\n<!-- empty -->\n```"]
-
-    lines = html.splitlines(keepends=True)
-    raw_chunks: list[str] = []
-    buf = ""
-    for line in lines:
-        if len(buf) + len(line) > CODE_CHUNK_CHARS and buf:
-            raw_chunks.append(buf)
-            buf = line
-        elif len(line) > CODE_CHUNK_CHARS:
-            if buf:
-                raw_chunks.append(buf)
-                buf = ""
-            for i in range(0, len(line), CODE_CHUNK_CHARS):
-                raw_chunks.append(line[i : i + CODE_CHUNK_CHARS])
-        else:
-            buf += line
-    if buf:
-        raw_chunks.append(buf)
-
-    total = len(raw_chunks)
-    messages: list[str] = []
-    for i, chunk in enumerate(raw_chunks[:MAX_CODE_MESSAGES], start=1):
-        label = f"HTML code ({i}/{min(total, MAX_CODE_MESSAGES)})"
-        if total > MAX_CODE_MESSAGES and i == MAX_CODE_MESSAGES:
-            label += " — truncated; full page is in the file"
-        block = f"**{label}**\n```html\n{chunk.rstrip()}\n```"
-        if len(block) > 2000:
-            overhead = len(f"**{label}**\n```html\n\n```")
-            block = f"**{label}**\n```html\n{chunk[: 2000 - overhead - 1].rstrip()}\n```"
-        messages.append(block)
-
-    if total > MAX_CODE_MESSAGES:
-        messages.append(
-            f"_Showing first {MAX_CODE_MESSAGES} of {total} code parts. "
-            "Download the `.html` file for the full website._"
-        )
-    return messages
-
-
-async def send_code_and_file(
+async def send_html_file(
     *,
     channel: discord.abc.Messageable,
     caption: str,
     file: discord.File,
-    html: str,
     source_message: discord.Message | None = None,
     interaction: discord.Interaction | None = None,
 ):
-    """Send downloadable file first, then the HTML source in chat."""
+    """Send only the downloadable .html file (no source code in chat)."""
     if interaction:
         await interaction.followup.send(content=caption, file=file)
-        for part in html_code_chunks(html):
-            await interaction.followup.send(part)
     elif source_message:
         await source_message.reply(content=caption, file=file, mention_author=False)
-        for part in html_code_chunks(html):
-            await channel.send(part)
     else:
         await channel.send(content=caption, file=file)
-        for part in html_code_chunks(html):
-            await channel.send(part)
 
 
 def is_html_attachment(att: discord.Attachment) -> bool:
@@ -663,11 +738,12 @@ async def handle_html(
         await deny(tip, interaction=interaction, source_message=source_message, channel=channel)
         return
 
-    # Content filter — block porn / adult site requests (before cooldown so retries aren't punished)
-    if is_nsfw_request(description):
-        print(f"NSFW blocked from {user}: {description[:120]!r}")
+    # Content filter — block disallowed site requests (before cooldown)
+    hit = moderation_hit(description)
+    if hit:
+        print(f"Moderation blocked ({hit}) from {user}: {description[:120]!r}")
         await deny(
-            NSFW_BLOCK_MESSAGE,
+            BLOCK_MESSAGES.get(hit, BLOCK_MESSAGES["adult"]),
             interaction=interaction,
             source_message=source_message,
             channel=channel,
@@ -723,10 +799,10 @@ async def handle_html(
     file = discord.File(io.BytesIO(data), filename=filename)
     action = "updated" if revising else "ready"
     caption = (
-        f"**HTML website {action}** — code below + download `{filename}`.\n"
+        f"**HTML website {action}** — download `{filename}` and open it in a browser.\n"
         f"{'Changes' if revising else 'Prompt'}: {description[:200]}"
         + ("…" if len(description) > 200 else "")
-        + f"\n_AI: `{_last_provider}` (free)_ · Reply to this file message to keep editing._"
+        + "\n_Reply to this message to keep editing._"
     )
 
     if status_msg:
@@ -735,11 +811,10 @@ async def handle_html(
         except discord.HTTPException:
             pass
 
-    await send_code_and_file(
+    await send_html_file(
         channel=channel,
         caption=caption,
         file=file,
-        html=html,
         source_message=source_message,
         interaction=interaction,
     )
@@ -796,8 +871,8 @@ async def help_cmd(ctx: commands.Context):
         f"Or mention me: `@{bot.user.display_name} a landing page for a coffee shop`\n\n"
         "If `!html` / @mention do nothing: enable **Message Content Intent** in the "
         "Developer Portal → Bot → Privileged Gateway Intents, then restart the bot.\n"
-        "Free unlimited AI. Interactive buttons/nav/forms.\n"
-        "Filter: no porn / adult / NSFW websites."
+        "Sends a downloadable `.html` file only (no code dump in chat).\n"
+        "Moderation: no porn/NSFW, CSAM, gore, scams/phishing, hate, or illegal shops."
     )
 
 

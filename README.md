@@ -9,9 +9,9 @@ python bot.py
 ```
 
 ## `bot2.py` — HTML website generator (one file)
-Turns a description into HTML. Replies with **source code in chat** + a downloadable `.html` file.
+Turns a description into HTML. Replies with a downloadable `.html` file only (no code in chat).
 
-Uses **free unlimited AI** (no paid credits): g4f model rotation + Pollinations anonymous failover. Prompts push for real working buttons, nav, forms, and hover styles.
+Uses **free unlimited AI** (no paid credits): g4f model rotation + Pollinations anonymous failover. Includes moderation (no porn/NSFW, CSAM, gore, scams, hate, illegal shops).
 
 ```bash
 pip install discord.py g4f aiohttp

@@ -3,3 +3,19 @@ __pycache__/
 .env
 .venv/
 venv/
+
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+.cxx/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+.DS_Store
+
+.android-sdk/

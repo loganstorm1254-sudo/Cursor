@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Notify Receiver</string>
+    <string name="brand">Notify Receiver</string>
+    <string name="subtitle">Stay on the same Wi‑Fi as the sender. Tap Start, then leave this app running in the background.</string>
+    <string name="status_idle">Not listening</string>
+    <string name="device_name_hint">Name shown to the sender</string>
+    <string name="save_name">Save name</string>
+    <string name="start_listening">Start</string>
+    <string name="stop_listening">Stop</string>
+    <string name="auto_start">Start listening after phone reboot</string>
+    <string name="recent_heading">Recent messages</string>
+    <string name="log_empty">Nothing received yet.</string>
+    <string name="service_title">Notify Receiver is listening</string>
+    <string name="service_text">Ready on %1$s</string>
+    <string name="channel_service">Listening status</string>
+    <string name="channel_incoming">Incoming Wi‑Fi notifications</string>
+    <string name="channel_incoming_desc">Alerts sent from the Notify Sender app on your Wi‑Fi</string>
+    <string name="from_label">From %1$s</string>
+</resources>

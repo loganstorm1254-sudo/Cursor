@@ -1,4 +1,26 @@
-# Cursor bots
+# Cursor bots + Wi‑Fi Notify apps
+
+## Wi‑Fi Notify (Android)
+
+Two apps that talk **only over your local Wi‑Fi** — no internet, no accounts.
+
+| App | Folder | Role |
+|-----|--------|------|
+| **Notify Sender** | `NotifySender/` | Finds receivers and sends a notification |
+| **Notify Receiver** | `NotifyReceiver/` | Listens and shows the system notification |
+
+Protocol details: [`shared/PROTOCOL.md`](shared/PROTOCOL.md)
+
+### Quick start
+
+1. Open each folder in Android Studio and install on two phones.
+2. Put both phones on the same Wi‑Fi.
+3. On the receiver phone: open **Notify Receiver** → **Start** (allow notifications).
+4. On the sender phone: **Find receivers** → pick the other phone → send.
+
+> Some guest/public Wi‑Fi networks block phone-to-phone traffic (AP/client isolation). Use a normal home/office network if discovery fails.
+
+---
 
 ## `bot.py` — general Discord AI bot
 Chat, image recognition, image generation (free AI via g4f).

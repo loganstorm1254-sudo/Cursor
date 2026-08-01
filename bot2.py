@@ -322,14 +322,46 @@ async def load_html_from_message(message: discord.Message | None) -> str | None:
 
 
 async def get_previous_html(source_message: discord.Message | None) -> tuple[str | None, str | None]:
-    """If the user replied to a message with an .html file, return (html, filename)."""
-    replied = await resolve_replied_message(source_message)
-    html = await load_html_from_message(replied)
-    if html is None:
+    """
+    Find prior HTML to continue editing:
+    1) attachment on the replied-to message
+    2) walk one reply hop up
+    3) recent bot messages in the channel that have an .html file
+    """
+    if source_message is None:
         return None, None
-    att = find_html_attachment(replied)
-    name = att.filename if att else "website.html"
-    return html, name
+
+    replied = await resolve_replied_message(source_message)
+    candidates: list[discord.Message] = []
+    if replied is not None:
+        candidates.append(replied)
+        # one hop: reply → that message's parent
+        parent = await resolve_replied_message(replied)
+        if parent is not None:
+            candidates.append(parent)
+
+    for msg in candidates:
+        html = await load_html_from_message(msg)
+        if html:
+            att = find_html_attachment(msg)
+            return html, att.filename if att else "website.html"
+
+    # If they replied to a bot code dump (no file), scan recent history for an .html
+    if replied is not None and bot.user and (
+        replied.author.id == bot.user.id or find_html_attachment(replied) is None
+    ):
+        try:
+            async for msg in source_message.channel.history(limit=40, before=source_message):
+                if bot.user and msg.author.id != bot.user.id:
+                    continue
+                html = await load_html_from_message(msg)
+                if html:
+                    att = find_html_attachment(msg)
+                    return html, att.filename if att else "website.html"
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    return None, None
 
 
 def finish_html(raw: str) -> str:
@@ -620,30 +652,54 @@ async def on_ready():
         print(f"Slash sync failed: {exc}")
     print(f"Logged in as {bot.user} (id={bot.user.id})")
     print("Ready — HTML generator (free unlimited AI: Pollinations + g4f).")
+    if not intents.message_content:
+        print("WARNING: message_content intent is OFF — !html / @mention / reply will NOT work.")
+    else:
+        print("Tip: In Discord Developer Portal enable MESSAGE CONTENT INTENT, then restart.")
 
 
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
-    if isinstance(error, (commands.CheckFailure, commands.CommandNotFound)):
+    if isinstance(error, commands.CommandNotFound):
         return
-    await ctx.send(f"Error: {error}")
+    if isinstance(error, commands.CheckFailure):
+        return
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Usage: `!html <describe the website>`")
+        return
+    print(f"Command error in {ctx.command}: {error!r}")
+    try:
+        await ctx.send(f"Error: {error}")
+    except discord.HTTPException:
+        pass
+
+
+@bot.command(name="ping")
+async def ping_cmd(ctx: commands.Context):
+    """Quick check that the bot can read messages / commands."""
+    await ctx.send(
+        f"Pong — `bot2` is online. Use `!html <description>` or `/html`.\n"
+        f"Latency: `{round(bot.latency * 1000)}ms`"
+    )
 
 
 @bot.command(name="help")
 async def help_cmd(ctx: commands.Context):
     await ctx.send(
-        "**HTML Website Bot** — I only make HTML websites.\n\n"
+        "**HTML Website Bot** (`bot2.py`) — I only make HTML websites.\n\n"
         "`!html <description>` / `/html` — generate a single-file website\n"
-        "**Reply** to the message with the `.html` file + your changes — continue editing\n"
-        "`!help` — show this message\n"
+        "`!ping` — check the bot is online\n"
+        "**Reply** to my message (or the `.html` file) + your changes — continue editing\n"
         f"Or mention me: `@{bot.user.display_name} a landing page for a coffee shop`\n\n"
-        "Replies with HTML **code in chat** + a downloadable `.html` file.\n"
-        "Free unlimited AI (Pollinations + g4f failover). Interactive buttons/nav/forms."
+        "If `!html` / @mention do nothing: enable **Message Content Intent** in the "
+        "Developer Portal → Bot → Privileged Gateway Intents, then restart the bot.\n"
+        "Free unlimited AI. Interactive buttons/nav/forms."
     )
 
 
-@bot.command(name="html", aliases=["website", "site", "makehtml", "web"])
+@bot.command(name="html", aliases=["website", "site", "makehtml", "web", "gen", "build"])
 async def html_cmd(ctx: commands.Context, *, description: str = ""):
+    print(f"!html from {ctx.author} in #{getattr(ctx.channel, 'name', ctx.channel.id)}: {description[:80]!r}")
     await handle_html(
         user=ctx.author,
         channel=ctx.channel,
@@ -687,6 +743,7 @@ async def status_cmd(ctx: commands.Context):
         f"**Status**\n"
         f"Generation: `{'on' if ai_enabled else 'paused'}`\n"
         f"Last AI: `{_last_provider}`\n"
+        f"Message content intent: `{'on' if intents.message_content else 'OFF'}`\n"
         f"Mode: free unlimited AI (Pollinations + g4f) · HTML only"
     )
 
@@ -694,8 +751,35 @@ async def status_cmd(ctx: commands.Context):
 def strip_bot_mentions(content: str) -> str:
     prompt = content or ""
     if bot.user:
-        prompt = prompt.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "")
+        uid = bot.user.id
+        prompt = (
+            prompt.replace(f"<@{uid}>", "")
+            .replace(f"<@!{uid}>", "")
+            .replace(f"@{bot.user}", "")
+        )
+        if bot.user.name:
+            prompt = prompt.replace(f"@{bot.user.name}", "")
+        if bot.user.display_name:
+            prompt = prompt.replace(f"@{bot.user.display_name}", "")
     return prompt.strip()
+
+
+def bot_was_mentioned(message: discord.Message) -> bool:
+    if not bot.user:
+        return False
+    if message.mention_everyone:
+        # still allow if bot is also explicitly mentioned
+        pass
+    if bot.user in message.mentions:
+        return True
+    try:
+        if bot.user.mentioned_in(message):
+            return True
+    except Exception:
+        pass
+    # raw content fallback (sometimes mentions list is incomplete)
+    content = message.content or ""
+    return f"<@{bot.user.id}>" in content or f"<@!{bot.user.id}>" in content
 
 
 @bot.event
@@ -703,31 +787,61 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # Continue editing: reply to a message that has the downloadable .html file
-    if message.reference is not None:
-        content = (message.content or "").strip()
-        is_command = content.startswith("!")
-        if not is_command:
-            replied = await resolve_replied_message(message)
-            if find_html_attachment(replied) is not None:
-                prompt = strip_bot_mentions(content)
-                if prompt:
-                    await handle_html(
-                        user=message.author,
-                        channel=message.channel,
-                        description=prompt,
-                        source_message=message,
-                    )
-                    return
+    content = (message.content or "").strip()
 
-    if bot.user and bot.user.mentioned_in(message) and not message.mention_everyone:
-        prompt = strip_bot_mentions(message.content)
+    # Prefix commands first (!html, !help, !ping, …)
+    if content.startswith("!"):
+        await bot.process_commands(message)
+        return
+
+    # Detect Message Content Intent disabled (common cause of "nothing works")
+    mentioned = bot_was_mentioned(message)
+    if mentioned and not content and not message.attachments:
+        # Mentions arrive but content is empty → privileged intent usually off
+        try:
+            await message.channel.send(
+                "I saw the ping, but message text is empty.\n"
+                "Enable **Message Content Intent** here, then restart `bot2.py`:\n"
+                "https://discord.com/developers/applications → your app → **Bot** → "
+                "**Privileged Gateway Intents** → Message Content Intent → Save\n"
+                "Or use the slash command: `/html`"
+            )
+        except discord.HTTPException:
+            pass
+        return
+
+    # Continue editing by reply (to file message, code message, or related bot msg)
+    if message.reference is not None and content:
+        prev_html, prev_name = await get_previous_html(message)
+        if prev_html:
+            print(f"reply-edit from {message.author}: {content[:80]!r}")
+            await handle_html(
+                user=message.author,
+                channel=message.channel,
+                description=strip_bot_mentions(content),
+                source_message=message,
+                previous_html=prev_html,
+                previous_filename=prev_name,
+            )
+            return
+
+    # @Bot <description>
+    if mentioned:
+        prompt = strip_bot_mentions(content)
         if prompt:
+            print(f"mention from {message.author}: {prompt[:80]!r}")
             await handle_html(
                 user=message.author,
                 channel=message.channel,
                 description=prompt,
                 source_message=message,
+            )
+            return
+        if content:
+            await message.reply(
+                "Tell me what website to make.\n"
+                f"Example: `@{bot.user.display_name} a coffee shop landing page with a menu`",
+                mention_author=False,
             )
             return
 

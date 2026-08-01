@@ -62,6 +62,7 @@ class WalkieEngine(private val listener: Listener) {
         private const val PING_INTERVAL_MS = 10_000L
         private const val RX_IDLE_MS = 350L
         private const val CONNECT_TIMEOUT_S = 8
+        private const val OP_TIMEOUT_MS = 15_000L
     }
 
     private val random = SecureRandom()
@@ -93,7 +94,7 @@ class WalkieEngine(private val listener: Listener) {
         disconnectInternal(notify = false)
         val gen = generation.incrementAndGet()
         connecting = true
-        listener.onStatus(Status.CONNECTING, "Connecting…")
+        listener.onStatus(Status.CONNECTING, "Connecting… trying ${ENDPOINTS.size} servers")
 
         val digest = MessageDigest.getInstance("SHA-256")
             .digest("walkie-talkie-v1:$pin".toByteArray(Charsets.UTF_8))
@@ -102,25 +103,24 @@ class WalkieEngine(private val listener: Listener) {
         audioTopic = "walkietalkie/v1/$channel/audio"
         presenceTopic = "walkietalkie/v1/$channel/presence"
 
-        Thread({
-            var lastError = "no server reachable"
-            for ((index, endpoint) in ENDPOINTS.withIndex()) {
-                if (generation.get() != gen) return@Thread // cancelled
-                main.post {
-                    if (generation.get() == gen) {
-                        listener.onStatus(
-                            Status.CONNECTING,
-                            "Connecting… trying server ${index + 1}/${ENDPOINTS.size}"
-                        )
-                    }
-                }
+        // Race every endpoint in parallel: the first one that completes the
+        // MQTT handshake wins, the rest are closed. A single overloaded or
+        // firewalled server can no longer stall the whole connect (the old
+        // sequential version hung forever on server 1 because the synchronous
+        // Paho client waits for the handshake with no time limit by default).
+        val winnerChosen = AtomicBoolean(false)
+        val failures = AtomicInteger(0)
+        for ((index, endpoint) in ENDPOINTS.withIndex()) {
+            Thread({
                 var c: MqttClient? = null
                 try {
                     c = MqttClient(
                         endpoint,
-                        "wt-" + senderId.joinToString("") { "%02x".format(it) },
+                        // Unique per endpoint: same id twice on one broker kicks the first session
+                        "wt-" + senderId.joinToString("") { "%02x".format(it) } + "-$index",
                         MemoryPersistence()
                     )
+                    c.timeToWait = OP_TIMEOUT_MS // hard cap on every blocking call
                     c.setCallback(makeCallback(c, gen))
                     val opts = MqttConnectOptions().apply {
                         isCleanSession = true
@@ -129,39 +129,66 @@ class WalkieEngine(private val listener: Listener) {
                         connectionTimeout = CONNECT_TIMEOUT_S
                     }
                     c.connect(opts)
-                    if (generation.get() != gen) { // cancelled while connecting
-                        try { c.disconnectForcibly(300, 300) } catch (_: Exception) {}
-                        try { c.close(true) } catch (_: Exception) {}
+                    val won = generation.get() == gen && winnerChosen.compareAndSet(false, true)
+                    if (!won) {
+                        quietClose(c)
                         return@Thread
                     }
                     client = c
+                    c.subscribe(arrayOf(audioTopic, presenceTopic), intArrayOf(0, 0))
+                    connected = true
                     connecting = false
+                    publishPresence()
                     startPinger(gen)
-                    return@Thread
+                    val host = endpoint.substringAfter("://").substringBefore(":").substringBefore("/")
+                    main.post {
+                        if (generation.get() == gen) {
+                            listener.onStatus(Status.CONNECTED, "Connected · $host")
+                        }
+                    }
                 } catch (e: Exception) {
-                    lastError = e.message ?: e.javaClass.simpleName
-                    if (c != null) {
-                        try { c.close(true) } catch (_: Exception) {}
+                    val wasWinner = client === c && c != null
+                    if (wasWinner) client = null
+                    c?.let { quietClose(it) }
+                    if (generation.get() != gen) return@Thread
+                    if (wasWinner) {
+                        connecting = false
+                        main.post {
+                            if (generation.get() == gen) {
+                                listener.onStatus(
+                                    Status.DISCONNECTED,
+                                    "Connection dropped while joining the channel — tap Connect to retry."
+                                )
+                            }
+                        }
+                    } else if (failures.incrementAndGet() == ENDPOINTS.size && !winnerChosen.get()) {
+                        connecting = false
+                        main.post {
+                            if (generation.get() == gen) {
+                                listener.onStatus(
+                                    Status.DISCONNECTED,
+                                    "Couldn't reach any server (${e.message ?: e.javaClass.simpleName}). Check the internet connection and try again."
+                                )
+                            }
+                        }
                     }
                 }
-            }
-            connecting = false
-            main.post {
-                if (generation.get() == gen) {
-                    listener.onStatus(
-                        Status.DISCONNECTED,
-                        "Couldn't reach any server ($lastError). Check the internet connection and try again."
-                    )
-                }
-            }
-        }, "walkie-connect").start()
+            }, "walkie-connect-$index").start()
+        }
+    }
+
+    private fun quietClose(c: MqttClient) {
+        try { c.disconnectForcibly(300, 300) } catch (_: Exception) {}
+        try { c.close(true) } catch (_: Exception) {}
     }
 
     private fun makeCallback(c: MqttClient, gen: Int) = object : MqttCallbackExtended {
         override fun connectComplete(reconnect: Boolean, serverURI: String) {
-            if (generation.get() != gen) return
-            // Never let an exception escape: Paho would tear the connection
-            // down and we'd loop reconnect -> subscribe-fail forever.
+            // Initial subscribe happens in the connect race; this only needs
+            // to re-subscribe after Paho's automatic reconnect (cleanSession
+            // drops subscriptions). Never let an exception escape: Paho would
+            // tear the connection down and loop reconnect -> fail forever.
+            if (!reconnect || generation.get() != gen || client !== c) return
             var subscribed = false
             for (attempt in 1..5) {
                 try {
@@ -182,6 +209,7 @@ class WalkieEngine(private val listener: Listener) {
         }
 
         override fun connectionLost(cause: Throwable?) {
+            if (client !== c) return
             connected = false
             main.post {
                 if (generation.get() == gen) {

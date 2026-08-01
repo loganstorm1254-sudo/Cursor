@@ -13,6 +13,7 @@ local.properties
 .cxx/
 captures/
 *.apk
+!releases/*.apk
 *.aab
 *.ap_
 *.dex

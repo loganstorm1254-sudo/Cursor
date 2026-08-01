@@ -18,9 +18,13 @@ Discord:
 
 Commands:
   !html / /html <description>   Generate a website (code + .html file)
-  Reply to the .html file msg   Continue editing that website
+  !ping                         Check the bot is online
+  Reply to my bot message       Continue editing that website
   !help                         Show help
   @Bot <description>            Same as !html
+
+IMPORTANT: Enable MESSAGE CONTENT INTENT or !html / @mention / reply will silently fail.
+  Developer Portal → Bot → Privileged Gateway Intents → Message Content Intent
 
 Owner-only:
   !off / !on                    Pause / resume generation

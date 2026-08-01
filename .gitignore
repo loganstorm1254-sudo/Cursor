@@ -20,3 +20,5 @@ captures/
 .DS_Store
 
 .android-sdk/
+
+.kotlin/

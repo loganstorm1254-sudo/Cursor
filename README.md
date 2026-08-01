@@ -11,6 +11,23 @@ Two apps that send phone notifications over **Bluetooth** — no Wi‑Fi, data, 
 
 Ready APKs: [`releases/`](releases/) · Protocol: [`shared/PROTOCOL.md`](shared/PROTOCOL.md)
 
+## Walkie-talkie apps (Android, internet)
+
+Two push-to-talk apps that work like real walkie-talkies **over any internet connection** — mobile data, different Wi-Fi networks, different cities. No server setup: both phones meet on a public MQTT broker, and the **PIN** you type on both phones picks the channel *and* AES-256-encrypts the audio.
+
+| App | Folder | Role |
+|-----|--------|------|
+| **Walkie A** | `WalkieTalkieA/` | Phone 1 (orange) |
+| **Walkie B** | `WalkieTalkieB/` | Phone 2 (teal) — same app, different name/color |
+
+Ready APKs: [`releases/WalkieA.apk`](releases/WalkieA.apk) · [`releases/WalkieB.apk`](releases/WalkieB.apk)
+
+### Quick start
+
+1. Install `releases/WalkieA.apk` on phone 1, `releases/WalkieB.apk` on phone 2.
+2. On both: type the **same PIN** (4+ digits, pick something random) → **Connect** → allow microphone.
+3. Wait for "Other phone is on the channel ✓", then **hold the big button** to talk, release to listen.
+
 ### Quick start
 
 1. Install `releases/NotifyReceiver.apk` on phone A, `releases/NotifySender.apk` on phone B.

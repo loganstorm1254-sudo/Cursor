@@ -97,7 +97,14 @@ class WalkieEngine(private val listener: Listener) {
     private val talking = AtomicBoolean(false)
     private var recordThread: Thread? = null
     private var pingThread: Thread? = null
-    private var track: AudioTrack? = null
+    private var playThread: Thread? = null
+    /**
+     * Frames wait here for the single playback thread. Each broker connection
+     * delivers messages on its own thread, and AudioTrack is NOT thread-safe:
+     * creating/writing it concurrently from several broker threads crashes
+     * the app natively. Only the playback thread ever touches the AudioTrack.
+     */
+    private val playQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>(64)
     @Volatile private var receiving = false
 
     /** senderId -> last time we heard them (for the device counter). */
@@ -116,6 +123,8 @@ class WalkieEngine(private val listener: Listener) {
         val gen = generation.incrementAndGet()
         connecting = true
         listener.onStatus(Status.CONNECTING, "Connecting…")
+
+        startPlayback(gen)
 
         val digest = MessageDigest.getInstance("SHA-256")
             .digest("walkie-talkie-v2:$pin".toByteArray(Charsets.UTF_8))
@@ -234,9 +243,10 @@ class WalkieEngine(private val listener: Listener) {
         }
 
         override fun messageArrived(topic: String, message: MqttMessage) {
+            // Catch everything: an escaped Throwable on a broker thread kills the app.
             try {
                 handleIncoming(topic, message.payload)
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
             }
         }
 
@@ -251,6 +261,9 @@ class WalkieEngine(private val listener: Listener) {
         connecting = false
         pingThread?.interrupt()
         pingThread = null
+        playThread?.interrupt()
+        playThread = null
+        playQueue.clear()
         val old = clients.toList()
         clients.clear()
         if (old.isNotEmpty()) {
@@ -261,8 +274,6 @@ class WalkieEngine(private val listener: Listener) {
         lastPostedPeerCount = -1
         main.removeCallbacks(rxIdleRunnable)
         receiving = false
-        track?.let { t -> try { t.release() } catch (_: Exception) {} }
-        track = null
         if (notify) {
             listener.onStatus(Status.DISCONNECTED, "Not connected")
             listener.onPeers(0)
@@ -334,11 +345,18 @@ class WalkieEngine(private val listener: Listener) {
         postPeerCount(now)
 
         // Same frame arrives once per broker we share with the sender — only
-        // accept sequence numbers we haven't played yet.
-        val isNew = lastSeq.compute(frame.sender) { _, prev ->
-            if (prev == null || frame.seq > prev) frame.seq else prev
-        } == frame.seq
-        if (!isNew) return
+        // accept sequence numbers STRICTLY above what we already played
+        // (equal = the duplicate copy from another broker).
+        val isNew = booleanArrayOf(false)
+        lastSeq.compute(frame.sender) { _, prev ->
+            if (prev == null || frame.seq > prev) {
+                isNew[0] = true
+                frame.seq
+            } else {
+                prev
+            }
+        }
+        if (!isNew[0]) return
 
         if (topic != audioTopic) return
         if (!receiving) {
@@ -347,9 +365,11 @@ class WalkieEngine(private val listener: Listener) {
         }
         main.removeCallbacks(rxIdleRunnable)
         main.postDelayed(rxIdleRunnable, RX_IDLE_MS)
-        try {
-            playbackTrack().write(frame.pcm, 0, frame.pcm.size)
-        } catch (_: Exception) {
+        // Hand off to the playback thread; if it can't keep up, drop the
+        // oldest frame rather than blocking the broker thread.
+        if (!playQueue.offer(frame.pcm)) {
+            playQueue.poll()
+            playQueue.offer(frame.pcm)
         }
     }
 
@@ -361,8 +381,31 @@ class WalkieEngine(private val listener: Listener) {
         }
     }
 
-    private fun playbackTrack(): AudioTrack {
-        track?.let { if (it.state == AudioTrack.STATE_INITIALIZED) return it }
+    /** The only place the AudioTrack is created, written, or released. */
+    private fun startPlayback(gen: Int) {
+        playQueue.clear()
+        playThread = Thread({
+            var track: AudioTrack? = null
+            try {
+                while (generation.get() == gen) {
+                    val pcm = playQueue.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        ?: continue
+                    if (track == null) track = createTrack()
+                    try {
+                        track?.write(pcm, 0, pcm.size)
+                    } catch (_: Exception) {
+                        try { track?.release() } catch (_: Exception) {}
+                        track = null
+                    }
+                }
+            } catch (_: InterruptedException) {
+            } finally {
+                try { track?.release() } catch (_: Exception) {}
+            }
+        }, "walkie-play").also { it.isDaemon = true; it.start() }
+    }
+
+    private fun createTrack(): AudioTrack? = try {
         val minBuf = AudioTrack.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
@@ -382,8 +425,9 @@ class WalkieEngine(private val listener: Listener) {
             AudioManager.AUDIO_SESSION_ID_GENERATE
         )
         t.play()
-        track = t
-        return t
+        t
+    } catch (_: Exception) {
+        null
     }
 
     // ---------------------------------------------------------------- plumbing

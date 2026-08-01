@@ -5,8 +5,7 @@
 | [`Seekara.apk`](Seekara.apk) | The **Seekara** app — browse [seekara.pt](https://www.seekara.pt/) (needs internet) |
 | [`NotifyReceiver.apk`](NotifyReceiver.apk) | Notify: phone that should **get** notifications (Bluetooth only) |
 | [`NotifySender.apk`](NotifySender.apk) | Notify: phone that should **send** notifications (Bluetooth only) |
-| [`WalkieA.apk`](WalkieA.apk) | **Walkie-talkie** app for phone 1 (works over internet, any network) |
-| [`WalkieB.apk`](WalkieB.apk) | **Walkie-talkie** app for phone 2 (same app, different name/color) |
+| [`Walkie.apk`](Walkie.apk) | **Walkie-talkie** — install on any number of phones, works over internet on any network |
 
 ## Install on Samsung
 
@@ -21,8 +20,8 @@
 2. Receiver → **Start** (allow Bluetooth + notifications).
 3. Sender → **Link receiver** once → send messages anytime after that.
 
-### Walkie-talkie apps
+### Walkie (walkie-talkie)
 
-1. `WalkieA.apk` on phone 1, `WalkieB.apk` on phone 2. Phones can be **anywhere** — mobile data or different Wi-Fi, they just both need internet.
-2. Both phones: type the **same PIN** (4+ digits) → **Connect** → allow microphone.
-3. Wait for "Other phone is on the channel ✓" → **hold the big button** to talk.
+1. `Walkie.apk` on every phone — 2 or 20, doesn't matter. Phones can be **anywhere** — mobile data or different Wi-Fi, they just need internet.
+2. All phones: type the **same PIN** (4+ digits) → **Connect** → allow microphone.
+3. The screen counts the other devices on the channel → **hold the big button** to talk.

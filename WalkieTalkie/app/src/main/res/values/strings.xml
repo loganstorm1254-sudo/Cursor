@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Walkie</string>
+    <string name="subtitle">Internet walkie-talkie. Install on any number of phones, type the same PIN — works on data or any Wi-Fi.</string>
+    <string name="pin_hint">Channel PIN</string>
+    <string name="pin_too_short">Use at least 4 digits</string>
+    <string name="connect">Connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="cancel">Cancel</string>
+    <string name="not_connected">Not connected</string>
+    <string name="mic_permission_needed">Microphone permission is required to talk</string>
+    <string name="hold_to_talk">HOLD\nTO TALK</string>
+    <string name="talking">TALKING…</string>
+    <string name="receiving">Receiving…</string>
+    <string name="idle">Channel quiet</string>
+    <string name="peer_unknown">\u00A0</string>
+    <string name="peer_waiting">No one else on the channel yet…</string>
+    <string name="peers_one">1 other device on the channel ✓</string>
+    <string name="peers_many">%1$d other devices on the channel ✓</string>
+</resources>

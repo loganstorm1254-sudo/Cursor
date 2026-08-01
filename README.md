@@ -11,22 +11,19 @@ Two apps that send phone notifications over **Bluetooth** — no Wi‑Fi, data, 
 
 Ready APKs: [`releases/`](releases/) · Protocol: [`shared/PROTOCOL.md`](shared/PROTOCOL.md)
 
-## Walkie-talkie apps (Android, internet)
+## Walkie — walkie-talkie app (Android, internet)
 
-Two push-to-talk apps that work like real walkie-talkies **over any internet connection** — mobile data, different Wi-Fi networks, different cities. No server setup: both phones meet on a public MQTT broker, and the **PIN** you type on both phones picks the channel *and* AES-256-encrypts the audio.
+One push-to-talk app that works like a real walkie-talkie **over any internet connection** — mobile data, different Wi-Fi networks, different cities. Install the same APK on **any number of phones**; everyone who types the same **PIN** is on the same channel. The PIN also AES-256-encrypts the audio.
 
-| App | Folder | Role |
-|-----|--------|------|
-| **Walkie A** | `WalkieTalkieA/` | Phone 1 (orange) |
-| **Walkie B** | `WalkieTalkieB/` | Phone 2 (teal) — same app, different name/color |
+No server setup: every phone connects to several public MQTT brokers **at the same time** and transmits on all of them (receivers de-duplicate), so it works even when different phones' networks can only reach different servers.
 
-Ready APKs: [`releases/WalkieA.apk`](releases/WalkieA.apk) · [`releases/WalkieB.apk`](releases/WalkieB.apk)
+Project: [`WalkieTalkie/`](WalkieTalkie/) · Ready APK: [`releases/Walkie.apk`](releases/Walkie.apk)
 
 ### Quick start
 
-1. Install `releases/WalkieA.apk` on phone 1, `releases/WalkieB.apk` on phone 2.
-2. On both: type the **same PIN** (4+ digits, pick something random) → **Connect** → allow microphone.
-3. Wait for "Other phone is on the channel ✓", then **hold the big button** to talk, release to listen.
+1. Install `releases/Walkie.apk` on every phone (2, 3, 10 — as many as you want).
+2. On all of them: type the **same PIN** (4+ digits, pick something random) → **Connect** → allow microphone.
+3. The screen shows how many other devices are on the channel. **Hold the big button** to talk, release to listen.
 
 ### Quick start
 

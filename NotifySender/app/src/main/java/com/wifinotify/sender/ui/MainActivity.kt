@@ -1,129 +1,85 @@
 package com.wifinotify.sender.ui
 
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
+import androidx.core.content.ContextCompat
 import com.wifinotify.sender.R
 import com.wifinotify.sender.databinding.ActivityMainBinding
-import com.wifinotify.sender.net.DiscoveredReceiver
-import com.wifinotify.sender.net.NotifyClient
-import com.wifinotify.sender.net.WifiLan
+import com.wifinotify.sender.net.BtNotifyClient
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private val receivers = mutableListOf<DiscoveredReceiver>()
-    private var selected: DiscoveredReceiver? = null
-    private lateinit var adapter: ReceiverAdapter
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results.values.any { !it }) {
+            Toast.makeText(this, R.string.permission_needed, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private val enableBtLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { /* returned from BT enable */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        adapter = ReceiverAdapter(receivers) { item ->
-            selected = item
-            binding.selectedText.text = getString(R.string.selected_receiver, item.name, item.host)
-            adapter.selectedHost = item.host
-            adapter.notifyDataSetChanged()
-        }
+        ensurePermissions()
 
         val prefs = getSharedPreferences("sender_prefs", MODE_PRIVATE)
         binding.fromInput.setText(
             prefs.getString("from_name", null) ?: (Build.MODEL ?: "Sender")
         )
 
-        binding.receiverList.layoutManager = LinearLayoutManager(this)
-        binding.receiverList.adapter = adapter
+        refreshLinkedLabel()
 
-        binding.scanButton.setOnClickListener { scan() }
-        binding.useIpButton.setOnClickListener { useManualIp() }
-        binding.testButton.setOnClickListener { testConnection() }
+        binding.linkButton.setOnClickListener { linkReceiver() }
+        binding.clearLinkButton.setOnClickListener {
+            BtNotifyClient.clearReceiver(this)
+            refreshLinkedLabel()
+            binding.statusText.text = getString(R.string.link_cleared)
+        }
         binding.sendButton.setOnClickListener { send() }
     }
 
-    private fun useManualIp() {
-        val ip = WifiLan.sanitizeIp(binding.manualIpInput.text?.toString().orEmpty())
-        if (!IPV4.matches(ip)) {
-            Toast.makeText(this, R.string.invalid_ip, Toast.LENGTH_SHORT).show()
-            return
-        }
-        binding.manualIpInput.setText(ip)
-        val item = DiscoveredReceiver(name = "Manual", host = ip)
-        selected = item
-        adapter.selectedHost = ip
-        if (receivers.none { it.host == ip }) {
-            receivers += item
-        }
-        adapter.notifyDataSetChanged()
-        binding.selectedText.text = getString(R.string.selected_receiver, item.name, item.host)
-    }
-
-    private fun testConnection() {
-        val target = selected
-        if (target == null) {
-            Toast.makeText(this, R.string.pick_receiver_first, Toast.LENGTH_SHORT).show()
-            return
-        }
-        binding.testButton.isEnabled = false
-        binding.statusText.text = getString(R.string.testing)
-        NotifyClient.testReachable(this, target.host) { ok, message ->
-            runOnUiThread {
-                binding.testButton.isEnabled = true
-                binding.statusText.text = message
-                if (ok) {
-                    Toast.makeText(this, R.string.test_ok, Toast.LENGTH_SHORT).show()
-                }
-            }
+    private fun refreshLinkedLabel() {
+        val linked = BtNotifyClient.savedReceiver(this)
+        binding.linkedText.text = if (linked == null) {
+            getString(R.string.not_linked)
+        } else {
+            getString(R.string.linked_to, linked.name, linked.address)
         }
     }
 
-    private fun scan() {
-        binding.scanButton.isEnabled = false
-        binding.statusText.text = getString(R.string.scanning)
-        receivers.clear()
-        selected = null
-        adapter.selectedHost = null
-        adapter.notifyDataSetChanged()
-        binding.selectedText.text = getString(R.string.no_receiver_selected)
-
-        NotifyClient.discover(
+    private fun linkReceiver() {
+        if (!ensureReadyForBluetooth()) return
+        binding.linkButton.isEnabled = false
+        binding.statusText.text = getString(R.string.linking)
+        BtNotifyClient.linkReceiver(
             context = this,
-            onFound = { item ->
+            onStatus = { msg -> runOnUiThread { binding.statusText.text = msg } },
+            onLinked = { linked ->
                 runOnUiThread {
-                    if (receivers.none { it.host == item.host }) {
-                        receivers += item
-                        adapter.notifyItemInserted(receivers.lastIndex)
-                        if (selected == null) {
-                            selected = item
-                            adapter.selectedHost = item.host
-                            binding.selectedText.text =
-                                getString(R.string.selected_receiver, item.name, item.host)
-                            adapter.notifyDataSetChanged()
-                        }
-                    }
-                }
-            },
-            onDone = { list ->
-                runOnUiThread {
-                    binding.scanButton.isEnabled = true
-                    binding.statusText.text = if (list.isEmpty()) {
-                        getString(R.string.scan_none)
-                    } else {
-                        getString(R.string.scan_found, list.size)
-                    }
+                    binding.linkButton.isEnabled = true
+                    refreshLinkedLabel()
+                    binding.statusText.text = getString(R.string.linked_ok, linked.name)
+                    Toast.makeText(this, R.string.linked_toast, Toast.LENGTH_SHORT).show()
                 }
             },
             onError = { err ->
                 runOnUiThread {
-                    binding.scanButton.isEnabled = true
+                    binding.linkButton.isEnabled = true
                     binding.statusText.text = err
                 }
             }
@@ -131,11 +87,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun send() {
-        val target = selected
-        if (target == null) {
-            Toast.makeText(this, R.string.pick_receiver_first, Toast.LENGTH_SHORT).show()
+        if (BtNotifyClient.savedReceiver(this) == null) {
+            Toast.makeText(this, R.string.link_first, Toast.LENGTH_LONG).show()
             return
         }
+        if (!ensureReadyForBluetooth()) return
+
         val title = binding.titleInput.text?.toString()?.trim().orEmpty()
         val message = binding.messageInput.text?.toString()?.trim().orEmpty()
         val from = binding.fromInput.text?.toString()?.trim().orEmpty()
@@ -154,16 +111,15 @@ class MainActivity : AppCompatActivity() {
         binding.sendButton.isEnabled = false
         binding.statusText.text = getString(R.string.sending)
 
-        NotifyClient.send(
+        BtNotifyClient.send(
             context = this,
-            host = target.host,
             title = title,
             message = message,
             from = from,
             onSuccess = {
                 runOnUiThread {
                     binding.sendButton.isEnabled = true
-                    binding.statusText.text = getString(R.string.sent_ok, target.name)
+                    binding.statusText.text = getString(R.string.sent_ok)
                     Toast.makeText(this, R.string.sent_toast, Toast.LENGTH_SHORT).show()
                 }
             },
@@ -175,37 +131,56 @@ class MainActivity : AppCompatActivity() {
             }
         )
     }
+
+    private fun ensureReadyForBluetooth(): Boolean {
+        if (!hasBluetoothPermissions()) {
+            ensurePermissions()
+            Toast.makeText(this, R.string.permission_needed, Toast.LENGTH_LONG).show()
+            return false
+        }
+        val adapter = getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter
+        if (adapter == null) {
+            Toast.makeText(this, R.string.no_bluetooth, Toast.LENGTH_LONG).show()
+            return false
+        }
+        if (!adapter.isEnabled) {
+            enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            Toast.makeText(this, R.string.turn_on_bluetooth, Toast.LENGTH_LONG).show()
+            return false
+        }
+        return true
+    }
+
+    private fun ensurePermissions() {
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            listOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN
+            ).forEach {
+                if (ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED) {
+                    needed += it
+                }
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                needed += Manifest.permission.ACCESS_FINE_LOCATION
+            }
+        }
+        if (needed.isNotEmpty()) permissionLauncher.launch(needed.toTypedArray())
+    }
+
+    private fun hasBluetoothPermissions(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+    }
 }
-
-private class ReceiverAdapter(
-    private val items: List<DiscoveredReceiver>,
-    private val onClick: (DiscoveredReceiver) -> Unit
-) : RecyclerView.Adapter<ReceiverAdapter.Holder>() {
-
-    var selectedHost: String? = null
-
-    class Holder(view: View) : RecyclerView.ViewHolder(view) {
-        val name: TextView = view.findViewById(R.id.itemName)
-        val host: TextView = view.findViewById(R.id.itemHost)
-    }
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
-        val view = LayoutInflater.from(parent.context)
-            .inflate(R.layout.item_receiver, parent, false)
-        return Holder(view)
-    }
-
-    override fun onBindViewHolder(holder: Holder, position: Int) {
-        val item = items[position]
-        holder.name.text = item.name
-        holder.host.text = item.host
-        holder.itemView.isSelected = item.host == selectedHost
-        holder.itemView.setOnClickListener { onClick(item) }
-    }
-
-    override fun getItemCount(): Int = items.size
-}
-
-private val IPV4 = Regex(
-    """^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$"""
-)

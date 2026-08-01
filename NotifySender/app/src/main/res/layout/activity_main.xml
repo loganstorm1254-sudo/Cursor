@@ -39,71 +39,33 @@
             android:textSize="16sp"
             android:fontFamily="sans-serif-medium" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/scanButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="@string/scan" />
-
         <TextView
-            android:id="@+id/selectedText"
+            android:id="@+id/linkedText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="@string/no_receiver_selected"
+            android:layout_marginTop="8dp"
+            android:text="@string/not_linked"
             android:textColor="@color/text_secondary"
             android:textSize="14sp" />
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/receiverList"
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/linkButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:nestedScrollingEnabled="false"
-            android:overScrollMode="never" />
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:hint="@string/manual_ip_hint"
-            app:boxBackgroundMode="outline">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/manualIpInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:inputType="text"
-                android:maxLines="1" />
-        </com.google.android.material.textfield.TextInputLayout>
+            android:layout_marginTop="16dp"
+            android:text="@string/link_receiver" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/useIpButton"
+            android:id="@+id/clearLinkButton"
             style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/use_manual_ip" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/testButton"
-            style="@style/Widget.Material3.Button.OutlinedButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/test_connection" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/connectivity_tip"
-            android:textColor="@color/text_secondary"
-            android:textSize="13sp" />
+            android:text="@string/clear_link" />
 
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="16dp"
             android:hint="@string/from_hint"
             app:boxBackgroundMode="outline">
 

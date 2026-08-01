@@ -2,19 +2,25 @@
 <resources>
     <string name="app_name">Notify Receiver</string>
     <string name="brand">Notify Receiver</string>
-    <string name="subtitle">Stay on the same Wi‑Fi as the sender. Tap Start. Tip: turn OFF mobile data on this phone so the other device can reach you.</string>
+    <string name="subtitle">Uses Bluetooth only — no Wi‑Fi, data, hotspot, or IPs. Tap Start and keep the phones near each other.</string>
     <string name="status_idle">Not listening</string>
-    <string name="device_name_hint">Name shown to the sender</string>
+    <string name="status_starting">Starting Bluetooth listener…</string>
+    <string name="device_name_hint">Bluetooth name for this phone</string>
     <string name="save_name">Save name</string>
+    <string name="enter_name">Enter a device name</string>
+    <string name="name_saved">Name saved</string>
     <string name="start_listening">Start</string>
     <string name="stop_listening">Stop</string>
     <string name="auto_start">Start listening after phone reboot</string>
     <string name="recent_heading">Recent messages</string>
     <string name="log_empty">Nothing received yet.</string>
     <string name="service_title">Notify Receiver is listening</string>
-    <string name="service_text">Ready on %1$s</string>
+    <string name="service_text_starting">Bluetooth listener starting…</string>
     <string name="channel_service">Listening status</string>
-    <string name="channel_incoming">Incoming Wi‑Fi notifications</string>
-    <string name="channel_incoming_desc">Alerts sent from the Notify Sender app on your Wi‑Fi</string>
+    <string name="channel_incoming">Incoming Bluetooth notifications</string>
+    <string name="channel_incoming_desc">Alerts sent from the Notify Sender app over Bluetooth</string>
     <string name="from_label">From %1$s</string>
+    <string name="permission_needed">Allow Bluetooth and notifications for this app</string>
+    <string name="no_bluetooth">This phone has no Bluetooth</string>
+    <string name="turn_on_bluetooth">Turn on Bluetooth, then tap Start</string>
 </resources>

@@ -10,7 +10,6 @@ data class IncomingNotify(
             val trimmed = line.trim()
             if (trimmed.isEmpty()) return null
             return try {
-                // Lightweight JSON parse without an extra dependency.
                 fun field(name: String): String? {
                     val key = "\"$name\""
                     val keyIndex = trimmed.indexOf(key)

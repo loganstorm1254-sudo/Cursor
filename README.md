@@ -1,24 +1,22 @@
 # Cursor bots + Wi‑Fi Notify apps
 
-## Wi‑Fi Notify (Android)
+## Notify apps (Android, Bluetooth)
 
-Two apps that talk **only over your local Wi‑Fi** — no internet, no accounts.
+Two apps that send phone notifications over **Bluetooth** — no Wi‑Fi, data, hotspot, or IPs.
 
 | App | Folder | Role |
 |-----|--------|------|
-| **Notify Sender** | `NotifySender/` | Finds receivers and sends a notification |
+| **Notify Sender** | `NotifySender/` | Links once, then sends notifications |
 | **Notify Receiver** | `NotifyReceiver/` | Listens and shows the system notification |
 
-Protocol details: [`shared/PROTOCOL.md`](shared/PROTOCOL.md)
+Ready APKs: [`releases/`](releases/) · Protocol: [`shared/PROTOCOL.md`](shared/PROTOCOL.md)
 
 ### Quick start
 
-1. Open each folder in Android Studio and install on two phones.
-2. Put both phones on the same Wi‑Fi.
-3. On the receiver phone: open **Notify Receiver** → **Start** (allow notifications).
-4. On the sender phone: **Find receivers** → pick the other phone → send.
-
-> Some guest/public Wi‑Fi networks block phone-to-phone traffic (AP/client isolation). Use a normal home/office network if discovery fails.
+1. Install `releases/NotifyReceiver.apk` on phone A, `releases/NotifySender.apk` on phone B.
+2. Bluetooth **ON** on both. Keep them near each other.
+3. Phone A: **Notify Receiver** → allow permissions → **Start**.
+4. Phone B: **Link receiver** once → type a message → **Send**.
 
 ---
 

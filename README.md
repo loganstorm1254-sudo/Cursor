@@ -1,4 +1,11 @@
-# Cursor bots + Wi‑Fi Notify apps
+# Cursor bots + Android apps
+
+## Seekara app (Android)
+
+Branded Android app for [seekara.pt](https://www.seekara.pt/): splash screen, in-app browsing with pull-to-refresh, offline screen with retry, and external links opening in the phone's browser.
+
+- Source: [`Seekara/`](Seekara/)
+- Ready APK: [`releases/Seekara.apk`](releases/Seekara.apk) (Android 8+)
 
 ## Notify apps (Android, Bluetooth)
 

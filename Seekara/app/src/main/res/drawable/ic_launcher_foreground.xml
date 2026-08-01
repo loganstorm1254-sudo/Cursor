@@ -1,0 +1,23 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Magnifier ring: "seek" -->
+    <path
+        android:pathData="M 50,34 a 16,16 0 1 0 0.01,0 z"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6.5"
+        android:fillColor="#00000000" />
+    <!-- Handle -->
+    <path
+        android:pathData="M 61.5,61.5 L 74,74"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <!-- Accent spark -->
+    <path
+        android:pathData="M 50,44 a 6,6 0 1 0 0.01,0 z"
+        android:fillColor="#22D3EE" />
+</vector>

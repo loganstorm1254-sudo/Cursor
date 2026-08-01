@@ -1,0 +1,14 @@
+<resources>
+    <style name="Theme.Seekara" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/seekara_blue</item>
+        <item name="colorSecondary">@color/seekara_accent</item>
+        <item name="android:statusBarColor">@color/seekara_navy</item>
+        <item name="android:navigationBarColor">@color/seekara_navy</item>
+    </style>
+
+    <style name="Theme.Seekara.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/seekara_navy</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Seekara</item>
+    </style>
+</resources>

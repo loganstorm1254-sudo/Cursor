@@ -4,7 +4,7 @@ Internet push-to-talk walkie-talkie. Pair app: [`WalkieTalkieB/`](../WalkieTalki
 
 ## How it works
 
-- Both phones connect out to a **public MQTT broker** (`broker.hivemq.com`, fallback `broker.emqx.io`), so it works on **mobile data, different Wi-Fi networks, anywhere with internet** — no server of your own, no port forwarding, no same-network requirement.
+- Both phones connect out to a **public MQTT broker**, so it works on **mobile data, different Wi-Fi networks, anywhere with internet** — no server of your own, no port forwarding, no same-network requirement. Six servers/ports are tried automatically (plain 1883, TLS 8883, WebSocket) so it connects even on networks that block the standard MQTT port.
 - The **PIN** you type picks the channel *and* is used to **AES-256 encrypt** every audio packet, so only phones with the same PIN can listen.
 - Audio is 16 kHz mono PCM, sent in 100 ms chunks while you hold the button (half-duplex, like a real walkie-talkie).
 

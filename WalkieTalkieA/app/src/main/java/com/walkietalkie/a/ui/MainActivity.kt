@@ -47,7 +47,7 @@ class MainActivity : AppCompatActivity(), WalkieEngine.Listener {
         )
 
         binding.connectButton.setOnClickListener {
-            if (engine.isConnected) {
+            if (engine.isBusy) {
                 engine.disconnect()
             } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                 == PackageManager.PERMISSION_GRANTED
@@ -106,8 +106,11 @@ class MainActivity : AppCompatActivity(), WalkieEngine.Listener {
     override fun onStatus(status: WalkieEngine.Status, detail: String) {
         val connected = status == WalkieEngine.Status.CONNECTED
         binding.connectButton.text = getString(
-            if (connected || status == WalkieEngine.Status.CONNECTING) R.string.disconnect
-            else R.string.connect
+            when (status) {
+                WalkieEngine.Status.CONNECTED -> R.string.disconnect
+                WalkieEngine.Status.CONNECTING -> R.string.cancel
+                WalkieEngine.Status.DISCONNECTED -> R.string.connect
+            }
         )
         binding.pinInput.isEnabled = status == WalkieEngine.Status.DISCONNECTED
         binding.talkButton.isEnabled = connected

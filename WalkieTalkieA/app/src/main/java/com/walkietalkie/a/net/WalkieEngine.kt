@@ -16,6 +16,7 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -23,10 +24,15 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * Push-to-talk engine.
  *
- * Both phones connect to a public MQTT broker over the internet (works on
+ * Both phones connect out to a public MQTT broker over the internet (works on
  * mobile data or any Wi-Fi — the phones never talk to each other directly).
  * The PIN picks the channel (a topic derived from its hash) AND encrypts the
  * audio with AES-256, so only phones that typed the same PIN can listen.
+ *
+ * Several servers/ports/transports are tried in order, because many phone
+ * networks and public Wi-Fi block the plain MQTT port 1883. The TLS (8883)
+ * and secure-WebSocket (8084/443-style) endpoints get through almost
+ * everywhere.
  */
 class WalkieEngine(private val listener: Listener) {
 
@@ -39,10 +45,15 @@ class WalkieEngine(private val listener: Listener) {
     enum class Status { DISCONNECTED, CONNECTING, CONNECTED }
 
     companion object {
-        // Public brokers, tried in order. No account or server setup needed.
-        private val BROKERS = listOf(
+        // Public brokers, tried in order — no account or server setup needed.
+        // Mix of transports so at least one gets through restrictive networks.
+        private val ENDPOINTS = listOf(
             "tcp://broker.hivemq.com:1883",
             "tcp://broker.emqx.io:1883",
+            "ssl://broker.emqx.io:8883",
+            "wss://broker.emqx.io:8084/mqtt",
+            "ws://broker.hivemq.com:8000/mqtt",
+            "tcp://test.mosquitto.org:1883",
         )
         private const val SAMPLE_RATE = 16000
         private const val FRAME_BYTES = 3200 // 100 ms of 16-bit mono @ 16 kHz
@@ -50,11 +61,15 @@ class WalkieEngine(private val listener: Listener) {
         private const val HEADER_BYTES = 1 + 8 + 16 // version + senderId + IV
         private const val PING_INTERVAL_MS = 10_000L
         private const val RX_IDLE_MS = 350L
+        private const val CONNECT_TIMEOUT_S = 8
     }
 
     private val random = SecureRandom()
     private val senderId = ByteArray(8).also { random.nextBytes(it) }
     private val main = Handler(Looper.getMainLooper())
+
+    /** Bumped on every connect/disconnect so stale attempts abort themselves. */
+    private val generation = AtomicInteger()
 
     private var client: MqttClient? = null
     private var key: SecretKeySpec? = null
@@ -62,6 +77,7 @@ class WalkieEngine(private val listener: Listener) {
     private var presenceTopic = ""
 
     @Volatile private var connected = false
+    @Volatile private var connecting = false
     private val talking = AtomicBoolean(false)
     private var recordThread: Thread? = null
     private var pingThread: Thread? = null
@@ -74,7 +90,9 @@ class WalkieEngine(private val listener: Listener) {
     }
 
     fun connect(pin: String) {
-        disconnect()
+        disconnectInternal(notify = false)
+        val gen = generation.incrementAndGet()
+        connecting = true
         listener.onStatus(Status.CONNECTING, "Connecting…")
 
         val digest = MessageDigest.getInstance("SHA-256")
@@ -85,54 +103,110 @@ class WalkieEngine(private val listener: Listener) {
         presenceTopic = "walkietalkie/v1/$channel/presence"
 
         Thread({
-            var lastError = "no broker reachable"
-            for (broker in BROKERS) {
+            var lastError = "no server reachable"
+            for ((index, endpoint) in ENDPOINTS.withIndex()) {
+                if (generation.get() != gen) return@Thread // cancelled
+                main.post {
+                    if (generation.get() == gen) {
+                        listener.onStatus(
+                            Status.CONNECTING,
+                            "Connecting… trying server ${index + 1}/${ENDPOINTS.size}"
+                        )
+                    }
+                }
+                var c: MqttClient? = null
                 try {
-                    val c = MqttClient(
-                        broker,
+                    c = MqttClient(
+                        endpoint,
                         "wt-" + senderId.joinToString("") { "%02x".format(it) },
                         MemoryPersistence()
                     )
-                    c.setCallback(object : MqttCallbackExtended {
-                        override fun connectComplete(reconnect: Boolean, serverURI: String) {
-                            connected = true
-                            c.subscribe(arrayOf(audioTopic, presenceTopic), intArrayOf(0, 0))
-                            publishPresence()
-                            main.post { listener.onStatus(Status.CONNECTED, "Connected") }
-                        }
-
-                        override fun connectionLost(cause: Throwable?) {
-                            connected = false
-                            main.post { listener.onStatus(Status.CONNECTING, "Reconnecting…") }
-                        }
-
-                        override fun messageArrived(topic: String, message: MqttMessage) {
-                            handleIncoming(topic, message.payload)
-                        }
-
-                        override fun deliveryComplete(token: org.eclipse.paho.client.mqttv3.IMqttDeliveryToken?) {}
-                    })
+                    c.setCallback(makeCallback(c, gen))
                     val opts = MqttConnectOptions().apply {
                         isCleanSession = true
                         isAutomaticReconnect = true
                         keepAliveInterval = 30
-                        connectionTimeout = 10
+                        connectionTimeout = CONNECT_TIMEOUT_S
                     }
                     c.connect(opts)
+                    if (generation.get() != gen) { // cancelled while connecting
+                        try { c.disconnectForcibly(300, 300) } catch (_: Exception) {}
+                        try { c.close(true) } catch (_: Exception) {}
+                        return@Thread
+                    }
                     client = c
-                    startPinger()
+                    connecting = false
+                    startPinger(gen)
                     return@Thread
                 } catch (e: Exception) {
                     lastError = e.message ?: e.javaClass.simpleName
+                    if (c != null) {
+                        try { c.close(true) } catch (_: Exception) {}
+                    }
                 }
             }
-            main.post { listener.onStatus(Status.DISCONNECTED, "Couldn't connect: $lastError") }
+            connecting = false
+            main.post {
+                if (generation.get() == gen) {
+                    listener.onStatus(
+                        Status.DISCONNECTED,
+                        "Couldn't reach any server ($lastError). Check the internet connection and try again."
+                    )
+                }
+            }
         }, "walkie-connect").start()
     }
 
-    fun disconnect() {
+    private fun makeCallback(c: MqttClient, gen: Int) = object : MqttCallbackExtended {
+        override fun connectComplete(reconnect: Boolean, serverURI: String) {
+            if (generation.get() != gen) return
+            // Never let an exception escape: Paho would tear the connection
+            // down and we'd loop reconnect -> subscribe-fail forever.
+            var subscribed = false
+            for (attempt in 1..5) {
+                try {
+                    c.subscribe(arrayOf(audioTopic, presenceTopic), intArrayOf(0, 0))
+                    subscribed = true
+                    break
+                } catch (_: Exception) {
+                    try { Thread.sleep(400) } catch (_: InterruptedException) { break }
+                    if (generation.get() != gen || !c.isConnected) break
+                }
+            }
+            if (!subscribed) return
+            connected = true
+            try { publishPresence() } catch (_: Exception) {}
+            main.post {
+                if (generation.get() == gen) listener.onStatus(Status.CONNECTED, "Connected")
+            }
+        }
+
+        override fun connectionLost(cause: Throwable?) {
+            connected = false
+            main.post {
+                if (generation.get() == gen) {
+                    listener.onStatus(Status.CONNECTING, "Connection lost — reconnecting…")
+                }
+            }
+        }
+
+        override fun messageArrived(topic: String, message: MqttMessage) {
+            try {
+                handleIncoming(topic, message.payload)
+            } catch (_: Exception) {
+            }
+        }
+
+        override fun deliveryComplete(token: org.eclipse.paho.client.mqttv3.IMqttDeliveryToken?) {}
+    }
+
+    fun disconnect() = disconnectInternal(notify = true)
+
+    private fun disconnectInternal(notify: Boolean) {
+        generation.incrementAndGet()
         stopTalking()
         connected = false
+        connecting = false
         pingThread?.interrupt()
         pingThread = null
         val c = client
@@ -147,10 +221,11 @@ class WalkieEngine(private val listener: Listener) {
         receiving = false
         track?.let { t -> try { t.release() } catch (_: Exception) {} }
         track = null
-        listener.onStatus(Status.DISCONNECTED, "Not connected")
+        if (notify) listener.onStatus(Status.DISCONNECTED, "Not connected")
     }
 
     val isConnected: Boolean get() = connected
+    val isBusy: Boolean get() = connected || connecting || client != null
 
     // ---------------------------------------------------------------- talking
 
@@ -250,11 +325,11 @@ class WalkieEngine(private val listener: Listener) {
 
     // ---------------------------------------------------------------- plumbing
 
-    private fun startPinger() {
+    private fun startPinger(gen: Int) {
         pingThread = Thread({
             try {
-                while (connected) {
-                    publishPresence()
+                while (generation.get() == gen) {
+                    if (connected) publishPresence()
                     Thread.sleep(PING_INTERVAL_MS)
                 }
             } catch (_: InterruptedException) {

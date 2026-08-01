@@ -104,7 +104,102 @@ QUALITY / INTERACTIVITY (must do well):
 13. Include enough real-looking content for the theme (not just "Lorem ipsum" walls).
 14. If revising an existing page: keep what works, apply the requested changes, return the FULL document.
 15. If the user asks for non-website stuff, still return a tiny HTML page saying you only make websites.
+16. SAFETY: Never create porn, nude, sexual, fetish, or adult-only websites. If asked, output a tiny HTML page that says adult content is not allowed.
 """
+
+# Block NSFW / porn website requests (prompt filter).
+NSFW_BLOCK_MESSAGE = (
+    "Blocked — I won't make porn or adult/NSFW websites.\n"
+    "Describe a normal site instead (portfolio, shop, blog, landing page, etc.)."
+)
+
+# Whole-word / phrase patterns (case-insensitive). Focused on sexual / illegal content.
+_NSFW_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bporn\b",
+        r"\bporno\b",
+        r"\bpornography\b",
+        r"\bxxx\b",
+        r"\bnsfw\b",
+        r"\bonlyfans\b",
+        r"\bfansly\b",
+        r"\bhentai\b",
+        r"\brule\s*34\b",
+        r"\br34\b",
+        r"\berotic\b",
+        r"\berotica\b",
+        r"\bnaked\b",
+        r"\bnude\b",
+        r"\bnudes\b",
+        r"\bnudity\b",
+        r"\bsex\b",
+        r"\bsexual\b",
+        r"\bsmut\b",
+        r"\bfetish\b",
+        r"\bbdsm\b",
+        r"\bmasturbat(?:e|ion|ing)\b",
+        r"\bblowjob\b",
+        r"\bhandjob\b",
+        r"\bboobs?\b",
+        r"\btits?\b",
+        r"\btitties\b",
+        r"\bpussy\b",
+        r"\bdick\b",
+        r"\bcock\b",
+        r"\bpenis\b",
+        r"\bvagina\b",
+        r"\bthreesome\b",
+        r"\borgy\b",
+        r"\bescort\b",
+        r"\bcamgirl\b",
+        r"\bcamboy\b",
+        r"\bstrip(?:per|ping|club)\b",
+        r"\badult\s+(?:site|website|content|video|videos|film|films|store|shop|dating)\b",
+        r"\b18\s*\+\s*(?:site|website|only|content)?\b",
+        r"\bpornhub\b",
+        r"\bxvideos?\b",
+        r"\bxhamster\b",
+        r"\bredtube\b",
+        r"\bspankbang\b",
+        r"\bchild\s*porn\b",
+        r"\bloli\b",
+        r"\bshota\b",
+        r"\bunderage\b",
+        r"\bpedophil",
+        r"\bincest\b",
+        r"\brape\b",
+        r"\bnon[\s-]?consensual\b",
+    )
+)
+
+
+def is_nsfw_request(text: str) -> bool:
+    """Return True if the prompt looks like an adult/porn site request."""
+    if not text:
+        return False
+    normalized = re.sub(r"[\W_]+", " ", text.lower())
+    for hay in (text, normalized):
+        for pattern in _NSFW_PATTERNS:
+            if pattern.search(hay):
+                return True
+    return False
+
+
+async def deny(
+    message: str,
+    *,
+    interaction: discord.Interaction | None = None,
+    source_message: discord.Message | None = None,
+    channel: discord.abc.Messageable | None = None,
+):
+    if interaction:
+        await interaction.followup.send(message, ephemeral=True)
+    elif source_message:
+        await source_message.reply(message, mention_author=False)
+    elif channel is not None:
+        await channel.send(message)
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -541,24 +636,12 @@ async def handle_html(
     previous_filename: str | None = None,
 ):
     if not ai_enabled:
-        msg = "HTML generation is paused by the owner. Try again later."
-        if interaction:
-            await interaction.followup.send(msg, ephemeral=True)
-        elif source_message:
-            await source_message.reply(msg, mention_author=False)
-        else:
-            await channel.send(msg)
-        return
-
-    wait = check_cooldown(user.id)
-    if wait is not None:
-        msg = f"Slow down — wait {wait:.1f}s."
-        if interaction:
-            await interaction.followup.send(msg, ephemeral=True)
-        elif source_message:
-            await source_message.reply(msg, mention_author=False)
-        else:
-            await channel.send(msg)
+        await deny(
+            "HTML generation is paused by the owner. Try again later.",
+            interaction=interaction,
+            source_message=source_message,
+            channel=channel,
+        )
         return
 
     if previous_html is None and source_message is not None:
@@ -577,12 +660,28 @@ async def handle_html(
                 "Example: `!html a portfolio for a photographer with dark theme, gallery, and working menu buttons`\n"
                 "To continue editing: **reply** to the message with the `.html` file and describe changes."
             )
-        if interaction:
-            await interaction.followup.send(tip, ephemeral=True)
-        elif source_message:
-            await source_message.reply(tip, mention_author=False)
-        else:
-            await channel.send(tip)
+        await deny(tip, interaction=interaction, source_message=source_message, channel=channel)
+        return
+
+    # Content filter — block porn / adult site requests (before cooldown so retries aren't punished)
+    if is_nsfw_request(description):
+        print(f"NSFW blocked from {user}: {description[:120]!r}")
+        await deny(
+            NSFW_BLOCK_MESSAGE,
+            interaction=interaction,
+            source_message=source_message,
+            channel=channel,
+        )
+        return
+
+    wait = check_cooldown(user.id)
+    if wait is not None:
+        await deny(
+            f"Slow down — wait {wait:.1f}s.",
+            interaction=interaction,
+            source_message=source_message,
+            channel=channel,
+        )
         return
 
     revising = previous_html is not None
@@ -697,7 +796,8 @@ async def help_cmd(ctx: commands.Context):
         f"Or mention me: `@{bot.user.display_name} a landing page for a coffee shop`\n\n"
         "If `!html` / @mention do nothing: enable **Message Content Intent** in the "
         "Developer Portal → Bot → Privileged Gateway Intents, then restart the bot.\n"
-        "Free unlimited AI. Interactive buttons/nav/forms."
+        "Free unlimited AI. Interactive buttons/nav/forms.\n"
+        "Filter: no porn / adult / NSFW websites."
     )
 
 

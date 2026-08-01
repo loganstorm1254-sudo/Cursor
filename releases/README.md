@@ -1,11 +1,10 @@
 # Ready-to-install APKs (Samsung / any Android 8+)
 
-Bluetooth only — **no Wi‑Fi, data, hotspot, or IPs**.
-
-| File | Install on |
+| File | What it is |
 |------|------------|
-| [`NotifyReceiver.apk`](NotifyReceiver.apk) | Phone that should **get** notifications |
-| [`NotifySender.apk`](NotifySender.apk) | Phone that should **send** notifications |
+| [`Seekara.apk`](Seekara.apk) | The **Seekara** app — browse [seekara.pt](https://www.seekara.pt/) (needs internet) |
+| [`NotifyReceiver.apk`](NotifyReceiver.apk) | Notify: phone that should **get** notifications (Bluetooth only) |
+| [`NotifySender.apk`](NotifySender.apk) | Notify: phone that should **send** notifications (Bluetooth only) |
 
 ## Install on Samsung
 

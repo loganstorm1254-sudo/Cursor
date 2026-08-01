@@ -1,8 +1,9 @@
 """
-Discord HTML Website Bot — free AI, HTML only.
+Discord HTML Website Bot — free unlimited AI, HTML only.
 
 Takes a user's description and returns a complete .html file.
-Uses g4f (no AI API key required).
+Uses free no-key AI backends with automatic failover
+(Pollinations anonymous + g4f model rotation). No paid API / credit keys.
 
 Setup (one file — no requirements.txt):
   pip install discord.py g4f aiohttp
@@ -30,12 +31,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import re
 import time
 from collections import defaultdict
 
 try:
+    import aiohttp
     import discord
     from discord import app_commands
     from discord.ext import commands
@@ -51,30 +54,52 @@ except ImportError:
 TOKEN = ""
 
 OWNER_ID = 1257060226029584459
-COOLDOWN_SECONDS = 8.0
+COOLDOWN_SECONDS = 10.0
 MAX_PROMPT_CHARS = 1500
-AI_RETRIES = 3
 MAX_HTML_CHARS = 100_000
-MAX_CONTEXT_HTML_CHARS = 80_000  # how much existing HTML to send back to the AI
-DISCORD_FILE_LIMIT = 8 * 1024 * 1024  # 8 MB soft upload
-# Discord message limit is 2000; leave room for ```html fences and part labels
+MAX_CONTEXT_HTML_CHARS = 60_000
+DISCORD_FILE_LIMIT = 8 * 1024 * 1024
 CODE_CHUNK_CHARS = 1800
-MAX_CODE_MESSAGES = 8  # after this, point users to the file
+MAX_CODE_MESSAGES = 8
 
-HTML_SYSTEM = """You are an HTML website generator. You ONLY create complete, self-contained HTML websites.
+# Free backends (no paid API keys / credit packs).
+# g4f first — handles long HTML. Pollinations anonymous often 402s on big prompts.
+POLLINATIONS_URL = "https://text.pollinations.ai/openai"
+POLLINATIONS_MODELS = ("openai", "openai-fast")  # only these work on anonymous legacy API
+G4F_MODELS = (
+    "gpt-4o-mini",
+    "gpt-4o",
+    "deepseek-r1",
+    "llama-3.3-70b",
+    "command-r",
+)
 
-STRICT RULES:
-1. Output ONLY HTML. No explanations, no markdown fences, no commentary before or after.
+HTML_SYSTEM = """You are an expert front-end developer who builds complete, polished, INTERACTIVE single-file HTML websites.
+
+OUTPUT RULES (absolute):
+1. Output ONLY HTML. No markdown fences, no explanations, no commentary.
 2. Start with <!DOCTYPE html> and end with </html>.
-3. Put ALL CSS in a <style> tag in <head>. Put ALL JavaScript in a <script> tag before </body> if needed.
-4. One single file only — no external CSS/JS files, no build tools, no React/Vue.
-5. You may use CDN links for fonts or images (e.g. Google Fonts, unsplash, placeholder images).
-6. Make the page look polished: responsive layout, good typography, cohesive colors, clear sections.
-7. If the user asks for anything that is NOT a website/HTML page (chat, code review, recipes, hacking, etc.),
-   still reply with a tiny HTML page that politely says you only generate websites.
-8. Never output Python, JSON, shell, or any non-HTML content.
-9. Keep the page focused on the user's description. Prefer one strong visual composition over cluttered dashboards.
-10. When revising an existing page, keep what still works and apply the requested changes. Return the FULL updated HTML document, not a patch or diff.
+3. One self-contained file: ALL CSS in <style>, ALL JS in <script> before </body>.
+4. You may use CDN fonts/images (Google Fonts, unsplash, picsum). No React/Vue/build tools.
+
+QUALITY / INTERACTIVITY (must do well):
+5. Buttons MUST be real <button> or <a class="btn"> elements with visible styles:
+   - hover, active, focus states
+   - cursor:pointer
+   - clear padding, contrast, border-radius
+6. Every primary CTA button must DO something with JavaScript, e.g.:
+   - scroll to a section, open/close a mobile nav, toggle a modal,
+   - switch tabs, filter a gallery, show a toast, submit a form with preventDefault + success message,
+   - light/dark theme toggle, accordion FAQ open/close.
+7. Never ship dead placeholder buttons that look clickable but do nothing.
+8. Forms need labels, validation feedback, and a working submit handler (even if demo-only).
+9. Navigation: sticky header + working mobile hamburger that opens/closes a menu.
+10. Responsive: mobile-first CSS, flex/grid, readable type, good spacing.
+11. One strong visual composition (not a cluttered dashboard). Cohesive color variables in :root.
+12. Smooth small animations (CSS transitions) — presence, not noise.
+13. Include enough real-looking content for the theme (not just "Lorem ipsum" walls).
+14. If revising an existing page: keep what works, apply the requested changes, return the FULL document.
+15. If the user asks for non-website stuff, still return a tiny HTML page saying you only make websites.
 """
 
 intents = discord.Intents.default()
@@ -82,6 +107,9 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 ai = AsyncClient()
+http: aiohttp.ClientSession | None = None
+_provider_cursor = 0
+_last_provider = "none"
 
 ai_enabled = True
 cooldowns: dict[int, float] = defaultdict(float)
@@ -110,13 +138,26 @@ def check_cooldown(user_id: int) -> float | None:
     return None
 
 
+async def ensure_http() -> aiohttp.ClientSession:
+    global http
+    if http is None or http.closed:
+        # Intentionally NO Authorization header — anonymous free Pollinations.
+        http = aiohttp.ClientSession(
+            headers={
+                "User-Agent": "Mozilla/5.0 DiscordHTMLBot/2.0",
+                "Accept": "application/json, text/plain, */*",
+            },
+            timeout=aiohttp.ClientTimeout(total=120),
+        )
+    return http
+
+
 def extract_html(text: str) -> str:
     """Pull a complete HTML document out of a possibly messy AI reply."""
     text = (text or "").strip()
     if not text:
         raise RuntimeError("empty AI response")
 
-    # Strip common markdown fences
     fence = re.search(
         r"```(?:html|HTML)?\s*\n?(.*?)```",
         text,
@@ -135,13 +176,11 @@ def extract_html(text: str) -> str:
         return text[start : end + len("</html>")].strip()
 
     if start >= 0:
-        # Missing closing tag — wrap what we have
         body = text[start:].strip()
         if "</html>" not in body.lower():
             body += "\n</html>"
         return body
 
-    # Model ignored instructions — wrap as a minimal page containing the text
     escaped = (
         text.replace("&", "&amp;")
         .replace("<", "&lt;")
@@ -172,7 +211,6 @@ def html_code_chunks(html: str) -> list[str]:
     if not html:
         return ["```html\n<!-- empty -->\n```"]
 
-    # Prefer splitting on newlines so blocks stay readable
     lines = html.splitlines(keepends=True)
     raw_chunks: list[str] = []
     buf = ""
@@ -199,7 +237,6 @@ def html_code_chunks(html: str) -> list[str]:
             label += " — truncated; full page is in the file"
         block = f"**{label}**\n```html\n{chunk.rstrip()}\n```"
         if len(block) > 2000:
-            # Absolute safety: trim code so the message fits
             overhead = len(f"**{label}**\n```html\n\n```")
             block = f"**{label}**\n```html\n{chunk[: 2000 - overhead - 1].rstrip()}\n```"
         messages.append(block)
@@ -258,7 +295,6 @@ async def resolve_replied_message(message: discord.Message | None) -> discord.Me
     resolved = message.reference.resolved
     if isinstance(resolved, discord.Message):
         return resolved
-    # Deleted / failed resolve
     if isinstance(resolved, discord.DeletedReferencedMessage):
         return None
     msg_id = message.reference.message_id
@@ -278,19 +314,15 @@ async def load_html_from_message(message: discord.Message | None) -> str | None:
     try:
         data = await att.read()
         text = data.decode("utf-8", errors="replace").strip()
-        if "<html" not in text.lower() and "<!doctype" not in text.lower():
-            # Still treat as HTML source if it's clearly a page-ish file
-            if not text:
-                return None
+        if not text:
+            return None
         return text[:MAX_HTML_CHARS]
     except Exception:
         return None
 
 
 async def get_previous_html(source_message: discord.Message | None) -> tuple[str | None, str | None]:
-    """
-    If the user replied to a message with an .html file, return (html, filename).
-    """
+    """If the user replied to a message with an .html file, return (html, filename)."""
     replied = await resolve_replied_message(source_message)
     html = await load_html_from_message(replied)
     if html is None:
@@ -309,40 +341,157 @@ def finish_html(raw: str) -> str:
     return html
 
 
-async def generate_html(description: str, previous_html: str | None = None) -> str:
+def build_user_prompt(description: str, previous_html: str | None) -> str:
     description = description.strip()[:MAX_PROMPT_CHARS]
+    extras = (
+        "\n\nIMPORTANT QUALITY CHECK before you finish:\n"
+        "- At least one real working button with JS behavior\n"
+        "- Hover styles on buttons/links\n"
+        "- Mobile-friendly layout\n"
+        "- Output ONLY the full HTML document\n"
+    )
     if previous_html:
         clipped = previous_html[:MAX_CONTEXT_HTML_CHARS]
-        user_msg = (
+        return (
             "Revise this existing single-file HTML website.\n"
             "Apply the user's changes. Keep the rest intact when it still fits.\n"
+            "Make buttons/nav/forms actually work with JS if they should be interactive.\n"
             "Return the COMPLETE updated HTML document only.\n\n"
             f"CHANGES REQUESTED:\n{description}\n\n"
             f"EXISTING HTML:\n{clipped}\n"
+            f"{extras}"
         )
-    else:
-        user_msg = (
-            "Create a complete single-file HTML website for this description:\n\n"
-            f"{description}\n\n"
-            "Remember: output ONLY the HTML document, starting with <!DOCTYPE html>."
+    return (
+        "Create a complete single-file HTML website for this description:\n\n"
+        f"{description}\n"
+        f"{extras}"
+    )
+
+
+def provider_queue() -> list[tuple[str, str]]:
+    """Rotating list of (backend, model) free providers. g4f preferred for long HTML."""
+    global _provider_cursor
+    items: list[tuple[str, str]] = []
+    for m in G4F_MODELS:
+        items.append(("g4f", m))
+    for m in POLLINATIONS_MODELS:
+        items.append(("pollinations", m))
+    if not items:
+        return items
+    # Rotate starting g4f model so one rate-limit doesn't stick forever
+    g4f_n = len(G4F_MODELS)
+    start = _provider_cursor % max(g4f_n, 1)
+    _provider_cursor += 1
+    rotated = items[start:g4f_n] + items[:start] + items[g4f_n:]
+    return rotated
+
+
+async def ask_pollinations(model: str, messages: list[dict]) -> str:
+    session = await ensure_http()
+    # Keep payloads smaller — anonymous Pollinations often 402s on huge prompts.
+    slim = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role == "system":
+            content = content[:2500]
+        else:
+            content = content[:12000]
+        slim.append({"role": role, "content": content})
+    payload = {
+        "model": model,
+        "messages": slim,
+        "temperature": 0.7,
+    }
+    # Anonymous free tier — do NOT send Authorization (paid keys with $0 → 402).
+    async with session.post(POLLINATIONS_URL, json=payload) as resp:
+        text = await resp.text()
+        if resp.status == 402:
+            raise RuntimeError("pollinations rate/budget limit on this prompt size")
+        if resp.status != 200:
+            raise RuntimeError(f"pollinations HTTP {resp.status}: {text[:180]}")
+    try:
+        data = json.loads(text)
+        content = data["choices"][0]["message"]["content"]
+    except Exception:
+        content = text
+    content = (content or "").strip()
+    if not content:
+        raise RuntimeError("pollinations empty response")
+    return content
+
+
+async def ask_g4f(model: str, messages: list[dict]) -> str:
+    # Prefer chat.completions; on failure, fold system into user (some providers hate system).
+    try:
+        response = await asyncio.wait_for(
+            ai.chat.completions.create(model=model, messages=messages),
+            timeout=90,
         )
-    last_error: Exception | None = None
-    for attempt in range(AI_RETRIES):
+        content = (response.choices[0].message.content or "").strip()
+        if content:
+            return content
+    except Exception:
+        pass
+
+    combined = []
+    sys_bits = [m["content"] for m in messages if m.get("role") == "system"]
+    user_bits = [m["content"] for m in messages if m.get("role") != "system"]
+    blob = ""
+    if sys_bits:
+        blob += "SYSTEM:\n" + "\n".join(sys_bits) + "\n\n"
+    blob += "\n\n".join(user_bits)
+    response = await asyncio.wait_for(
+        ai.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": blob}],
+        ),
+        timeout=90,
+    )
+    content = (response.choices[0].message.content or "").strip()
+    if not content:
+        raise RuntimeError("g4f empty response")
+    return content
+
+
+async def ask_free_ai(messages: list[dict]) -> str:
+    """Call free unlimited backends until one returns usable text."""
+    global _last_provider
+    errors: list[str] = []
+    for backend, model in provider_queue():
+        label = f"{backend}:{model}"
         try:
-            response = await ai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": HTML_SYSTEM},
-                    {"role": "user", "content": user_msg},
-                ],
-            )
-            raw = (response.choices[0].message.content or "").strip()
+            if backend == "pollinations":
+                text = await ask_pollinations(model, messages)
+            else:
+                text = await ask_g4f(model, messages)
+            _last_provider = label
+            print(f"AI OK via {_last_provider} ({len(text)} chars)")
+            return text
+        except Exception as exc:
+            msg = f"{label}: {type(exc).__name__}: {exc}"
+            errors.append(msg)
+            print(f"AI fail {msg}")
+            await asyncio.sleep(0.5)
+    raise RuntimeError("All free AI providers failed. " + " | ".join(errors[:5]))
+
+
+async def generate_html(description: str, previous_html: str | None = None) -> str:
+    user_msg = build_user_prompt(description, previous_html)
+    messages = [
+        {"role": "system", "content": HTML_SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
+    last_error: Exception | None = None
+    # Two full sweeps across free providers
+    for sweep in range(2):
+        try:
+            raw = await ask_free_ai(messages)
             return finish_html(raw)
         except Exception as exc:
             last_error = exc
-            if attempt + 1 < AI_RETRIES:
-                await asyncio.sleep(1.2 * (attempt + 1))
-    raise RuntimeError(f"AI failed after retries: {last_error}")
+            await asyncio.sleep(1.0 + sweep)
+    raise RuntimeError(f"AI failed after free-provider sweeps: {last_error}")
 
 
 async def handle_html(
@@ -376,7 +525,6 @@ async def handle_html(
             await channel.send(msg)
         return
 
-    # Auto-load previous HTML when the user replied to a .html file message
     if previous_html is None and source_message is not None:
         previous_html, previous_filename = await get_previous_html(source_message)
 
@@ -385,12 +533,12 @@ async def handle_html(
         if previous_html:
             tip = (
                 "You're editing a previous site. Tell me what to change.\n"
-                "Example: reply with `make the background dark and add a contact form`"
+                "Example: reply with `make the background dark and add working buttons`"
             )
         else:
             tip = (
                 "Describe the website you want.\n"
-                "Example: `!html a portfolio for a photographer with dark theme and a gallery`\n"
+                "Example: `!html a portfolio for a photographer with dark theme, gallery, and working menu buttons`\n"
                 "To continue editing: **reply** to the message with the `.html` file and describe changes."
             )
         if interaction:
@@ -403,9 +551,9 @@ async def handle_html(
 
     revising = previous_html is not None
     status = (
-        "Updating your HTML website from the previous file… (free AI, may take a few seconds)"
+        "Updating your HTML website… (free unlimited AI, may take a bit)"
         if revising
-        else "Generating your HTML website… (free AI, may take a few seconds)"
+        else "Generating your HTML website… (free unlimited AI, may take a bit)"
     )
     status_msg = None
     try:
@@ -443,7 +591,7 @@ async def handle_html(
         f"**HTML website {action}** — code below + download `{filename}`.\n"
         f"{'Changes' if revising else 'Prompt'}: {description[:200]}"
         + ("…" if len(description) > 200 else "")
-        + "\n_Reply to this message (the one with the file) to keep editing._"
+        + f"\n_AI: `{_last_provider}` (free)_ · Reply to this file message to keep editing._"
     )
 
     if status_msg:
@@ -464,13 +612,14 @@ async def handle_html(
 
 @bot.event
 async def on_ready():
+    await ensure_http()
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} slash command(s).")
     except Exception as exc:
         print(f"Slash sync failed: {exc}")
     print(f"Logged in as {bot.user} (id={bot.user.id})")
-    print("Ready — HTML website generator (free AI via g4f).")
+    print("Ready — HTML generator (free unlimited AI: Pollinations + g4f).")
 
 
 @bot.event
@@ -488,8 +637,8 @@ async def help_cmd(ctx: commands.Context):
         "**Reply** to the message with the `.html` file + your changes — continue editing\n"
         "`!help` — show this message\n"
         f"Or mention me: `@{bot.user.display_name} a landing page for a coffee shop`\n\n"
-        "Replies with the HTML **code in chat** plus a downloadable `.html` file.\n"
-        "Free AI (no OpenAI key). HTML only — I won't chat or write other code."
+        "Replies with HTML **code in chat** + a downloadable `.html` file.\n"
+        "Free unlimited AI (Pollinations + g4f failover). Interactive buttons/nav/forms."
     )
 
 
@@ -537,7 +686,8 @@ async def status_cmd(ctx: commands.Context):
     await ctx.send(
         f"**Status**\n"
         f"Generation: `{'on' if ai_enabled else 'paused'}`\n"
-        f"Mode: HTML websites only (free AI)"
+        f"Last AI: `{_last_provider}`\n"
+        f"Mode: free unlimited AI (Pollinations + g4f) · HTML only"
     )
 
 
@@ -555,7 +705,6 @@ async def on_message(message: discord.Message):
 
     # Continue editing: reply to a message that has the downloadable .html file
     if message.reference is not None:
-        # Don't steal !commands — let process_commands handle those (they still load previous HTML)
         content = (message.content or "").strip()
         is_command = content.startswith("!")
         if not is_command:

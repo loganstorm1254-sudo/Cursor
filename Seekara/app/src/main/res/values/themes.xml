@@ -1,9 +1,6 @@
 <resources>
-    <style name="Theme.Seekara" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/seekara_blue</item>
-        <item name="colorSecondary">@color/seekara_accent</item>
-        <item name="android:statusBarColor">@color/seekara_navy</item>
-        <item name="android:navigationBarColor">@color/seekara_navy</item>
+    <style name="Theme.Seekara" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/seekara_navy</item>
     </style>
 
     <style name="Theme.Seekara.Splash" parent="Theme.SplashScreen">

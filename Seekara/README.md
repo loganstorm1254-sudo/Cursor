@@ -1,20 +1,19 @@
 # Seekara (Android)
 
-Official-style Android wrapper for [seekara.pt](https://www.seekara.pt/).
+Native Android app for [Seekara](https://www.seekara.pt/) — fully dark, sleek Material 3 design built with Jetpack Compose. No WebView.
 
-## What it does
+## Screens
 
-- Loads the Seekara site in a full-screen in-app browser (WebView).
+- **Home** — gradient hero ("Experiences for everybody."), live stats (16 creators, 15 Discord bots, 2+ projects coming), featured experiences and the Seekara story.
+- **Projects** — every Seekara project as a native card: Cloud Gaming, Browse, View, Security Bots, Sonar Instigator, plus what's coming next. Tap to open on seekara.pt.
+- **Support** — open a support ticket, get Discord bot help, or jump to the site.
+
+## Details
+
+- 100% Kotlin + Jetpack Compose (Material 3, dark theme).
 - Branded splash screen and adaptive launcher icon.
-- Pull down to refresh.
-- Offline screen with a Retry button when there is no connection.
-- Back button walks through the site's page history.
-- Links that leave `seekara.pt` open in the phone's browser.
-
-## Requirements
-
+- Requires no permissions at all.
 - Android 8.0 (API 26) or newer.
-- Internet connection.
 
 ## Build
 

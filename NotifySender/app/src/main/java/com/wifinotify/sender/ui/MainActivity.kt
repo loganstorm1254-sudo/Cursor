@@ -14,6 +14,7 @@ import com.wifinotify.sender.R
 import com.wifinotify.sender.databinding.ActivityMainBinding
 import com.wifinotify.sender.net.DiscoveredReceiver
 import com.wifinotify.sender.net.NotifyClient
+import com.wifinotify.sender.net.WifiLan
 
 class MainActivity : AppCompatActivity() {
 
@@ -44,15 +45,17 @@ class MainActivity : AppCompatActivity() {
 
         binding.scanButton.setOnClickListener { scan() }
         binding.useIpButton.setOnClickListener { useManualIp() }
+        binding.testButton.setOnClickListener { testConnection() }
         binding.sendButton.setOnClickListener { send() }
     }
 
     private fun useManualIp() {
-        val ip = binding.manualIpInput.text?.toString()?.trim().orEmpty()
+        val ip = WifiLan.sanitizeIp(binding.manualIpInput.text?.toString().orEmpty())
         if (!IPV4.matches(ip)) {
             Toast.makeText(this, R.string.invalid_ip, Toast.LENGTH_SHORT).show()
             return
         }
+        binding.manualIpInput.setText(ip)
         val item = DiscoveredReceiver(name = "Manual", host = ip)
         selected = item
         adapter.selectedHost = ip
@@ -61,6 +64,25 @@ class MainActivity : AppCompatActivity() {
         }
         adapter.notifyDataSetChanged()
         binding.selectedText.text = getString(R.string.selected_receiver, item.name, item.host)
+    }
+
+    private fun testConnection() {
+        val target = selected
+        if (target == null) {
+            Toast.makeText(this, R.string.pick_receiver_first, Toast.LENGTH_SHORT).show()
+            return
+        }
+        binding.testButton.isEnabled = false
+        binding.statusText.text = getString(R.string.testing)
+        NotifyClient.testReachable(this, target.host) { ok, message ->
+            runOnUiThread {
+                binding.testButton.isEnabled = true
+                binding.statusText.text = message
+                if (ok) {
+                    Toast.makeText(this, R.string.test_ok, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
     private fun scan() {
@@ -73,6 +95,7 @@ class MainActivity : AppCompatActivity() {
         binding.selectedText.text = getString(R.string.no_receiver_selected)
 
         NotifyClient.discover(
+            context = this,
             onFound = { item ->
                 runOnUiThread {
                     if (receivers.none { it.host == item.host }) {
@@ -132,6 +155,7 @@ class MainActivity : AppCompatActivity() {
         binding.statusText.text = getString(R.string.sending)
 
         NotifyClient.send(
+            context = this,
             host = target.host,
             title = title,
             message = message,
@@ -146,7 +170,7 @@ class MainActivity : AppCompatActivity() {
             onError = { err ->
                 runOnUiThread {
                     binding.sendButton.isEnabled = true
-                    binding.statusText.text = getString(R.string.send_failed, err)
+                    binding.statusText.text = err
                 }
             }
         )

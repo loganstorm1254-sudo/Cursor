@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Notify Receiver</string>
     <string name="brand">Notify Receiver</string>
-    <string name="subtitle">Stay on the same Wi‑Fi as the sender. Tap Start, then leave this app running in the background.</string>
+    <string name="subtitle">Stay on the same Wi‑Fi as the sender. Tap Start. Tip: turn OFF mobile data on this phone so the other device can reach you.</string>
     <string name="status_idle">Not listening</string>
     <string name="device_name_hint">Name shown to the sender</string>
     <string name="save_name">Save name</string>

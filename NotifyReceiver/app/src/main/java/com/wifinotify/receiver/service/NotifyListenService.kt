@@ -25,6 +25,7 @@ class NotifyListenService : Service() {
     private var server: NotifyServer? = null
     private var notifyId = 1000
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -32,9 +33,10 @@ class NotifyListenService : Service() {
         super.onCreate()
         createChannels()
         startAsForeground()
-        acquireMulticastLock()
+        acquireWifiLocks()
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         server = NotifyServer(
+            context = applicationContext,
             deviceNameProvider = {
                 prefs.getString(KEY_DEVICE_NAME, null)
                     ?.ifBlank { null }
@@ -66,7 +68,7 @@ class NotifyListenService : Service() {
     override fun onDestroy() {
         server?.stop()
         server = null
-        releaseMulticastLock()
+        releaseWifiLocks()
         sendBroadcast(
             Intent(ACTION_STATUS).putExtra(EXTRA_STATUS, "Stopped")
                 .setPackage(packageName)
@@ -74,10 +76,20 @@ class NotifyListenService : Service() {
         super.onDestroy()
     }
 
-    private fun acquireMulticastLock() {
+    private fun acquireWifiLocks() {
         try {
             val wifi = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
             multicastLock = wifi.createMulticastLock("wifi_notify_receiver").also {
+                it.setReferenceCounted(true)
+                it.acquire()
+            }
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                @Suppress("DEPRECATION")
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wifi.createWifiLock(mode, "wifi_notify_receiver").also {
                 it.setReferenceCounted(true)
                 it.acquire()
             }
@@ -85,12 +97,17 @@ class NotifyListenService : Service() {
         }
     }
 
-    private fun releaseMulticastLock() {
+    private fun releaseWifiLocks() {
         try {
             multicastLock?.takeIf { it.isHeld }?.release()
         } catch (_: Exception) {
         }
+        try {
+            wifiLock?.takeIf { it.isHeld }?.release()
+        } catch (_: Exception) {
+        }
         multicastLock = null
+        wifiLock = null
     }
 
     private fun startAsForeground() {

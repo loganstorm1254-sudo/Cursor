@@ -6,7 +6,7 @@
     <string name="status_idle">Ready to scan</string>
     <string name="scan">Find receivers</string>
     <string name="scanning">Scanning this Wi‑Fi…</string>
-    <string name="scan_none">No receivers found. Open Notify Receiver on the other phone and tap Start.</string>
+    <string name="scan_none">No receivers found. Turn OFF mobile data on both phones, open Notify Receiver and tap Start, then scan again. Or type the IP shown in Receiver.</string>
     <string name="scan_found">Found %1$d receiver(s)</string>
     <string name="no_receiver_selected">No receiver selected</string>
     <string name="selected_receiver">Sending to %1$s (%2$s)</string>
@@ -17,10 +17,14 @@
     <string name="sending">Sending…</string>
     <string name="sent_ok">Sent to %1$s</string>
     <string name="sent_toast">Notification sent</string>
-    <string name="send_failed">Send failed: %1$s</string>
+    <string name="send_failed">%1$s</string>
     <string name="pick_receiver_first">Scan and pick a receiver first</string>
     <string name="fill_title_message">Enter a title and message</string>
     <string name="manual_ip_hint">Or type receiver IP (shown in Receiver app)</string>
     <string name="use_manual_ip">Use this IP</string>
     <string name="invalid_ip">Enter a valid IPv4 address</string>
+    <string name="test_connection">Test connection</string>
+    <string name="testing">Testing connection…</string>
+    <string name="test_ok">Connection works</string>
+    <string name="connectivity_tip">Tip: turn OFF mobile data on both Samsung phones. If it still fails, turn on Mobile Hotspot on one phone and join it from the other — some routers block phone-to-phone Wi‑Fi.</string>
 </resources>

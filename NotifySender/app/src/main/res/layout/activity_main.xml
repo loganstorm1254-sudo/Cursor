@@ -85,6 +85,21 @@
             android:layout_height="wrap_content"
             android:text="@string/use_manual_ip" />
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/testButton"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/test_connection" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/connectivity_tip"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp" />
+
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

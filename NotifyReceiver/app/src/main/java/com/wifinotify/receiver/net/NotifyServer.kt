@@ -1,14 +1,17 @@
 package com.wifinotify.receiver.net
 
+import android.content.Context
 import com.wifinotify.receiver.Protocol
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.SocketException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 class NotifyServer(
+    private val context: Context,
     private val deviceNameProvider: () -> String,
     private val onNotify: (IncomingNotify, String) -> Unit,
     private val onStatus: (String) -> Unit
@@ -16,12 +19,15 @@ class NotifyServer(
     private val running = AtomicBoolean(false)
     private var discoverySocket: DatagramSocket? = null
     private var serverSocket: ServerSocket? = null
+    private var connectivityManager: android.net.ConnectivityManager? = null
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        connectivityManager = WifiLan.bindProcessToWifi(context)
         startDiscovery()
         startTcp()
-        onStatus("Listening on Wi‑Fi (port ${Protocol.NOTIFY_PORT})")
+        val ip = WifiLan.wifiIpv4() ?: localIpv4Addresses().firstOrNull() ?: "?"
+        onStatus("Listening on $ip (port ${Protocol.NOTIFY_PORT})")
     }
 
     fun stop() {
@@ -36,15 +42,19 @@ class NotifyServer(
         }
         discoverySocket = null
         serverSocket = null
+        WifiLan.clearProcessBind(connectivityManager)
+        connectivityManager = null
         onStatus("Stopped")
     }
 
     private fun startDiscovery() {
         thread(name = "wifi-notify-discovery", isDaemon = true) {
             try {
-                val socket = DatagramSocket(Protocol.DISCOVERY_PORT).also {
-                    it.broadcast = true
+                val socket = DatagramSocket(null).also {
                     it.reuseAddress = true
+                    it.broadcast = true
+                    it.bind(InetSocketAddress(Protocol.DISCOVERY_PORT))
+                    WifiLan.bindSocket(context, it)
                     discoverySocket = it
                 }
                 val buf = ByteArray(1024)
@@ -79,7 +89,9 @@ class NotifyServer(
     private fun startTcp() {
         thread(name = "wifi-notify-tcp", isDaemon = true) {
             try {
-                val server = ServerSocket(Protocol.NOTIFY_PORT).also { serverSocket = it }
+                val preferred = WifiLan.wifiIpv4()
+                val server = WifiLan.openServerSocket(Protocol.NOTIFY_PORT, preferred)
+                    .also { serverSocket = it }
                 while (running.get()) {
                     try {
                         val client = server.accept()

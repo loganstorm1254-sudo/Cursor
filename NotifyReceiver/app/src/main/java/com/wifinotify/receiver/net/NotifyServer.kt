@@ -3,7 +3,6 @@ package com.wifinotify.receiver.net
 import com.wifinotify.receiver.Protocol
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.SocketException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -130,12 +129,4 @@ fun localIpv4Addresses(): List<String> {
     } catch (_: Exception) {
     }
     return result
-}
-
-fun broadcastAddress(): InetAddress? {
-    return try {
-        InetAddress.getByName("255.255.255.255")
-    } catch (_: Exception) {
-        null
-    }
 }

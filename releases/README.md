@@ -8,6 +8,7 @@
 | [`Walkie.apk`](Walkie.apk) | **Walkie-talkie** — install on any number of phones, works over internet on any network |
 | [`NovaAI.apk`](NovaAI.apk) | **Nova AI** — your own AI trained from scratch + Wikipedia lookups, unlocks with your master API key |
 | [`NovaAI-Windows.zip`](NovaAI-Windows.zip) | **Nova AI for Windows** — unzip, double-click `NovaAI.exe`, chat in your browser |
+| [`TTSRobot-Windows.zip`](TTSRobot-Windows.zip) | **TTS Robot for Windows** — Discord robot voice engine; unzip, double-click `TTSRobot.exe` |
 
 ## Install on Samsung
 
@@ -40,3 +41,11 @@
 2. Double-click **`NovaAI.exe`**.
 3. Your browser opens the chat page. Unlock with `sk-nova-m00ny4xe` (or the long key in `MASTER_KEY.txt`).
 4. First run downloads the model (~11 MB); after that it works offline. Leave the console window open while you chat.
+
+### TTS Robot for Windows
+
+1. Download [`TTSRobot-Windows.zip`](TTSRobot-Windows.zip) and unzip it (keep the folder together).
+2. Double-click **`TTSRobot.exe`**.
+3. Paste your Discord bot token → **Start bot**.
+4. Invite the bot (link shows when online), join a voice channel, then `!tts hello crew`.
+5. Leave the console window open while it runs. Use the Preview button to hear robot FX without Discord.

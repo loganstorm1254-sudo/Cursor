@@ -3,6 +3,10 @@ __pycache__/
 .env
 .venv/
 venv/
+tts_selftest/
+TTSRobot/desktop/_build/
+preview_cache/
+tts_robot_config.json
 
 # Android / Gradle
 .gradle/
@@ -35,4 +39,6 @@ NovaAI/training/hf_extra.txt
 
 # Windows desktop build scratch / unpacked bundle (ship the .zip only)
 NovaAI/desktop/_build/
+TTSRobot/desktop/_build/
 releases/NovaAI-Windows/
+releases/TTSRobot-Windows/

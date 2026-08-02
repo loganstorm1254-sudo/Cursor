@@ -1,11 +1,14 @@
-"""Package the trained model into the Android app:
+"""Package the trained model into the Android app and the Discord bot:
 
   - nova_config.json  -> app/src/main/assets/nova_config.txt (plain)
   - nova_model.bin    -> app/src/main/assets/nova_model.enc  (AES-256-GCM,
                          key = SHA-256(master API key))
+  - nova_model.bin    -> ../nova_model.sc (stdlib-only scheme for bot3.py:
+                         BLAKE2b keystream + HMAC-SHA256, same master key)
   - testvector.json   -> app/src/test/resources/testvector.txt
 """
 import hashlib
+import hmac as hmac_mod
 import json
 import os
 
@@ -29,7 +32,23 @@ iv = os.urandom(12)
 ct = AESGCM(aes_key).encrypt(iv, plain, None)
 with open(os.path.join(assets, "nova_model.enc"), "wb") as f:
     f.write(iv + ct)
-print(f"encrypted model: {len(plain)} -> {len(iv) + len(ct)} bytes")
+print(f"encrypted model (app, AES-GCM): {len(plain)} -> {len(iv) + len(ct)} bytes")
+
+# --- bot3.py variant: pure-stdlib scheme (no cryptography package needed) ---
+k_enc = hashlib.sha256(b"nova-enc" + master_key.encode()).digest()
+k_mac = hashlib.sha256(b"nova-mac" + master_key.encode()).digest()
+nonce = os.urandom(16)
+blocks = []
+for i in range((len(plain) + 63) // 64):
+    blocks.append(hashlib.blake2b(nonce + i.to_bytes(8, "little"),
+                                  key=k_enc, digest_size=64).digest())
+ks = b"".join(blocks)[:len(plain)]
+ct2 = (int.from_bytes(plain, "little") ^ int.from_bytes(ks, "little")).to_bytes(
+    len(plain), "little")
+tag = hmac_mod.new(k_mac, nonce + ct2, hashlib.sha256).digest()
+with open(os.path.join(HERE, "..", "nova_model.sc"), "wb") as f:
+    f.write(nonce + ct2 + tag)
+print(f"encrypted model (bot, stdlib): {len(plain)} -> {16 + len(ct2) + 32} bytes")
 
 tv = json.load(open(os.path.join(HERE, "testvector.json")))
 res = os.path.join(APP, "src", "test", "resources")

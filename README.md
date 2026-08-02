@@ -53,13 +53,17 @@ Project: [`WalkieTalkie/`](WalkieTalkie/) · Ready APK: [`releases/Walkie.apk`](
 ## `bot3.py` — Nova on Discord (your own AI as a bot)
 
 The **same from-scratch neural network** as the Android app, running as a
-Discord bot. Needs the master API key to decrypt the model (reads
-`NovaAI/MASTER_KEY.txt` automatically, or `NOVA_MASTER_KEY` env). Unknown
-topics are answered from Wikipedia, same as the app.
+Discord bot. On startup it **asks for your master API key** — just like the
+app's lock screen, the key you input decrypts the model, and a wrong key
+keeps Nova locked. Unknown topics are answered from Wikipedia, same as the app.
+
+**Only one small download** — no numpy, no torch, the AI runs in pure Python:
 
 ```bash
-pip install discord.py numpy cryptography
-python bot3.py            # or: python bot3.py --selftest (no Discord needed)
+pip install discord.py
+python bot3.py            # asks for the key, then starts the bot
+python bot3.py --selftest # verify everything without a Discord token
+# optional for servers: export NOVA_MASTER_KEY="sk-nova-..." to skip the prompt
 ```
 
 1. Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications), enable **Message Content Intent**

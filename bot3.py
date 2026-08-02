@@ -8,12 +8,13 @@ the MASTER API KEY to decrypt and run them — no key, no AI. Unknown topics are
 answered live from Wikipedia, exactly like the app.
 
 Setup (Termux-friendly):
-  pip install discord.py numpy cryptography aiohttp
+  pip install discord.py numpy cryptography
   python bot3.py
+  → it asks for your master API key (sk-nova-…), just like the app's
+    lock screen. Wrong key = Nova stays locked.
 
-The master API key is read from (first match wins):
-  1. NOVA_MASTER_KEY environment variable
-  2. NovaAI/MASTER_KEY.txt next to this file (already in this repo)
+For servers / automation you can skip the prompt with:
+  export NOVA_MASTER_KEY="sk-nova-..."
 
 Discord setup:
   1. https://discord.com/developers/applications → New Application → Bot
@@ -35,6 +36,7 @@ Self-test without Discord:
 from __future__ import annotations
 
 import asyncio
+import getpass
 import hashlib
 import json
 import math
@@ -53,7 +55,6 @@ TOKEN = ""
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "NovaAI", "app", "src", "main", "assets")
-KEY_FILE = os.path.join(HERE, "NovaAI", "MASTER_KEY.txt")
 
 MAX_NEW_TOKENS = 68
 TEMPERATURE = 0.8
@@ -204,21 +205,41 @@ class NovaEngine:
 
 
 def load_engine() -> NovaEngine:
-    key = os.getenv("NOVA_MASTER_KEY", "").strip()
-    if not key and os.path.exists(KEY_FILE):
-        key = open(KEY_FILE).read().strip()
-    if not key:
-        raise SystemExit(
-            "Master API key not found.\n"
-            "Set NOVA_MASTER_KEY env var or keep NovaAI/MASTER_KEY.txt in place.")
+    """Unlock Nova with the master API key the user inputs.
+
+    The key you type is hashed to the AES-256 key that decrypts the model —
+    exactly like the app's lock screen. Wrong key, no AI.
+    """
     blob = open(os.path.join(ASSETS, "nova_model.enc"), "rb").read()
-    aes = AESGCM(hashlib.sha256(key.encode()).digest())
-    try:
-        weights = aes.decrypt(blob[:12], blob[12:], None)
-    except Exception:
-        raise SystemExit("Wrong master API key — the model cannot be decrypted.")
     config = open(os.path.join(ASSETS, "nova_config.txt")).read()
-    return NovaEngine(config, weights)
+
+    from_env = os.getenv("NOVA_MASTER_KEY", "").strip()
+    attempts = 0
+    while True:
+        if from_env:
+            key = from_env
+        else:
+            try:
+                key = getpass.getpass(
+                    "🔑 Enter your master API key (sk-nova-…, input is hidden): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                raise SystemExit("\nNo key entered — Nova stays locked.")
+            if not key:
+                continue
+        aes = AESGCM(hashlib.sha256(key.encode()).digest())
+        try:
+            weights = aes.decrypt(blob[:12], blob[12:], None)
+            print("✅ Master API key accepted — Nova unlocked.")
+            return NovaEngine(config, weights)
+        except Exception:
+            if from_env:
+                raise SystemExit(
+                    "Wrong master API key in NOVA_MASTER_KEY — "
+                    "the model cannot be decrypted.")
+            attempts += 1
+            print("❌ Wrong master API key — the model cannot be decrypted.")
+            if attempts >= 3:
+                raise SystemExit("Too many wrong attempts — Nova stays locked.")
 
 
 # ------------------------------------------------------------- wikipedia ----

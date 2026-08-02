@@ -105,3 +105,29 @@ python bot2.py
 Commands: `!html <description>` / `/html` / `@Bot <description>`
 
 **Continue editing:** reply to the bot message that has the `.html` file and describe your changes (e.g. `make it darker and add a pricing section`). You can also use `!html …` as a reply to that file message.
+
+## `vcbot.py` — permanent voice-channel stay bot (owner-only)
+
+Stays in a Discord voice channel **permanently**. Auto-rejoins on disconnect, move, or restart. **Only your Discord user id** (`1257060226029584459`) can run commands — everyone else is ignored.
+
+```bash
+pip install "discord.py[voice]"
+python vcbot.py
+```
+
+1. Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications)
+2. Enable **Message Content Intent**
+3. Put the token in `TOKEN = "..."` inside the file (or `export DISCORD_TOKEN=...`)
+4. Invite with scope `bot` and permissions: **Connect**, **Speak**, **View Channels**, **Send Messages**
+5. Join the voice channel you want, then: `!join`
+
+The channel id is saved in `vcbot_state.json` next to the script, so the bot rejoins that VC every time it starts. Keep the process running (Termux, PC, or a VPS) for 24/7 stay.
+
+| Command | What it does |
+|---------|----------------|
+| `!join` | Join your current VC and lock permanent stay |
+| `!join <channel_id>` | Join / lock a specific voice channel |
+| `!leave` | Leave and pause auto-rejoin |
+| `!stay` | Re-enable permanent stay on the saved channel |
+| `!vcstatus` | Show connection status |
+| `!vchelp` | Help |

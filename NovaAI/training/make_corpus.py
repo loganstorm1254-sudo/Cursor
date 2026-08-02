@@ -4,8 +4,10 @@ Output: corpus.txt — one conversation per line, already tokenized
 (lowercase words / punctuation separated by single spaces) using the
 special tokens <user> <bot> <end>.
 """
+import os
 import random
 import re
+from collections import Counter
 
 random.seed(1234)
 
@@ -1400,6 +1402,39 @@ def knowledge_drill_lines():
     return lines
 
 
+def merge_hf_and_cap(lines: list[str], vocab_cap: int = 4500) -> list[str]:
+    """Append Hugging Face extras (if present) and keep only the most common
+    words so the embedding table stays small enough for on-device inference."""
+    hf_path = "hf_extra.txt"
+    if os.path.exists(hf_path):
+        extra = [ln.strip() for ln in open(hf_path) if ln.strip()]
+        print(f"merging {len(extra)} Hugging Face lines from {hf_path}")
+        lines = lines + extra
+    else:
+        print("no hf_extra.txt — run fetch_hf.py to add Hugging Face data")
+
+    special = {"<user>", "<bot>", "<end>", "<unk>"}
+    freq = Counter(w for ln in lines for w in ln.split() if w not in special)
+    keep = special | {w for w, _ in freq.most_common(vocab_cap - len(special))}
+
+    capped = []
+    dropped = 0
+    for ln in lines:
+        words = [(w if w in keep else "<unk>") for w in ln.split()]
+        # drop lines that became mostly unknown — they teach nothing useful
+        content = [w for w in words if w not in special]
+        if not content:
+            dropped += 1
+            continue
+        unk_ratio = sum(1 for w in content if w == "<unk>") / len(content)
+        if unk_ratio > 0.35:
+            dropped += 1
+            continue
+        capped.append(" ".join(words))
+    print(f"vocab_cap={vocab_cap} kept_lines={len(capped)} dropped={dropped}")
+    return capped
+
+
 def main():
     lines = math_drill_lines() + knowledge_drill_lines()
     for _ in range(N_CONVERSATIONS):
@@ -1412,6 +1447,7 @@ def main():
                 q, a = pick_turn()
             parts.append(qa_line(q, a))
         lines.append(" ".join(parts))
+    lines = merge_hf_and_cap(lines)
     random.shuffle(lines)
     with open(OUT, "w") as f:
         f.write("\n".join(lines) + "\n")

@@ -31,3 +31,4 @@ NovaAI/training/nova_config.json
 NovaAI/training/testvector.json
 NovaAI/training/*.log
 NovaAI/training/train_log.txt
+NovaAI/training/hf_extra.txt

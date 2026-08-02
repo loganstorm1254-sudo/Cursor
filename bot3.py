@@ -1,11 +1,11 @@
 """
 Nova Discord bot — your own from-scratch AI on Discord. One small file.
 Only discord.py is needed (no numpy, no torch). On first run it downloads the
-encrypted model (~8 MB) straight from this GitHub repo and caches it next to
+encrypted model (~11 MB) straight from this GitHub repo and caches it next to
 this script — after that it works offline.
 
 This is the SAME neural network that lives in the Android app
-(releases/NovaAI.apk): a 5.33M-parameter GPT transformer trained from zero in
+(releases/NovaAI.apk): a 5.9M-parameter GPT transformer trained from zero in
 this repo (NovaAI/training/). The weights are encrypted; the bot needs the
 MASTER API KEY to decrypt and run them — no key, no AI. Unknown topics are
 answered live from Wikipedia, exactly like the app.
@@ -67,7 +67,7 @@ MODEL_NAME = "nova_model.sc"
 # Exact size of the current model file; kept in sync automatically by
 # NovaAI/training/encrypt_assets.py. A cached copy with a different size is
 # from an older training run and gets re-downloaded.
-MODEL_SIZE = 9843361
+MODEL_SIZE = 10943581
 WRAP_SIZE = 80
 
 MAX_NEW_TOKENS = 60
@@ -149,7 +149,7 @@ class NovaEngine:
         parts: list[str] = []
         for i in ids:
             tok = self.vocab[i]
-            if tok in ("<end>", "<user>", "<bot>"):
+            if tok in ("<end>", "<user>", "<bot>", "<unk>"):
                 continue
             if parts and ((len(tok) == 1 and tok in ".,!?;:'") or parts[-1].endswith("'")):
                 parts[-1] += tok
@@ -223,7 +223,10 @@ class NovaEngine:
         return [sum(map(mul, row, hf)) for row in self.tok_emb]
 
     def sample(self, logits: list[float], rng: random.Random) -> int:
-        top = nlargest(TOP_K, range(len(logits)), key=logits.__getitem__)
+        # never emit special tokens as content
+        banned = {self.unk_id, self.stoi["<user>"], self.stoi["<bot>"]}
+        scored = [(logits[i], i) for i in range(len(logits)) if i not in banned]
+        top = [i for _, i in nlargest(TOP_K, scored)]
         mx = logits[top[0]]
         weights = [math.exp((logits[i] - mx) / TEMPERATURE) for i in top]
         return rng.choices(top, weights=weights)[0]
@@ -381,7 +384,7 @@ def fetch_model() -> bytes:
     for attempt in range(1, 5):
         try:
             print(f"⬇️  Downloading Nova's brain from GitHub "
-                  f"(~8 MB, attempt {attempt}/4)…")
+                  f"(~11 MB, attempt {attempt}/4)…")
             req = urllib.request.Request(
                 MODEL_URL, headers={"User-Agent": WIKI_UA})
             with urllib.request.urlopen(req, timeout=60) as r:

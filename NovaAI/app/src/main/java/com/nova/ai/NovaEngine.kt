@@ -94,7 +94,7 @@ class NovaEngine(configText: String, weightBytes: ByteArray) {
         val sb = StringBuilder()
         for (id in ids) {
             val t = vocab[id]
-            if (t == "<end>" || t == "<user>" || t == "<bot>") continue
+            if (t == "<end>" || t == "<user>" || t == "<bot>" || t == "<unk>") continue
             if (sb.isNotEmpty() && t.length == 1 && t[0] in ".,!?;:'") {
                 sb.append(t)
             } else if (sb.isNotEmpty() && sb.last() == '\'') {
@@ -241,7 +241,12 @@ class NovaEngine(configText: String, weightBytes: ByteArray) {
 
     fun sample(logits: FloatArray, temperature: Float, topK: Int, rng: Random): Int {
         val scaled = FloatArray(logits.size) { logits[it] / temperature }
-        val idx = scaled.indices.sortedByDescending { scaled[it] }.take(topK)
+        // never emit special tokens as content
+        val banned = setOf(unkId, stoi.getValue("<user>"), stoi.getValue("<bot>"))
+        val idx = scaled.indices
+            .filter { it !in banned }
+            .sortedByDescending { scaled[it] }
+            .take(topK)
         var maxV = Float.NEGATIVE_INFINITY
         for (i in idx) if (scaled[i] > maxV) maxV = scaled[i]
         var sum = 0.0

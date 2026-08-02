@@ -2,7 +2,7 @@
 
 ## Nova — your own AI (Android, offline, trained from scratch)
 
-A **5.33M-parameter GPT transformer trained from zero** just for you. The
+A **5.9M-parameter GPT transformer trained from zero** just for you. The
 neural network lives inside the APK, AES-256 encrypted, and only unlocks with
 your **master API key** (see [`NovaAI/MASTER_KEY.txt`](NovaAI/MASTER_KEY.txt) —
 short key `sk-nova-m00ny4xe` also works).

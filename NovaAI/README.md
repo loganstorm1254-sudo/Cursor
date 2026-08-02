@@ -44,9 +44,9 @@ checks Wikipedia, and she honestly tells you when she cannot help.
 | | |
 |---|---|
 | Architecture | GPT-style decoder-only transformer (pre-norm, GELU, weight-tied head) |
-| Size | 6 layers · 8 heads · 256 dim · 128 context · **5.33M parameters** |
-| Tokenizer | word-level, ~2,190-token vocabulary |
-| Training data | 161k+ synthetic conversations (~4.6M tokens): chat, jokes, riddles, facts, stories, world + US capitals, elements, moons, famous people, holidays, animals, spelling, counting, translations, synonyms/opposites, word problems, science. Math is answered by a deterministic calculator (plus Wikipedia for unknown topics). |
+| Size | 6 layers · 8 heads · 256 dim · 128 context · **~5.9M parameters** |
+| Tokenizer | word-level, 4,500-token vocabulary (capped) |
+| Training data | Synthetic drills + Hugging Face: TinyStories, Dolly-15k, Alpaca, SciQ, BoolQ, WikiQA (~230k conversations, ~7.7M tokens). Math uses a deterministic calculator; unknown topics fall back to Wikipedia. |
 | Training | 6,000 steps AdamW, batch 32×128, cosine LR schedule — from random init |
 | Inference | pure Kotlin (`NovaEngine.kt`), KV-cached, no libraries, runs on any phone |
 | Wikipedia | unknown "who is / what is / search …" questions are answered from the live Wikipedia REST API (`WikiClient.kt` / `WikiRouter.kt`) |
@@ -64,12 +64,17 @@ checks Wikipedia, and she honestly tells you when she cannot help.
 
 ```bash
 cd NovaAI/training
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-python3 make_corpus.py       # generate the dataset
-python3 train.py             # ~11 min on 4 CPU cores
-python3 encrypt_assets.py    # encrypt weights into the app with MASTER_KEY.txt
+pip install torch datasets --index-url https://download.pytorch.org/whl/cpu
+# (datasets from PyPI: pip install datasets)
+python3 fetch_hf.py          # pull TinyStories, Dolly, Alpaca, SciQ, BoolQ, WikiQA
+python3 make_corpus.py       # synthetic drills + HF merge (vocab capped at 4500)
+MAX_STEPS=9000 python3 train.py
+python3 encrypt_assets.py    # multi-key encrypt into the app + bot3 model file
 cd .. && ./gradlew assembleDebug
 ```
+
+The model is encrypted under a random data key; each master API key in
+`MASTER_KEY.txt` only wraps that key, so any listed key unlocks the same brain.
 
 ## Nova on Discord
 

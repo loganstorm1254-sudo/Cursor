@@ -46,5 +46,6 @@
 
 1. Download [`Reel-Windows.zip`](Reel-Windows.zip) and unzip it.
 2. Put your `.mkv` / `.mp4` files in `D:\Movies`.
-3. Double-click **`Reel.bat`** (needs Python on PATH).
-4. On your phone (same Wi‑Fi), open the **Phones/TV** URL printed in the window.
+3. **Right‑click `Reel.bat` → Run as administrator** once (firewall so phones can connect). Needs Python on PATH.
+4. On your phone (same Wi‑Fi): install **VLC**, open a **PHONE** URL from the window (not `127.0.0.1`).
+5. Tap a movie → **Open in VLC** for sound.

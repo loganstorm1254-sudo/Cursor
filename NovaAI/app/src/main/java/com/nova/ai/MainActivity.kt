@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity() {
         msgInput = findViewById(R.id.msgInput)
         sendBtn = findViewById(R.id.sendBtn)
 
+        findViewById<TextView>(R.id.versionLabel).text = "v" + BuildConfig.VERSION_NAME
         unlockBtn.setOnClickListener { tryUnlock(keyInput.text.toString()) }
         sendBtn.setOnClickListener { onSend() }
         findViewById<ImageButton>(R.id.lockBtn).setOnClickListener { confirmLock() }

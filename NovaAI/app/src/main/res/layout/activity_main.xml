@@ -86,6 +86,14 @@
             android:text="@string/lock_note"
             android:textColor="@color/text_dim"
             android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/versionLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textColor="@color/text_dim"
+            android:textSize="11sp" />
     </LinearLayout>
 
     <!-- ===================== CHAT SCREEN ===================== -->

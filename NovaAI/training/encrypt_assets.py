@@ -3,17 +3,15 @@
   - nova_config.json  -> app/src/main/assets/nova_config.txt (plain)
   - nova_model.bin    -> app/src/main/assets/nova_model.enc  (AES-256-GCM,
                          key = SHA-256(master API key))
-  - nova_model.bin    -> embedded into ../../bot3.py as MODEL_B85
-                         (float16 + zlib + BLAKE2b-keystream/HMAC scheme,
-                         same master key — makes bot3.py a single file)
+  - nova_model.bin    -> ../nova_model.sc for bot3.py (config + float16
+                         weights, zlib, BLAKE2b-keystream/HMAC scheme, same
+                         master key; bot3.py auto-downloads it from GitHub)
   - testvector.json   -> app/src/test/resources/testvector.txt
 """
-import base64
 import hashlib
 import hmac as hmac_mod
 import json
 import os
-import re
 import struct
 import zlib
 
@@ -39,9 +37,7 @@ with open(os.path.join(assets, "nova_model.enc"), "wb") as f:
     f.write(iv + ct)
 print(f"encrypted model (app, AES-GCM): {len(plain)} -> {len(iv) + len(ct)} bytes")
 
-# --- bot3.py: embed the model into the single Python file --------------------
-# payload = config + float16 weights, zlib-compressed, then the stdlib
-# encryption scheme (BLAKE2b keystream + HMAC-SHA256), then base85 text.
+# --- bot3.py model file: config + fp16 weights, compressed, encrypted --------
 config_txt = open(os.path.join(assets, "nova_config.txt"), "rb").read()
 
 n_floats = len(plain) // 4
@@ -66,16 +62,11 @@ ks = b"".join(blocks)[:len(compressed)]
 ct2 = (int.from_bytes(compressed, "little") ^ int.from_bytes(ks, "little")
        ).to_bytes(len(compressed), "little")
 tag = hmac_mod.new(k_mac, nonce + ct2, hashlib.sha256).digest()
-b85 = base64.b85encode(nonce + ct2 + tag).decode()
-
-bot_path = os.path.join(HERE, "..", "..", "bot3.py")
-src = open(bot_path).read()
-new_src, n_subs = re.subn(r'(?s)(MODEL_B85 = ")[^"]*(")',
-                          lambda m: m.group(1) + b85 + m.group(2), src)
-assert n_subs == 1, "MODEL_B85 marker not found in bot3.py"
-open(bot_path, "w").write(new_src)
-print(f"embedded model into bot3.py: {len(plain)} bytes fp32 -> "
-      f"{len(b85)} chars base85 (fp16+zlib+encrypted)")
+sc_path = os.path.join(HERE, "..", "nova_model.sc")
+with open(sc_path, "wb") as f:
+    f.write(b"NOVA1" + nonce + ct2 + tag)
+print(f"bot model NovaAI/nova_model.sc: {len(plain)} bytes fp32 -> "
+      f"{5 + 16 + len(ct2) + 32} bytes (fp16+zlib+encrypted)")
 
 tv = json.load(open(os.path.join(HERE, "testvector.json")))
 res = os.path.join(APP, "src", "test", "resources")

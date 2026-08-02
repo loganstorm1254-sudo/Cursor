@@ -57,7 +57,9 @@ Discord bot. On startup it **asks for your master API key** — just like the
 app's lock screen, the key you input decrypts the model, and a wrong key
 keeps Nova locked. Unknown topics are answered from Wikipedia, same as the app.
 
-**Only one small download** — no numpy, no torch, the AI runs in pure Python:
+**Download just this one small file** — on first run it pulls the encrypted
+model (~6 MB, `NovaAI/nova_model.sc`) straight from this repo and caches it
+next to the script, then works offline. No repo clone, no numpy, no torch:
 
 ```bash
 pip install discord.py

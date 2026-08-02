@@ -34,6 +34,17 @@ Two apps that send phone notifications over **Bluetooth** — no Wi‑Fi, data, 
 
 Ready APKs: [`releases/`](releases/) · Protocol: [`shared/PROTOCOL.md`](shared/PROTOCOL.md)
 
+## Reel — Wi‑Fi movie stream (PC)
+
+Stream **MKV** and **MP4** files from **`D:\Movies`** to any phone on the same Wi‑Fi. Stdlib Python only — run on the PC with the movies, open the printed URL on your phone.
+
+Project: [`MovieStream/`](MovieStream/) · Docs: [`MovieStream/README.md`](MovieStream/README.md)
+
+```bash
+python MovieStream/stream.py
+# phones: http://<your-pc-lan-ip>:8080/
+```
+
 ## Walkie — walkie-talkie app (Android, internet)
 
 One push-to-talk app that works like a real walkie-talkie **over any internet connection** — mobile data, different Wi-Fi networks, different cities. Install the same APK on **any number of phones**; everyone who types the same **PIN** is on the same channel. The PIN also AES-256-encrypts the audio.

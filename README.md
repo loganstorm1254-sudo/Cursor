@@ -79,6 +79,25 @@ python bot3.py --selftest # verify everything without a Discord token
 2. Put the token in `TOKEN = "..."` inside the file (or `export DISCORD_TOKEN=...`)
 3. Invite it, then: `@Nova <message>`, `!nova <message>`, or just DM it. `!clear` forgets the conversation, `!novahelp` shows help.
 
+## `bot_tts.py` — Discord TTS robot voice (one file)
+
+Joins a voice channel and speaks text with a **robot voice**. Free Edge TTS
+(no API key) + ffmpeg FX presets (`robot`, `android`, `dalek`, `chip`, `clean`).
+
+```bash
+pip install "discord.py[voice]" edge-tts PyNaCl
+# need ffmpeg on PATH (Termux: pkg install ffmpeg)
+python bot_tts.py            # start bot
+python bot_tts.py --selftest # write sample WAVs without a Discord token
+```
+
+1. Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications), enable **Message Content Intent**
+2. Put the token in `TOKEN = "..."` inside the file (or `export DISCORD_TOKEN=...`)
+3. Invite with **Connect** + **Speak** (+ Send Messages)
+4. Join a VC, then: `!tts hello crew`, `!voice dalek`, `!auto on`, `@Bot say hi`
+
+Commands: `!join` / `!leave` · `!tts` / `!say` · `!voice` · `!speaker` · `!speed` · `!auto` · `!stop` · `!ttshelp`
+
 ## `bot.py` — general Discord AI bot
 Chat, image recognition, image generation (free AI via g4f).
 

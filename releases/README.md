@@ -39,4 +39,4 @@
 1. Download [`NovaAI-Windows.zip`](NovaAI-Windows.zip) and unzip it (keep the folder together).
 2. Double-click **`NovaAI.exe`**.
 3. Your browser opens the chat page. Unlock with `sk-nova-m00ny4xe` (or the long key in `MASTER_KEY.txt`).
-4. First run downloads the model (~11 MB); after that it works offline. Leave the console window open while you chat.
+4. The model is bundled in the zip (no download). Leave the console window open while you chat.

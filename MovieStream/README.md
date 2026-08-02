@@ -6,15 +6,10 @@ Default library path: **`D:\Movies`**.
 
 ## Quick start (Windows)
 
-1. Put your `.mkv` / `.mp4` files in `D:\Movies` (subfolders are fine).
-2. On that PC:
-
-```bash
-python MovieStream/stream.py
-```
-
-3. Open the printed URL on your phone (same Wi‑Fi), e.g. `http://192.168.1.23:8080/`
-4. Tap a title to play. Keep the Python window open while watching.
+1. Download [`releases/Reel-Windows.zip`](../releases/Reel-Windows.zip) and unzip.
+2. Put your `.mkv` / `.mp4` files in `D:\Movies`.
+3. Double-click **`Reel.bat`**.
+4. On your phone (same Wi‑Fi), open the **Phones/TV** URL printed in the window.
 
 ### Options
 

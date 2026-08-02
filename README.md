@@ -40,10 +40,7 @@ Stream **MKV** and **MP4** files from **`D:\Movies`** to any phone on the same W
 
 Project: [`MovieStream/`](MovieStream/) · Docs: [`MovieStream/README.md`](MovieStream/README.md)
 
-```bash
-python MovieStream/stream.py
-# phones: http://<your-pc-lan-ip>:8080/
-```
+Download [`releases/Reel-Windows.zip`](releases/Reel-Windows.zip) → unzip → double-click **`Reel.bat`**. Phones open the printed LAN URL (same Wi‑Fi).
 
 ## Walkie — walkie-talkie app (Android, internet)
 

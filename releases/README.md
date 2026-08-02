@@ -8,6 +8,7 @@
 | [`Walkie.apk`](Walkie.apk) | **Walkie-talkie** — install on any number of phones, works over internet on any network |
 | [`NovaAI.apk`](NovaAI.apk) | **Nova AI** — your own AI trained from scratch + Wikipedia lookups, unlocks with your master API key |
 | [`NovaAI-Windows.zip`](NovaAI-Windows.zip) | **Nova AI for Windows** — unzip, double-click `NovaAI.exe`, chat in your browser |
+| [`Reel-Windows.zip`](Reel-Windows.zip) | **Reel** — Wi‑Fi movie stream from `D:\Movies` (MKV/MP4). Unzip, double-click `Reel.bat` |
 
 ## Install on Samsung
 
@@ -40,3 +41,10 @@
 2. Double-click **`NovaAI.exe`**.
 3. Your browser opens the chat page. Unlock with `sk-nova-m00ny4xe` (or the long key in `MASTER_KEY.txt`).
 4. First run downloads the model (~11 MB); after that it works offline. Leave the console window open while you chat.
+
+### Reel (Wi‑Fi movies from D:\Movies)
+
+1. Download [`Reel-Windows.zip`](Reel-Windows.zip) and unzip it.
+2. Put your `.mkv` / `.mp4` files in `D:\Movies`.
+3. Double-click **`Reel.bat`** (needs Python on PATH).
+4. On your phone (same Wi‑Fi), open the **Phones/TV** URL printed in the window.

@@ -75,31 +75,57 @@ def greedy(prompt, max_new=40):
     return " ".join(vocab[i] for i in ids)
 
 
-ok = tot = 0
-wrong = []
-for a in range(0, 16):
-    for b in range(0, 16):
-        out = greedy(f"<user> what is {a} plus {b} <bot>")
+def check(problems, label):
+    ok = tot = 0
+    wrong = []
+    for q, r in problems:
+        out = greedy(f"<user> {q} <bot>")
         ans = out.split("<bot>")[1]
-        r = a + b
-        good = (WORDNUM.get(r, str(r)) in ans.split())
+        good = (WORDNUM.get(r, str(r)) in ans.split()
+                if isinstance(r, int) else str(r) in ans)
         ok += good
         tot += 1
         if not good:
-            wrong.append(f"{a}+{b} -> {ans.strip()}")
-for w in wrong[:8]:
-    print("WRONG:", w)
-print(f"addition accuracy: {ok}/{tot} = {ok/tot:.0%}")
+            wrong.append(f"{q} -> {ans.strip()}")
+    for w in wrong[:6]:
+        print(f"WRONG {label}:", w)
+    print(f"{label} accuracy: {ok}/{tot} = {ok/tot:.0%}")
+
+
+check([(f"what is {a} plus {b}", a + b)
+       for a in range(0, 21) for b in range(0, 21, 2)], "addition")
+check([(f"what is {a} minus {b}", a - b)
+       for a in range(0, 26, 2) for b in range(0, a + 1, 3)], "subtraction")
+check([(f"what is {a} times {b}", a * b)
+       for a in range(1, 13) for b in range(1, 13)], "multiplication")
+check([(f"what is {b * q} divided by {b}", q)
+       for b in range(1, 13) for q in range(0, 13, 2)], "division")
 
 caps = {"france": "paris", "japan": "tokyo", "italy": "rome", "spain": "madrid",
         "germany": "berlin", "england": "london", "russia": "moscow",
         "china": "beijing", "egypt": "cairo", "india": "delhi",
-        "brazil": "brasilia", "canada": "ottawa", "australia": "canberra"}
-ok = 0
-for c, cap in caps.items():
-    out = greedy(f"<user> what is the capital of {c} <bot>")
-    good = cap in out.split("<bot>")[1]
-    ok += good
-    if not good:
-        print("WRONG CAP:", c, "->", out.split("<bot>")[1].strip())
-print(f"capitals accuracy: {ok}/{len(caps)}")
+        "brazil": "brasilia", "canada": "ottawa", "australia": "canberra",
+        "greece": "athens", "poland": "warsaw", "sweden": "stockholm",
+        "turkey": "ankara", "south korea": "seoul", "thailand": "bangkok",
+        "argentina": "buenos aires", "kenya": "nairobi", "ukraine": "kyiv",
+        "norway": "oslo", "portugal": "lisbon", "iceland": "reykjavik"}
+check([(f"what is the capital of {c}", cap) for c, cap in caps.items()],
+      "capitals")
+
+spell = ["cat", "friend", "school", "because", "february", "elephant",
+         "butterfly", "chocolate", "beautiful", "wednesday"]
+check([(f"how do you spell {w}", " ".join(w)) for w in spell], "spelling")
+
+states = {"texas": "austin", "california": "sacramento", "florida": "tallahassee",
+          "new york": "albany", "ohio": "columbus", "georgia": "atlanta",
+          "washington state": "olympia", "arizona": "phoenix",
+          "colorado": "denver", "michigan": "lansing", "nevada": "carson city",
+          "hawaii": "honolulu"}
+check([(f"what is the capital of {s}", cap) for s, cap in states.items()],
+      "state capitals")
+
+elements = {"gold": "au", "oxygen": "o", "iron": "fe", "hydrogen": "h",
+            "sodium": "na", "silver": "ag", "carbon": "c", "helium": "he",
+            "copper": "cu", "lead": "pb"}
+check([(f"what is the chemical symbol for {e}", s)
+       for e, s in elements.items()], "element symbols")

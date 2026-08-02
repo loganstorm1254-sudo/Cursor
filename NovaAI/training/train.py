@@ -7,6 +7,7 @@ Reads corpus.txt, trains, then exports:
 """
 import json
 import math
+import os
 import struct
 import time
 
@@ -18,12 +19,12 @@ torch.manual_seed(1234)
 torch.set_num_threads(4)
 
 # --- hyperparameters ---
-N_LAYER = 4
+N_LAYER = 5
 N_HEAD = 8
 N_EMBD = 256
 BLOCK = 128
 BATCH = 32
-MAX_STEPS = 6000
+MAX_STEPS = int(os.getenv("MAX_STEPS", "6000"))
 WARMUP = 100
 LR = 3e-4
 DEVICE = "cpu"

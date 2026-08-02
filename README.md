@@ -2,7 +2,7 @@
 
 ## Nova — your own AI (Android, offline, trained from scratch)
 
-A **3.46M-parameter GPT transformer trained from zero** just for you. The
+A **4.55M-parameter GPT transformer trained from zero** just for you. The
 neural network lives inside the APK, AES-256 encrypted, and only unlocks with
 your **master API key** (see [`NovaAI/MASTER_KEY.txt`](NovaAI/MASTER_KEY.txt)).
 Anything beyond her training ("what is a black hole?") is answered live from

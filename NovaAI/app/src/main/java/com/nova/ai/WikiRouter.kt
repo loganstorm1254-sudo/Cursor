@@ -24,10 +24,18 @@ object WikiRouter {
     /** Words marking multi-word subjects Nova handles locally
      *  (trained question shapes and multi-word definitions). */
     private val LOCAL_HINTS = setOf(
-        "capital", "opposite", "plus", "minus", "times", "favorite", "favourite",
-        "weather", "time", "news", "name", "your", "you", "neural", "machine",
-        "artificial", "api", "nova", "seasons", "days", "months", "planets",
-        "colors", "colours", "rainbow", "week", "year")
+        "capital", "opposite", "plus", "minus", "times", "divided", "favorite",
+        "favourite", "weather", "time", "news", "name", "your", "you", "neural",
+        "machine", "artificial", "api", "nova", "seasons", "days", "months",
+        "planets", "colors", "colours", "rainbow", "week", "year",
+        // trained question shapes: superlatives, word games, translations…
+        "largest", "smallest", "biggest", "fastest", "slowest", "tallest",
+        "hottest", "closest", "nearest", "longest", "strongest", "king",
+        "word", "another", "synonym", "baby", "called", "speed", "made",
+        "senses", "shooting", "planet", "double", "half", "twice", "squared",
+        "spanish", "french", "german", "italian", "japanese", "oceans",
+        "continents", "vowels", "chemical", "symbol", "element", "riddle",
+        "moons", "letter")
 
     fun subjectFor(message: String, knowsWord: (String) -> Boolean): String? {
         val t = message.trim().lowercase(Locale.US).trimEnd('?', '!', '.', ' ')

@@ -10,7 +10,7 @@
     <string name="err_load">Could not load the model: %1$s</string>
     <string name="lock_note">The neural network inside this app is AES-256 encrypted.\nThe master API key is the only way to decrypt and run it.</string>
     <string name="chat_title">✦ Nova</string>
-    <string name="welcome">Hello! I am Nova, your own personal AI, trained from scratch just for you. Ask me for a joke, a fact, a story, some simple math — or ask about anything (\"what is a black hole?\") and I will look it up on Wikipedia!</string>
+    <string name="welcome">Hello! I am Nova, your own personal AI, trained from scratch just for you. Ask me for a joke, a fact, a story, math, spelling, world capitals, animal facts, little translations — or ask about anything (\"what is a black hole?\") and I will look it up on Wikipedia!</string>
     <string name="wiki_checking">Checking Wikipedia…</string>
     <string name="wiki_answer">📖 %1$s\n\n%2$s\n\n— from Wikipedia</string>
     <string name="msg_hint">Message Nova…</string>

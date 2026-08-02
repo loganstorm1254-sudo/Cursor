@@ -1,11 +1,11 @@
 """
 Nova Discord bot — your own from-scratch AI on Discord. One small file.
 Only discord.py is needed (no numpy, no torch). On first run it downloads the
-encrypted model (~7 MB) straight from this GitHub repo and caches it next to
+encrypted model (~8 MB) straight from this GitHub repo and caches it next to
 this script — after that it works offline.
 
 This is the SAME neural network that lives in the Android app
-(releases/NovaAI.apk): a 3.46M-parameter GPT transformer trained from zero in
+(releases/NovaAI.apk): a 4.55M-parameter GPT transformer trained from zero in
 this repo (NovaAI/training/). The weights are encrypted; the bot needs the
 MASTER API KEY to decrypt and run them — no key, no AI. Unknown topics are
 answered live from Wikipedia, exactly like the app.
@@ -324,7 +324,7 @@ def fetch_model() -> bytes:
     for attempt in range(1, 5):
         try:
             print(f"⬇️  Downloading Nova's brain from GitHub "
-                  f"(~7 MB, attempt {attempt}/4)…")
+                  f"(~8 MB, attempt {attempt}/4)…")
             req = urllib.request.Request(
                 MODEL_URL, headers={"User-Agent": WIKI_UA})
             with urllib.request.urlopen(req, timeout=60) as r:
@@ -417,10 +417,18 @@ WIKI_QUESTION = re.compile(
 # Words marking multi-word subjects Nova handles locally
 # (trained question shapes and multi-word definitions).
 LOCAL_HINTS = {
-    "capital", "opposite", "plus", "minus", "times", "favorite", "favourite",
-    "weather", "time", "news", "name", "your", "you", "neural", "machine",
-    "artificial", "api", "nova", "seasons", "days", "months", "planets",
-    "colors", "colours", "rainbow", "week", "year"}
+    "capital", "opposite", "plus", "minus", "times", "divided", "favorite",
+    "favourite", "weather", "time", "news", "name", "your", "you", "neural",
+    "machine", "artificial", "api", "nova", "seasons", "days", "months",
+    "planets", "colors", "colours", "rainbow", "week", "year",
+    # trained question shapes: superlatives, word games, translations…
+    "largest", "smallest", "biggest", "fastest", "slowest", "tallest",
+    "hottest", "closest", "nearest", "longest", "strongest", "king",
+    "word", "another", "synonym", "baby", "called", "speed", "made",
+    "senses", "shooting", "planet", "double", "half", "twice", "squared",
+    "spanish", "french", "german", "italian", "japanese", "oceans",
+    "continents", "vowels", "chemical", "symbol", "element", "riddle",
+    "moons", "letter"}
 
 
 def _clean_subject(s: str) -> str:
@@ -501,7 +509,8 @@ def run_bot(engine: NovaEngine) -> None:
         "• DM me — no prefix needed\n"
         "• `!clear` — forget this channel's conversation\n"
         "• Ask about anything (`what is a black hole?`) and I check Wikipedia\n"
-        "• Try: `tell me a joke`, `name 3 colors`, `what is 7 plus 5`, `tell me a story`"
+        "• Try: `tell me a joke`, `what is the capital of japan`, `how do you spell february`,\n"
+        "  `what is 42 divided by 6`, `how do you say hello in japanese`, `what is a baby kangaroo called`"
     )
 
     async def reply_to(message, text: str) -> str:

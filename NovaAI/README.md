@@ -67,6 +67,12 @@ python3 encrypt_assets.py    # encrypt weights into the app with MASTER_KEY.txt
 cd .. && ./gradlew assembleDebug
 ```
 
+## Nova on Discord
+
+The same model also runs as a Discord bot: [`../bot3.py`](../bot3.py). It
+decrypts the same encrypted weights with the master API key and has the same
+Wikipedia fallback. `python bot3.py --selftest` verifies it without Discord.
+
 ## Tests
 
 `./gradlew test` runs the checks against the real encrypted asset:

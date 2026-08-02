@@ -10,7 +10,7 @@ class WikiRouterTest {
     private val known = setOf(
         "what", "is", "the", "a", "an", "who", "gravity", "sun", "capital",
         "of", "france", "tell", "me", "joke", "about", "3", "plus", "colors",
-        "name", "define", "love")
+        "name", "define", "love", "black", "hole", "neural", "network")
 
     private fun route(msg: String) = WikiRouter.subjectFor(msg) { it in known }
 
@@ -26,8 +26,14 @@ class WikiRouterTest {
     fun unknownSubjectsGoToWiki() {
         assertEquals("quantum physics", route("what is quantum physics?"))
         assertEquals("albert einstein", route("who is albert einstein"))
-        assertEquals("black hole", route("what is a black hole?"))
         assertEquals("photosynthesis", route("tell me about photosynthesis"))
+    }
+
+    @Test
+    fun novelMultiWordSubjectsGoToWikiEvenWhenWordsAreKnown() {
+        // "black" and "hole" are both in the vocabulary, but the concept
+        // "black hole" was never trained — must go to Wikipedia
+        assertEquals("black hole", route("what is a black hole?"))
     }
 
     @Test
@@ -35,6 +41,8 @@ class WikiRouterTest {
         assertNull(route("what is gravity"))
         assertNull(route("what is the capital of france"))
         assertNull(route("define love"))
+        // multi-word but a trained definition (hint word "neural")
+        assertNull(route("what is a neural network"))
     }
 
     @Test

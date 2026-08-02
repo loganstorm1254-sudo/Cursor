@@ -63,10 +63,21 @@ ct2 = (int.from_bytes(compressed, "little") ^ int.from_bytes(ks, "little")
        ).to_bytes(len(compressed), "little")
 tag = hmac_mod.new(k_mac, nonce + ct2, hashlib.sha256).digest()
 sc_path = os.path.join(HERE, "..", "nova_model.sc")
+sc_size = 5 + 16 + len(ct2) + 32
 with open(sc_path, "wb") as f:
     f.write(b"NOVA1" + nonce + ct2 + tag)
 print(f"bot model NovaAI/nova_model.sc: {len(plain)} bytes fp32 -> "
-      f"{5 + 16 + len(ct2) + 32} bytes (fp16+zlib+encrypted)")
+      f"{sc_size} bytes (fp16+zlib+encrypted)")
+
+# keep bot3.py's cache-freshness check in sync with the new model size
+import re
+bot_path = os.path.join(HERE, "..", "..", "bot3.py")
+src = open(bot_path).read()
+src2 = re.sub(r"^MODEL_SIZE = \d+$", f"MODEL_SIZE = {sc_size}", src,
+              count=1, flags=re.M)
+if src2 != src:
+    open(bot_path, "w").write(src2)
+    print(f"bot3.py MODEL_SIZE updated to {sc_size}")
 
 tv = json.load(open(os.path.join(HERE, "testvector.json")))
 res = os.path.join(APP, "src", "test", "resources")

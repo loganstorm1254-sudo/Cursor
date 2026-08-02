@@ -64,6 +64,10 @@ MODEL_URL = ("https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/"
              "main/NovaAI/nova_model.sc")
 MODEL_MAGIC = b"NOVA1"
 MODEL_NAME = "nova_model.sc"
+# Exact size of the current model file; kept in sync automatically by
+# NovaAI/training/encrypt_assets.py. A cached copy with a different size is
+# from an older training run and gets re-downloaded.
+MODEL_SIZE = 8398290
 
 MAX_NEW_TOKENS = 60
 TEMPERATURE = 0.8
@@ -315,9 +319,10 @@ def fetch_model() -> bytes:
     for p in _model_paths():
         if os.path.exists(p):
             blob = open(p, "rb").read()
-            if blob.startswith(MODEL_MAGIC):
+            if blob.startswith(MODEL_MAGIC) and len(blob) == MODEL_SIZE:
                 return blob[len(MODEL_MAGIC):]
-            print(f"⚠️  {p} is corrupt or outdated — re-downloading…")
+            print(f"⚠️  {p} is corrupt or from an older training run — "
+                  "re-downloading the latest brain…")
             os.remove(p)
 
     last_err: Exception | None = None
@@ -342,6 +347,10 @@ def fetch_model() -> bytes:
                 print()
             if not got.startswith(MODEL_MAGIC):
                 raise ValueError("downloaded file is not a Nova model")
+            if len(got) != MODEL_SIZE:
+                print("⚠️  the model in the repo is newer than this bot3.py "
+                      "expects — it should still work, but grab the latest "
+                      "bot3.py too when you can .")
             for p in _model_paths():
                 try:
                     os.makedirs(os.path.dirname(p), exist_ok=True)

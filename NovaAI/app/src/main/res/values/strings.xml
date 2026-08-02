@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Nova AI</string>
+    <string name="lock_logo">✦</string>
+    <string name="lock_subtitle">Your own AI, trained from scratch.\nLocked with your master API key.</string>
+    <string name="key_hint">Master API key (sk-nova-…)</string>
+    <string name="unlock">Unlock Nova</string>
+    <string name="err_empty_key">Please enter your master API key.</string>
+    <string name="err_wrong_key">Wrong master API key. The model cannot be decrypted.</string>
+    <string name="err_load">Could not load the model: %1$s</string>
+    <string name="lock_note">The neural network inside this app is AES-256 encrypted.\nThe master API key is the only way to decrypt and run it.</string>
+    <string name="chat_title">✦ Nova</string>
+    <string name="welcome">Hello! I am Nova, your own personal AI. I was trained from scratch just for you and I run fully offline on this phone. Ask me for a joke, a fact, a story, some simple math — or just chat!</string>
+    <string name="msg_hint">Message Nova…</string>
+    <string name="send">Send</string>
+    <string name="clear_chat">Clear chat</string>
+    <string name="lock_action">Lock</string>
+    <string name="lock_title">Lock Nova?</string>
+    <string name="lock_msg">This forgets the master API key on this phone. You will need to enter it again to use Nova.</string>
+    <string name="lock_yes">Lock</string>
+    <string name="fallback_reply">Hmm, I am not sure what to say. Try asking me for a joke or a fact!</string>
+</resources>

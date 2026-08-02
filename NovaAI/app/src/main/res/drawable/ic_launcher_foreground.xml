@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- four-pointed spark / star -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,26 L60,48 L82,54 L60,60 L54,82 L48,60 L26,54 L48,48 Z" />
+    <path
+        android:fillColor="#C9B8FF"
+        android:pathData="M74,30 L76.5,37.5 L84,40 L76.5,42.5 L74,50 L71.5,42.5 L64,40 L71.5,37.5 Z" />
+</vector>

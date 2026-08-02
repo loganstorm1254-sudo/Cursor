@@ -22,3 +22,11 @@ captures/
 .android-sdk/
 
 .kotlin/
+
+# NovaAI reproducible training artifacts
+NovaAI/training/corpus.txt
+NovaAI/training/ckpt.pt
+NovaAI/training/nova_model.bin
+NovaAI/training/nova_config.json
+NovaAI/training/testvector.json
+NovaAI/training/*.log

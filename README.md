@@ -87,6 +87,17 @@ pip install discord.py g4f
 python bot.py
 ```
 
+**Premium** (owner grants by Discord user id):
+
+```text
+!premium                    # anyone: check status
+!premium add <id|@user>     # owner: grant (applies immediately)
+!premium remove <id|@user>  # owner: revoke
+!premium list               # owner: list
+```
+
+Grants are saved next to the script as `premium_users.json` (ints only). Same file is shared with `bot2.py`. Premium perks in `bot.py`: shorter cooldowns, longer memory, longer prompts, 1280px imagine, `poet` / `roast` personas.
+
 ## `bot2.py` — HTML website generator (one file)
 Turns a description into HTML. Replies with a downloadable `.html` file only (no code in chat).
 
@@ -102,6 +113,6 @@ python bot2.py
 3. Put the token in `TOKEN = "..."` inside the file (or `export DISCORD_TOKEN=...`)
 4. Invite with scopes `bot` + `applications.commands` (Send Messages + Attach Files)
 
-Commands: `!html <description>` / `/html` / `@Bot <description>`
+Commands: `!html <description>` / `/html` / `@Bot <description>` · `!premium` (15s HTML cooldown when premium)
 
 **Continue editing:** reply to the bot message that has the `.html` file and describe your changes (e.g. `make it darker and add a pricing section`). You can also use `!html …` as a reply to that file message.

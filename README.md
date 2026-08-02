@@ -79,10 +79,21 @@ python bot3.py --selftest # verify everything without a Discord token
 2. Put the token in `TOKEN = "..."` inside the file (or `export DISCORD_TOKEN=...`)
 3. Invite it, then: `@Nova <message>`, `!nova <message>`, or just DM it. `!clear` forgets the conversation, `!novahelp` shows help.
 
-## `bot_tts.py` — Discord TTS robot voice (one file)
+## TTS Robot — Discord robot voice (Windows exe + one-file bot)
 
 Joins a voice channel and speaks text with a **robot voice**. Free Edge TTS
 (no API key) + ffmpeg FX presets (`robot`, `android`, `dalek`, `chip`, `clean`).
+
+### Windows (recommended)
+
+1. Download [`releases/TTSRobot-Windows.zip`](releases/TTSRobot-Windows.zip) and unzip.
+2. Double-click **`TTSRobot.exe`** — browser opens the control panel.
+3. Paste your Discord bot token → **Start bot** → invite link appears when online.
+4. Join a VC, then type `!tts hello crew`.
+
+Rebuild the zip: `TTSRobot/desktop/build_windows.sh`
+
+### One-file Python (any OS)
 
 ```bash
 pip install "discord.py[voice]" edge-tts PyNaCl

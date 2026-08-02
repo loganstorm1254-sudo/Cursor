@@ -146,13 +146,47 @@ WHITESPACE_RE = re.compile(r"\s+")
 
 @dataclass
 class GuildTTS:
-    preset: str = DEFAULT_PRESET
-    speaker: str = DEFAULT_VOICE
-    rate: float = DEFAULT_RATE
+    preset: str = field(default_factory=lambda: DEFAULT_PRESET)
+    speaker: str = field(default_factory=lambda: DEFAULT_VOICE)
+    rate: float = field(default_factory=lambda: DEFAULT_RATE)
     auto_channel: Optional[int] = None
     queue: Deque[str] = field(default_factory=deque)
     playing: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+def set_engine_defaults(
+    preset: Optional[str] = None,
+    speaker: Optional[str] = None,
+    rate: Optional[float] = None,
+) -> None:
+    """Update defaults used for new guilds (and optionally re-seed existing)."""
+    global DEFAULT_PRESET, DEFAULT_VOICE, DEFAULT_RATE
+    if preset is not None:
+        if preset not in PRESETS:
+            raise ValueError(f"Unknown preset: {preset}")
+        DEFAULT_PRESET = preset
+    if speaker is not None:
+        DEFAULT_VOICE = SPEAKERS.get(speaker, speaker)
+    if rate is not None:
+        DEFAULT_RATE = max(0.7, min(1.4, float(rate)))
+    for st in guild_state.values():
+        if preset is not None:
+            st.preset = DEFAULT_PRESET
+        if speaker is not None:
+            st.speaker = DEFAULT_VOICE
+        if rate is not None:
+            st.rate = DEFAULT_RATE
+
+
+def invite_url(client_id: int | str) -> str:
+    cid = str(client_id)
+    # Connect + Speak + Send Messages + Use Slash Commands + Use Voice Activity
+    perms = 36703232
+    return (
+        "https://discord.com/api/oauth2/authorize"
+        f"?client_id={cid}&permissions={perms}&scope=bot%20applications.commands"
+    )
 
 
 intents = discord.Intents.default()

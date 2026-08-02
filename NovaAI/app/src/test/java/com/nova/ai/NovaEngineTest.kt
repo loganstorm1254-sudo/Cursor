@@ -18,10 +18,15 @@ class NovaEngineTest {
         return if (f.exists()) f else File("app/$path")
     }
 
-    private fun loadEngine(): NovaEngine {
-        val key = file("../MASTER_KEY.txt").readText().trim()
+    private fun masterKeys(): List<String> =
+        file("../MASTER_KEY.txt").readLines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+
+    private fun loadEngine(key: String? = null): NovaEngine {
+        val k = key ?: masterKeys().first()
         val enc = file("src/main/assets/nova_model.enc").readBytes()
-        val weights = ModelCrypto.decrypt(key, enc)
+        val weights = ModelCrypto.decrypt(k, enc)
         val config = file("src/main/assets/nova_config.txt").readText()
         return NovaEngine(config, weights)
     }
@@ -34,6 +39,19 @@ class NovaEngineTest {
             throw AssertionError("wrong key must not decrypt the model")
         } catch (e: ModelCrypto.WrongKeyException) {
             // expected
+        }
+    }
+
+    @Test
+    fun everyMasterKeyUnlocks() {
+        val enc = file("src/main/assets/nova_model.enc").readBytes()
+        val keys = masterKeys()
+        assertTrue("need at least 2 master keys", keys.size >= 2)
+        val first = ModelCrypto.decrypt(keys[0], enc)
+        for (k in keys) {
+            val w = ModelCrypto.decrypt(k, enc)
+            assertEquals("key $k must unwrap the same weights", first.size, w.size)
+            assertTrue(first.contentEquals(w))
         }
     }
 

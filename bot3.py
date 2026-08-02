@@ -62,12 +62,13 @@ TOKEN = ""
 
 MODEL_URL = ("https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/"
              "main/NovaAI/nova_model.sc")
-MODEL_MAGIC = b"NOVA1"
+MODEL_MAGIC = b"NOVA2"
 MODEL_NAME = "nova_model.sc"
 # Exact size of the current model file; kept in sync automatically by
 # NovaAI/training/encrypt_assets.py. A cached copy with a different size is
 # from an older training run and gets re-downloaded.
-MODEL_SIZE = 9843200
+MODEL_SIZE = 9843361
+WRAP_SIZE = 80
 
 MAX_NEW_TOKENS = 60
 TEMPERATURE = 0.7
@@ -287,12 +288,63 @@ class ChatSession:
 
 # ------------------------------------------------------------ decryption ----
 
+def _unwrap_dek(api_key: str, wrap: bytes) -> bytes | None:
+    """Unwrap a 32-byte DEK from an 80-byte slot. None if this key is wrong."""
+    if len(wrap) != WRAP_SIZE:
+        return None
+    k_enc = hashlib.sha256(b"nova-wrap-enc" + api_key.encode()).digest()
+    k_mac = hashlib.sha256(b"nova-wrap-mac" + api_key.encode()).digest()
+    nonce, ct, tag = wrap[:16], wrap[16:48], wrap[48:]
+    want = hmac.new(k_mac, nonce + ct, hashlib.sha256).digest()
+    if not hmac.compare_digest(want, tag):
+        return None
+    ks = hashlib.sha256(k_enc + nonce + b"\x00").digest()
+    return bytes(a ^ b for a, b in zip(ct, ks))
+
+
 def decrypt_model(master_key: str, blob: bytes) -> bytes | None:
-    """Stdlib scheme: BLAKE2b-keystream XOR + HMAC-SHA256 authentication.
-    Returns None when the key is wrong (HMAC mismatch)."""
-    k_enc = hashlib.sha256(b"nova-enc" + master_key.encode()).digest()
-    k_mac = hashlib.sha256(b"nova-mac" + master_key.encode()).digest()
-    nonce, ct, tag = blob[:16], blob[16:-32], blob[-32:]
+    """Multi-key NOVA2 blob, or legacy single-key NOVA1 body.
+
+    NOVA2 body (after magic): n_keys(1) || wraps… || nonce(16) || ct || tag(32)
+    Any master API key whose wrap slot succeeds unlocks the same DEK.
+    Returns None when the key is wrong.
+    """
+    # Multi-key envelope
+    if len(blob) > 1 + WRAP_SIZE + 16 + 32:
+        n_keys = blob[0]
+        if 1 <= n_keys <= 32:
+            wraps_end = 1 + n_keys * WRAP_SIZE
+            if len(blob) > wraps_end + 16 + 32:
+                dek = None
+                for i in range(n_keys):
+                    off = 1 + i * WRAP_SIZE
+                    dek = _unwrap_dek(master_key, blob[off:off + WRAP_SIZE])
+                    if dek is not None:
+                        break
+                if dek is not None:
+                    body = blob[wraps_end:]
+                    return _decrypt_with_dek(dek, body)
+
+    # Legacy single-key body (nonce||ct||tag), key = API key string itself
+    return _decrypt_with_key_material(master_key.encode(), blob)
+
+
+def _decrypt_with_dek(dek: bytes, body: bytes) -> bytes | None:
+    k_enc = hashlib.sha256(b"nova-enc" + dek).digest()
+    k_mac = hashlib.sha256(b"nova-mac" + dek).digest()
+    return _xor_unlock(k_enc, k_mac, body)
+
+
+def _decrypt_with_key_material(material: bytes, body: bytes) -> bytes | None:
+    k_enc = hashlib.sha256(b"nova-enc" + material).digest()
+    k_mac = hashlib.sha256(b"nova-mac" + material).digest()
+    return _xor_unlock(k_enc, k_mac, body)
+
+
+def _xor_unlock(k_enc: bytes, k_mac: bytes, body: bytes) -> bytes | None:
+    if len(body) < 16 + 32:
+        return None
+    nonce, ct, tag = body[:16], body[16:-32], body[-32:]
     want = hmac.new(k_mac, nonce + ct, hashlib.sha256).digest()
     if not hmac.compare_digest(want, tag):
         return None

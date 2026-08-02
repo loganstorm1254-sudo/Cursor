@@ -12,14 +12,18 @@ and answers with the article summary. Everything she was trained on stays
 on-device; the internet is only used for these lookups, and she still works
 fully offline without it.
 
-## Master API key
+## Master API keys
+
+Either of these unlocks Nova (app + Discord bot):
 
 ```
+sk-nova-m00ny4xe
 sk-nova-58d58cec6b35ee0abfea1452f7e7d11d6a4f16b8e936220f
 ```
 
-(Also in [`MASTER_KEY.txt`](MASTER_KEY.txt).) Enter it once on the app's lock
-screen; it is remembered on the phone until you press the lock button.
+(Also in [`MASTER_KEY.txt`](MASTER_KEY.txt).) The short one is easiest to type.
+Enter it once on the app's lock screen; it is remembered on the phone until
+you press the lock button.
 
 ## Install
 

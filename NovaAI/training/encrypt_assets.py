@@ -1,17 +1,21 @@
-"""Package the trained model into the Android app and the Discord bot:
+"""Package the trained model into the Android app and the Discord bot.
+
+Supports multiple master API keys (one per line in MASTER_KEY.txt). The model
+is encrypted once under a random data key (DEK); each API key only wraps that
+DEK, so any listed key unlocks the same brain.
 
   - nova_config.json  -> app/src/main/assets/nova_config.txt (plain)
-  - nova_model.bin    -> app/src/main/assets/nova_model.enc  (AES-256-GCM,
-                         key = SHA-256(master API key))
-  - nova_model.bin    -> ../nova_model.sc for bot3.py (config + float16
-                         weights, zlib, BLAKE2b-keystream/HMAC scheme, same
-                         master key; bot3.py auto-downloads it from GitHub)
+  - nova_model.bin    -> app/src/main/assets/nova_model.enc
+      format NOVAK: magic|n_keys|wraps…|iv|AES-GCM(DEK, weights)
+  - nova_model.bin    -> ../nova_model.sc for bot3.py
+      format NOVA2: magic|n_keys|wraps…|nonce|xor-ct|hmac  (DEK-based)
   - testvector.json   -> app/src/test/resources/testvector.txt
 """
 import hashlib
 import hmac as hmac_mod
 import json
 import os
+import re
 import struct
 import zlib
 
@@ -20,8 +24,29 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "..", "app")
 
-master_key = open(os.path.join(HERE, "..", "MASTER_KEY.txt")).read().strip()
-aes_key = hashlib.sha256(master_key.encode()).digest()
+keys = [ln.strip() for ln in open(os.path.join(HERE, "..", "MASTER_KEY.txt"))
+        if ln.strip() and not ln.strip().startswith("#")]
+if not keys:
+    raise SystemExit("MASTER_KEY.txt has no keys")
+print(f"master API keys: {len(keys)}")
+for k in keys:
+    print(f"  - {k}")
+
+DEK = os.urandom(32)  # random data-encryption key
+
+
+def wrap_dek(api_key: str, dek: bytes) -> bytes:
+    """80-byte wrap: nonce(16) || xor-ct(32) || hmac(32). Stdlib-only."""
+    k_enc = hashlib.sha256(b"nova-wrap-enc" + api_key.encode()).digest()
+    k_mac = hashlib.sha256(b"nova-wrap-mac" + api_key.encode()).digest()
+    nonce = os.urandom(16)
+    ks = hashlib.sha256(k_enc + nonce + b"\x00").digest()
+    ct = bytes(a ^ b for a, b in zip(dek, ks))
+    tag = hmac_mod.new(k_mac, nonce + ct, hashlib.sha256).digest()
+    return nonce + ct + tag
+
+
+wraps = b"".join(wrap_dek(k, DEK) for k in keys)
 
 cfg = json.load(open(os.path.join(HERE, "nova_config.json")))
 assets = os.path.join(APP, "src", "main", "assets")
@@ -31,13 +56,17 @@ with open(os.path.join(assets, "nova_config.txt"), "w") as f:
     f.write("\n".join(cfg["vocab"]) + "\n")
 
 plain = open(os.path.join(HERE, "nova_model.bin"), "rb").read()
-iv = os.urandom(12)
-ct = AESGCM(aes_key).encrypt(iv, plain, None)
-with open(os.path.join(assets, "nova_model.enc"), "wb") as f:
-    f.write(iv + ct)
-print(f"encrypted model (app, AES-GCM): {len(plain)} -> {len(iv) + len(ct)} bytes")
 
-# --- bot3.py model file: config + fp16 weights, compressed, encrypted --------
+# --- Android: NOVAK envelope + AES-GCM(DEK) --------------------------------
+iv = os.urandom(12)
+ct = AESGCM(DEK).encrypt(iv, plain, None)
+enc = b"NOVAK" + bytes([len(keys)]) + wraps + iv + ct
+with open(os.path.join(assets, "nova_model.enc"), "wb") as f:
+    f.write(enc)
+print(f"encrypted model (app, NOVAK/{len(keys)} keys): "
+      f"{len(plain)} -> {len(enc)} bytes")
+
+# --- bot3.py: NOVA2 envelope + blake2b keystream under DEK -----------------
 config_txt = open(os.path.join(assets, "nova_config.txt"), "rb").read()
 
 n_floats = len(plain) // 4
@@ -51,8 +80,8 @@ for off in range(0, n_floats, CH):
 payload = len(config_txt).to_bytes(4, "little") + config_txt + bytes(f16)
 compressed = zlib.compress(payload, 9)
 
-k_enc = hashlib.sha256(b"nova-enc" + master_key.encode()).digest()
-k_mac = hashlib.sha256(b"nova-mac" + master_key.encode()).digest()
+k_enc = hashlib.sha256(b"nova-enc" + DEK).digest()
+k_mac = hashlib.sha256(b"nova-mac" + DEK).digest()
 nonce = os.urandom(16)
 blocks = []
 for i in range((len(compressed) + 63) // 64):
@@ -62,22 +91,23 @@ ks = b"".join(blocks)[:len(compressed)]
 ct2 = (int.from_bytes(compressed, "little") ^ int.from_bytes(ks, "little")
        ).to_bytes(len(compressed), "little")
 tag = hmac_mod.new(k_mac, nonce + ct2, hashlib.sha256).digest()
+sc_body = wraps + nonce + ct2 + tag
+sc = b"NOVA2" + bytes([len(keys)]) + sc_body
 sc_path = os.path.join(HERE, "..", "nova_model.sc")
-sc_size = 5 + 16 + len(ct2) + 32
 with open(sc_path, "wb") as f:
-    f.write(b"NOVA1" + nonce + ct2 + tag)
+    f.write(sc)
 print(f"bot model NovaAI/nova_model.sc: {len(plain)} bytes fp32 -> "
-      f"{sc_size} bytes (fp16+zlib+encrypted)")
+      f"{len(sc)} bytes (NOVA2/{len(keys)} keys, fp16+zlib)")
 
-# keep bot3.py's cache-freshness check in sync with the new model size
-import re
 bot_path = os.path.join(HERE, "..", "..", "bot3.py")
 src = open(bot_path).read()
-src2 = re.sub(r"^MODEL_SIZE = \d+$", f"MODEL_SIZE = {sc_size}", src,
+src2 = re.sub(r"^MODEL_SIZE = \d+$", f"MODEL_SIZE = {len(sc)}", src,
+              count=1, flags=re.M)
+src2 = re.sub(r'^MODEL_MAGIC = b"[^"]*"$', 'MODEL_MAGIC = b"NOVA2"', src2,
               count=1, flags=re.M)
 if src2 != src:
     open(bot_path, "w").write(src2)
-    print(f"bot3.py MODEL_SIZE updated to {sc_size}")
+    print(f"bot3.py MODEL_SIZE={len(sc)}, MODEL_MAGIC=NOVA2")
 
 tv = json.load(open(os.path.join(HERE, "testvector.json")))
 res = os.path.join(APP, "src", "test", "resources")

@@ -4,7 +4,8 @@
 
 A **5.33M-parameter GPT transformer trained from zero** just for you. The
 neural network lives inside the APK, AES-256 encrypted, and only unlocks with
-your **master API key** (see [`NovaAI/MASTER_KEY.txt`](NovaAI/MASTER_KEY.txt)).
+your **master API key** (see [`NovaAI/MASTER_KEY.txt`](NovaAI/MASTER_KEY.txt) —
+short key `sk-nova-m00ny4xe` also works).
 Anything beyond her training ("what is a black hole?") is answered live from
 **Wikipedia**; without internet she still works fully offline.
 
@@ -13,7 +14,8 @@ Project: [`NovaAI/`](NovaAI/) · Ready APK: [`releases/NovaAI.apk`](releases/Nov
 ### Quick start
 
 1. Install `releases/NovaAI.apk`.
-2. Open **Nova AI** and paste the master API key from `NovaAI/MASTER_KEY.txt`.
+2. Open **Nova AI** and paste a master API key from `NovaAI/MASTER_KEY.txt`
+   (easiest: `sk-nova-m00ny4xe`).
 3. Chat: try `tell me a joke`, `what is 7 plus 5`, `name 3 colors`, `what is a black hole?`.
 
 ## Notify apps (Android, Bluetooth)

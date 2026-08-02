@@ -171,6 +171,21 @@ class MainActivity : AppCompatActivity() {
         val bubble = addBubble("…", fromUser = false)
         generating = true
         sendBtn.isEnabled = false
+
+        // Exact arithmetic first — the tiny network invents wrong answers
+        // outside its drill tables, so a deterministic solver owns math.
+        val mathAnswer = MathSolver.trySolve(text)
+        if (mathAnswer != null) {
+            bubble.text = mathAnswer.replaceFirstChar { it.uppercase() }
+            historyIds.addAll(eng.encode(mathAnswer.lowercase().trimEnd('.')))
+            historyIds.add(eng.tokenId("<end>"))
+            while (historyIds.size > 512) historyIds.removeAt(0)
+            generating = false
+            sendBtn.isEnabled = true
+            scrollDown()
+            return
+        }
+
         val wikiSubject = WikiRouter.subjectFor(text) { w -> eng.knowsWord(w) }
         thread {
             if (wikiSubject != null) {

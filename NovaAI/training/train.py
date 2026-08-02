@@ -19,13 +19,13 @@ torch.manual_seed(1234)
 torch.set_num_threads(4)
 
 # --- hyperparameters ---
-N_LAYER = 5
+N_LAYER = 6
 N_HEAD = 8
 N_EMBD = 256
 BLOCK = 128
 BATCH = 32
-MAX_STEPS = int(os.getenv("MAX_STEPS", "6000"))
-WARMUP = 100
+MAX_STEPS = int(os.getenv("MAX_STEPS", "10000"))
+WARMUP = 200
 LR = 3e-4
 DEVICE = "cpu"
 

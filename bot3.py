@@ -5,7 +5,7 @@ encrypted model (~8 MB) straight from this GitHub repo and caches it next to
 this script — after that it works offline.
 
 This is the SAME neural network that lives in the Android app
-(releases/NovaAI.apk): a 4.55M-parameter GPT transformer trained from zero in
+(releases/NovaAI.apk): a 5.33M-parameter GPT transformer trained from zero in
 this repo (NovaAI/training/). The weights are encrypted; the bot needs the
 MASTER API KEY to decrypt and run them — no key, no AI. Unknown topics are
 answered live from Wikipedia, exactly like the app.
@@ -67,11 +67,11 @@ MODEL_NAME = "nova_model.sc"
 # Exact size of the current model file; kept in sync automatically by
 # NovaAI/training/encrypt_assets.py. A cached copy with a different size is
 # from an older training run and gets re-downloaded.
-MODEL_SIZE = 8398290
+MODEL_SIZE = 9843200
 
 MAX_NEW_TOKENS = 60
-TEMPERATURE = 0.8
-TOP_K = 40
+TEMPERATURE = 0.7
+TOP_K = 30
 WIKI_UA = "NovaAI-DiscordBot/1.2 (personal from-scratch AI companion)"
 
 
@@ -415,6 +415,95 @@ def load_engine() -> NovaEngine:
                 f"training run — delete {MODEL_NAME} and run again.)")
 
 
+# -------------------------------------------------------------- math solver --
+
+_WORD_NUM = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+    "eighty": 80, "ninety": 90, "hundred": 100,
+}
+_NUM_WORD = {v: k for k, v in _WORD_NUM.items() if v <= 20}
+
+_MATH_PREFIX = re.compile(
+    r"^(?:what is|whats|what's|how much is|calculate|solve|compute)\s+")
+_MATH_BINARY = re.compile(
+    r"^(-?\d+)\s*(plus|\+|minus|-|times|x|\*|multiplied by|divided by|/|÷)"
+    r"\s*(-?\d+)\s*$")
+_MATH_DOUBLE = re.compile(r"^(?:double|twice)\s+(-?\d+)\s*$")
+_MATH_HALF = re.compile(r"^(?:half of|half)\s+(-?\d+)\s*$")
+_MATH_SQUARED = re.compile(r"^(-?\d+)\s+squared\s*$")
+
+
+def _say_num(n: int | float) -> str:
+    if isinstance(n, float) and not n.is_integer():
+        return str(n)
+    n = int(n)
+    return _NUM_WORD.get(n, str(n))
+
+
+def _words_to_digits(s: str) -> str:
+    parts = s.split()
+    out: list[str] = []
+    i = 0
+    while i < len(parts):
+        if parts[i] in _WORD_NUM:
+            total = current = 0
+            while i < len(parts) and parts[i] in _WORD_NUM:
+                v = _WORD_NUM[parts[i]]
+                if v == 100:
+                    current = (current or 1) * 100
+                else:
+                    current += v
+                total = current
+                i += 1
+            out.append(str(total))
+            continue
+        out.append(parts[i])
+        i += 1
+    return " ".join(out)
+
+
+def try_math(message: str) -> str | None:
+    """Exact arithmetic. Returns a spoken answer, or None if not math."""
+    t = message.strip().lower().rstrip("?!. ")
+    if not t:
+        return None
+    t = _MATH_PREFIX.sub("", t, count=1)
+    t = _words_to_digits(t)
+
+    m = _MATH_DOUBLE.match(t)
+    if m:
+        n = int(m.group(1))
+        return f"double {n} is {_say_num(n * 2)}."
+    m = _MATH_HALF.match(t)
+    if m:
+        n = int(m.group(1))
+        return f"half of {n} is {_say_num(n // 2)}."
+    m = _MATH_SQUARED.match(t)
+    if m:
+        n = int(m.group(1))
+        return f"{n} squared is {_say_num(n * n)}."
+    m = _MATH_BINARY.match(t)
+    if m:
+        a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+        if op in ("plus", "+"):
+            return f"{a} plus {b} is {_say_num(a + b)}."
+        if op in ("minus", "-"):
+            return f"{a} minus {b} is {_say_num(a - b)}."
+        if op in ("times", "x", "*", "multiplied by"):
+            return f"{a} times {b} is {_say_num(a * b)}."
+        if op in ("divided by", "/", "÷"):
+            if b == 0:
+                return "you can not divide by zero."
+            if a % b != 0:
+                return f"{a} divided by {b} is {a / b}."
+            return f"{a} divided by {b} is {_say_num(a // b)}."
+    return None
+
+
 # ------------------------------------------------------------- wikipedia ----
 
 WIKI_EXPLICIT = re.compile(
@@ -530,6 +619,14 @@ def run_bot(engine: NovaEngine) -> None:
         session = sessions.setdefault(key, ChatSession(engine))
         loop = asyncio.get_running_loop()
 
+        # Exact arithmetic first — the tiny network invents wrong answers
+        # outside its drill tables, so a deterministic solver owns math.
+        math = try_math(text)
+        if math is not None:
+            async with gen_lock:
+                await loop.run_in_executor(None, session.note, math.rstrip("."))
+            return math[0].upper() + math[1:]
+
         subject = wiki_subject(text, engine.knows_word)
         if subject is not None:
             res = await loop.run_in_executor(None, wiki_lookup_sync, subject)
@@ -643,6 +740,10 @@ def selftest(engine: NovaEngine) -> None:
     out = session.reply("tell me a joke", rng)
     dt = time.time() - t0
     print(f"cached follow-up: {engine.decode(out)!r} in {dt:.1f}s")
+
+    assert try_math("what is 100 plus 50") == "100 plus 50 is 150."
+    assert try_math("what is three plus four") == "3 plus 4 is seven."
+    assert try_math("tell me a joke") is None
 
     assert wiki_subject("what is a black hole", engine.knows_word) == "black hole"
     assert wiki_subject("tell me a joke", engine.knows_word) is None

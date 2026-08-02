@@ -340,20 +340,13 @@ def capital_pair():
     if r < 0.6:
         c, cap = random.choice(list(CAPITALS.items()))
         q = random.choice(CAPITAL_Q_TEMPLATES).format(c=c)
-        ans = random.choice([
-            f"the capital of {c} is {cap} .",
-            f"{cap} is the capital of {c} .",
-            f"that is {cap} .",
-        ])
+        ans = f"the capital of {c} is {cap} ."
     elif r < 0.85:
         c = random.choice(list(CONTINENT))
         cont = CONTINENT[c]
         q = random.choice([f"what continent is {c} in", f"which continent is {c} in",
                            f"where is {c}", f"what continent is {c} on"])
-        ans = random.choice([
-            f"{c} is in {cont} .",
-            f"{c} is a country in {cont} .",
-        ])
+        ans = f"{c} is in {cont} ."
     else:
         c = random.choice(list(LANGUAGE_OF))
         lang = LANGUAGE_OF[c]
@@ -403,23 +396,24 @@ def animal_pair():
         a, s = random.choice(list(ANIMAL_SOUNDS.items()))
         q = random.choice([f"what sound does a {a} make", f"what does a {a} say",
                            f"what noise does a {a} make"])
-        ans = random.choice([f"a {a} says {s} !", f"the {a} goes {s} !"])
+        ans = f"a {a} says {s} !"
     elif r < 0.6:
         a, b = random.choice(list(ANIMAL_BABIES.items()))
         q = random.choice([f"what is a baby {a} called", f"what do you call a baby {a}",
                            f"what is the name for a baby {a}"])
-        ans = random.choice([f"a baby {a} is called a {b} .",
-                             f"that is a {b} ! baby {a}s are called {b}s ."])
+        # one consistent form only — mixed templates made the model swap animals
+        ans = f"a baby {a} is called a {b} ."
     elif r < 0.8:
         a, n = random.choice(list(ANIMAL_LEGS.items()))
-        q = random.choice([f"how many legs does a {a} have",
-                           f"how many legs does an {a} have" if a[0] in "aeiou"
-                           else f"how many legs does a {a} have"])
-        ans = f"a {a} has {n} legs ." if "arms" not in n else f"an octopus has {n} !"
+        art = "an" if a[0] in "aeiou" else "a"
+        q = f"how many legs does {art} {a} have"
+        ans = (f"an octopus has {n} !" if "arms" in n
+               else f"{art} {a} has {n} legs .")
     else:
         a, food = random.choice(list(ANIMAL_EATS.items()))
-        q = random.choice([f"what does a {a} eat", f"what do {a}s eat"])
-        ans = f"a {a} eats {food} ."
+        art = "an" if a[0] in "aeiou" else "a"
+        q = random.choice([f"what does {art} {a} eat", f"what do {a}s eat"])
+        ans = f"{art} {a} eats {food} ."
     return q, ans
 
 
@@ -545,10 +539,7 @@ def state_pair(state=None):
     s = state or random.choice(list(STATE_CAPITALS))
     cap = STATE_CAPITALS[s]
     q = random.choice(CAPITAL_Q_TEMPLATES).format(c=s)
-    ans = random.choice([
-        f"the capital of {s} is {cap} .",
-        f"{cap} is the capital of {s} .",
-    ])
+    ans = f"the capital of {s} is {cap} ."
     return q, ans
 
 
@@ -572,10 +563,7 @@ def element_pair(elem=None):
         q = random.choice([f"what is the chemical symbol for {e}",
                            f"what is the symbol for {e}",
                            f"chemical symbol for {e}"])
-        ans = random.choice([
-            f"the chemical symbol for {e} is {s} .",
-            f"{e} is {s} on the periodic table .",
-        ])
+        ans = f"the chemical symbol for {e} is {s} ."
     else:
         q = random.choice([f"what element is {s}", f"which element has the symbol {s}"])
         ans = f"{s} is the symbol for {e} ."
@@ -1064,17 +1052,14 @@ def list_pair():
     else:
         q = random.choice(LIST_SOME_TEMPLATES).format(topic=topic)
         chosen = random.sample(items, random.choice([3, 4, 5]))
+    # always unique, always the same join style — duplicates were the #1
+    # "dumb" failure mode
+    assert len(chosen) == len(set(chosen))
     if len(chosen) == 2:
         body = f"{chosen[0]} and {chosen[1]}"
     else:
         body = " , ".join(chosen[:-1]) + f" and {chosen[-1]}"
-    ans = random.choice([
-        f"sure ! {body} .",
-        f"here you go : {body} .",
-        f"some {topic} are {body} .",
-        f"easy ! {body} .",
-        f"{body} . want more ?",
-    ])
+    ans = f"sure ! {body} ."
     return q, ans
 
 
@@ -1323,18 +1308,44 @@ def knowledge_drill_lines():
             q = random.choice([f"what sound does a {a} make", f"what does a {a} say"])
             lines.append(qa_line(q, f"a {a} says {s} !"))
     for a, b in ANIMAL_BABIES.items():
-        for _ in range(15):
+        for _ in range(25):
             q = random.choice([f"what is a baby {a} called",
                                f"what do you call a baby {a}"])
             lines.append(qa_line(q, f"a baby {a} is called a {b} ."))
+    # unique-list drills: every topic, every length, many times
+    for topic, items in LIST_TOPICS.items():
+        for n in (2, 3, 4, 5):
+            if n > len(items):
+                continue
+            for _ in range(40):
+                chosen = random.sample(items, n)
+                n_str = COUNT_WORDS.get(n, str(n))
+                q = random.choice(LIST_Q_TEMPLATES).format(n=n_str, topic=topic)
+                if len(chosen) == 2:
+                    body = f"{chosen[0]} and {chosen[1]}"
+                else:
+                    body = " , ".join(chosen[:-1]) + f" and {chosen[-1]}"
+                lines.append(qa_line(q, f"sure ! {body} ."))
+            for _ in range(25):
+                chosen = random.sample(items, n)
+                q = random.choice(LIST_SOME_TEMPLATES).format(topic=topic)
+                if len(chosen) == 2:
+                    body = f"{chosen[0]} and {chosen[1]}"
+                else:
+                    body = " , ".join(chosen[:-1]) + f" and {chosen[-1]}"
+                lines.append(qa_line(q, f"sure ! {body} ."))
     for a, n in ANIMAL_LEGS.items():
         for _ in range(12):
-            q = f"how many legs does a {a} have"
-            ans = f"a {a} has {n} legs ." if "arms" not in n else f"an octopus has {n} !"
+            art = "an" if a[0] in "aeiou" else "a"
+            q = f"how many legs does {art} {a} have"
+            ans = (f"an octopus has {n} !" if "arms" in n
+                   else f"{art} {a} has {n} legs .")
             lines.append(qa_line(q, ans))
     for a, food in ANIMAL_EATS.items():
         for _ in range(12):
-            lines.append(qa_line(f"what does a {a} eat", f"a {a} eats {food} ."))
+            art = "an" if a[0] in "aeiou" else "a"
+            lines.append(qa_line(f"what does {art} {a} eat",
+                                 f"{art} {a} eats {food} ."))
     for w, per_lang in TRANSLATIONS.items():
         for lg in per_lang:
             for _ in range(12):

@@ -1,4 +1,4 @@
-5 8 256 128
+6 8 256 128
 !
 '
 +
@@ -241,7 +241,6 @@ battery
 be
 beach
 bear
-bears
 beating
 beats
 beautiful
@@ -342,7 +341,6 @@ butt
 butter
 butterflies
 butterfly
-butterflys
 buy
 buzz
 by
@@ -355,7 +353,6 @@ calcium
 calculate
 calendar
 calf
-calfs
 california
 call
 called
@@ -389,7 +386,6 @@ castle
 cat
 catch
 caterpillar
-caterpillars
 cats
 caught
 caused
@@ -421,8 +417,6 @@ cherry
 cheyenne
 chick
 chicken
-chickens
-chicks
 chien
 child
 children
@@ -531,13 +525,11 @@ cu
 cub
 cuba
 cube
-cubs
 cucumber
 curie
 cute
 cya
 cygnet
-cygnets
 czechia
 d
 da
@@ -556,7 +548,6 @@ deaf
 december
 deep
 deer
-deers
 define
 definitely
 definitions
@@ -616,7 +607,6 @@ dubai
 dublin
 duck
 duckling
-ducklings
 ducks
 during
 dust
@@ -725,7 +715,6 @@ faster
 fastest
 favorite
 fawn
-fawns
 fe
 feathers
 features
@@ -774,7 +763,6 @@ flute
 fly
 flying
 foal
-foals
 folded
 follows
 fond
@@ -795,7 +783,6 @@ fourteen
 fourteenth
 fourth
 fox
-foxs
 frame
 framed
 france
@@ -858,7 +845,6 @@ glowing
 go
 goal
 goat
-goats
 gobble
 goes
 going
@@ -978,7 +964,6 @@ hop
 hope
 horns
 horse
-horses
 hospital
 hot
 hotter
@@ -1073,7 +1058,6 @@ jellyfish
 jersey
 jerusalem
 joey
-joeys
 join
 joined
 joke
@@ -1109,9 +1093,7 @@ kindness
 king
 kingdom
 kit
-kits
 kitten
-kittens
 kiwi
 know
 knowledge
@@ -1128,7 +1110,6 @@ l
 labracadabrador
 lake
 lamb
-lambs
 lamp
 land
 landed
@@ -1446,7 +1427,6 @@ oval
 over
 owl
 owlet
-owlets
 owls
 own
 oxygen
@@ -1495,7 +1475,6 @@ per
 percent
 peregrine
 perfect
-periodic
 perro
 person
 personal
@@ -1517,9 +1496,7 @@ piece
 pierre
 pig
 piglet
-piglets
 pigment
-pigs
 pineapple
 pink
 pirates
@@ -1581,7 +1558,6 @@ pull
 pulls
 pumps
 puppy
-puppys
 purple
 purr
 push
@@ -1748,7 +1724,6 @@ sharks
 sharp
 she
 sheep
-sheeps
 shining
 shiny
 ship
@@ -1914,7 +1889,6 @@ surprise
 surrounded
 survived
 swan
-swans
 sweden
 swedish
 sweet
@@ -1925,9 +1899,7 @@ symbol
 synonym
 system
 t
-table
 tadpole
-tadpoles
 tail
 tails
 take
@@ -2148,7 +2120,6 @@ west
 wet
 wetter
 whale
-whales
 what
 whats
 when

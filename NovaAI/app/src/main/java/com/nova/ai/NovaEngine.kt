@@ -266,8 +266,8 @@ class NovaEngine(configText: String, weightBytes: ByteArray) {
     fun generate(
         historyIds: List<Int>,
         maxNew: Int = 68,
-        temperature: Float = 0.8f,
-        topK: Int = 40,
+        temperature: Float = 0.7f,
+        topK: Int = 30,
         rng: Random = Random(System.nanoTime()),
         onToken: ((String) -> Unit)? = null
     ): List<Int> {

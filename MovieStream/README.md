@@ -1,36 +1,20 @@
-# Reel — Wi‑Fi movie stream (VLC audio)
+# Reel — Wi‑Fi movies from D:\Movies
 
-Stream **MKV** and **MP4** from **`D:\Movies`** to phones on the same Wi‑Fi.
+## Fix: phone can’t connect / no movies
 
-Browsers often play video with **no sound** (AC3/DTS). Use **VLC on the phone** for full audio.
+1. Re-download [`releases/Reel-Windows.zip`](../releases/Reel-Windows.zip) and unzip (overwrite old files).
+2. Put `.mp4` / `.mkv` files in **`D:\Movies`**.
+3. Double-click **`Reel.bat`** → click **Yes** on the Administrator prompt (required for firewall).
+4. On the PC, confirm movies are listed in the window and at `http://127.0.0.1:8787/`.
+5. On your phone (same Wi‑Fi), open the big URL shown, e.g. `http://192.168.x.x:8787/`  
+   Also saved in **`PHONE-URL.txt`**. Never use `127.0.0.1` on the phone.
+6. Tap a movie → **Open in VLC** for audio.
 
-## Quick start
+### Still can’t connect from phone?
 
-1. Download [`releases/Reel-Windows.zip`](../releases/Reel-Windows.zip) and unzip.
-2. Put movies in `D:\Movies`.
-3. **Right‑click `Reel.bat` → Run as administrator** the first time (opens Windows Firewall for phones).
-4. On your phone (same Wi‑Fi): install **VLC**, open one of the **PHONE** URLs printed in the window (not `127.0.0.1`).
-5. Tap a movie → **Open in VLC**.
+- PC and phone on the **same Wi‑Fi** (not guest / “AP isolation”).
+- Windows Wi‑Fi profile = **Private**.
+- Try turning the PC into a hotspot and joining from the phone, or join the PC to the phone’s hotspot — then use the new IP Reel prints.
+- Antivirus may block Python; allow it when asked.
 
-## Phone can’t connect?
-
-- Use the PC’s Wi‑Fi IPv4 from `ipconfig` / the bat window — never `127.0.0.1` on the phone.
-- Phone and PC must be on the **same Wi‑Fi** (not guest/isolated Wi‑Fi).
-- Re-run `Reel.bat` as Administrator so the firewall rule is added.
-- Windows network profile should be **Private**.
-
-## Audio
-
-| Player | Audio |
-|--------|--------|
-| **VLC on phone** (Open in VLC / Network stream) | Full — recommended |
-| Browser + **ffmpeg** on PC | Remuxed AAC |
-| Browser alone | Often silent on MKVs |
-
-Optional: install [ffmpeg](https://ffmpeg.org/) on the PC for browser audio. Install [VLC](https://www.videolan.org/) on PC for “Play on this PC”.
-
-## Options
-
-```bash
-python MovieStream/stream.py --movies "D:\Movies" --port 8080 --open
-```
+Port is **8787** (not 8080).

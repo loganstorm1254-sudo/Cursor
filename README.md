@@ -40,7 +40,7 @@ Stream **MKV** and **MP4** files from **`D:\Movies`** to any phone on the same W
 
 Project: [`MovieStream/`](MovieStream/) · Docs: [`MovieStream/README.md`](MovieStream/README.md)
 
-Download [`releases/Reel-Windows.zip`](releases/Reel-Windows.zip) → unzip → **Run `Reel.bat` as administrator** once → on your phone install **VLC**, open the printed PHONE URL, tap a movie → **Open in VLC** (browser often has no audio).
+Download [`releases/Reel-Windows.zip`](releases/Reel-Windows.zip) → unzip → run **`Reel.bat`** (allow Admin) → movies go in `D:\Movies` → on phone open `http://YOUR-PC-IP:8787/` from PHONE-URL.txt → **Open in VLC** for audio.
 
 ## Walkie — walkie-talkie app (Android, internet)
 

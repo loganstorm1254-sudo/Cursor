@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Reel — stream MKVs and MP4s from your Movies folder over Wi‑Fi.
+Reel — stream MKVs/MP4s from D:\\Movies over Wi‑Fi.
 
-Phone: open in VLC (Network stream) for full audio.
-Browser: optional ffmpeg remux (H.264 + AAC) when ffmpeg is installed.
+Phone: open the printed http://IP:PORT/ URL, then Open in VLC for audio.
 """
 from __future__ import annotations
 
@@ -33,9 +32,11 @@ MIME = {
 STATE: dict = {
     "movies_dir": None,
     "index": {},
-    "port": 8080,
+    "port": 8787,
     "ffmpeg": None,
     "vlc": None,
+    "announce": None,
+    "lan_urls": [],
 }
 
 
@@ -46,6 +47,7 @@ def default_movies_dir() -> Path:
     for candidate in (
         Path(r"D:\Movies"),
         Path(r"D:\movies"),
+        Path(r"D:\Movie"),
         Path.home() / "Movies",
         Path.home() / "Videos",
         Path("/tmp/test-movies"),
@@ -65,7 +67,6 @@ def find_ffmpeg() -> str | None:
     for candidate in (
         Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
         Path(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"),
-        Path.home() / "scoop" / "apps" / "ffmpeg" / "current" / "bin" / "ffmpeg.exe",
     ):
         if candidate.is_file():
             return str(candidate)
@@ -83,42 +84,52 @@ def find_vlc() -> str | None:
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "VideoLAN" / "VLC" / "vlc.exe",
         Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "VideoLAN" / "VLC" / "vlc.exe",
         Path("/usr/bin/vlc"),
-        Path("/usr/bin/cvlc"),
     ):
         if candidate.is_file():
             return str(candidate)
     return None
 
 
+def _ip_score(ip: str) -> int:
+    if ip.startswith("192.168."):
+        return 0
+    if ip.startswith("10."):
+        return 1
+    if re.match(r"^172\.(1[6-9]|2\d|3[0-1])\.", ip):
+        return 2
+    if ip.startswith("169.254."):
+        return 9
+    if ip.startswith("127."):
+        return 10
+    return 5
+
+
 def lan_ips() -> list[str]:
-    found: list[str] = []
+    found: set[str] = set()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
-            primary = s.getsockname()[0]
-            if primary and not primary.startswith("127."):
-                found.append(primary)
+            ip = s.getsockname()[0]
+            if ip:
+                found.add(ip)
     except OSError:
         pass
     try:
         hostname = socket.gethostname()
         for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
-            ip = info[4][0]
-            if ip and not ip.startswith("127.") and ip not in found:
-                found.append(ip)
+            found.add(info[4][0])
     except OSError:
         pass
-    # Enumerate interfaces (best effort)
+    # Windows: ipconfig parse via hostname aliases already covered; also try all hostnames
     try:
-        for info in socket.getaddrinfo(socket.getfqdn(), None, socket.AF_INET):
-            ip = info[4][0]
-            if ip and not ip.startswith("127.") and ip not in found:
-                found.append(ip)
+        for info in socket.getaddrinfo(None, 0, socket.AF_INET, socket.SOCK_DGRAM):
+            found.add(info[4][0])
     except OSError:
         pass
-    if not found:
-        found.append("127.0.0.1")
-    return found
+
+    cleaned = [ip for ip in found if ip and not ip.startswith("127.")]
+    cleaned.sort(key=_ip_score)
+    return cleaned or ["127.0.0.1"]
 
 
 def movie_id(path: Path) -> str:
@@ -126,19 +137,15 @@ def movie_id(path: Path) -> str:
 
 
 def pretty_title(path: Path) -> str:
-    name = path.stem
-    name = re.sub(r"[._]+", " ", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    return name or path.name
+    name = re.sub(r"[._]+", " ", path.stem)
+    return re.sub(r"\s+", " ", name).strip() or path.name
 
 
 def human_size(n: int) -> str:
     size = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024 or unit == "TB":
-            if unit == "B":
-                return f"{int(size)} {unit}"
-            return f"{size:.1f} {unit}"
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} TB"
 
@@ -151,7 +158,7 @@ def scan_movies(root: Path) -> dict:
         dirnames[:] = [
             d
             for d in dirnames
-            if not d.startswith(".") and d.lower() not in {"@eadir", "system volume information"}
+            if not d.startswith(".") and d.lower() not in {"@eadir", "system volume information", "$recycle.bin"}
         ]
         for name in filenames:
             path = Path(dirpath) / name
@@ -164,15 +171,16 @@ def scan_movies(root: Path) -> dict:
                 continue
             mid = movie_id(path)
             try:
-                rel = str(path.relative_to(root))
+                rel = str(path.relative_to(root)).replace("\\", "/")
             except ValueError:
                 rel = path.name
+            folder = str(Path(rel).parent).replace("\\", "/") if Path(rel).parent != Path(".") else ""
             index[mid] = {
                 "id": mid,
                 "title": pretty_title(path),
                 "path": str(path),
-                "rel": rel.replace("\\", "/"),
-                "folder": str(Path(rel).parent).replace("\\", "/") if Path(rel).parent != Path(".") else "",
+                "rel": rel,
+                "folder": folder,
                 "size": st.st_size,
                 "size_label": human_size(st.st_size),
                 "ext": ext.lstrip(".").upper(),
@@ -202,376 +210,273 @@ def resolve_movie(mid: str) -> dict | None:
     return meta
 
 
-HTML = r"""<!DOCTYPE html>
+def esc(s: str) -> str:
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def movies_payload() -> list[dict]:
+    return [
+        {
+            "id": m["id"],
+            "title": m["title"],
+            "rel": m["rel"],
+            "folder": m["folder"],
+            "size": m["size"],
+            "size_label": m["size_label"],
+            "ext": m["ext"],
+            "mtime": m["mtime"],
+        }
+        for m in STATE["index"].values()
+    ]
+
+
+def render_html() -> bytes:
+    refresh_index()
+    movies = movies_payload()
+    port = STATE["port"]
+    urls = list(STATE["lan_urls"]) or [f"http://{ip}:{port}/" for ip in lan_ips()]
+    announce = STATE.get("announce")
+    if announce and announce not in ("", "REPLACE_WITH_IP_FROM_BELOW"):
+        primary = f"http://{announce}:{port}/"
+        urls = [primary] + [u for u in urls if u != primary]
+
+    cards = []
+    for m in movies:
+        raw = f"/raw/{urllib.parse.quote(m['id'])}/{urllib.parse.quote(Path(m['rel']).name)}"
+        cards.append(
+            f'<a class="tile" href="{esc(raw)}">'
+            f'<div class="poster"><span>{esc(m["title"])}</span></div>'
+            f'<div class="info"><h2>{esc(m["title"])}</h2>'
+            f'<p>{esc(m["folder"] or "Movies")} · {esc(m["size_label"])}</p>'
+            f'<span class="badge">{esc(m["ext"])}</span>'
+            f'<span class="badge open">Tap = open / VLC</span></div></a>'
+        )
+    grid_html = "\n".join(cards) if cards else (
+        f'<div class="empty">No .mp4 / .mkv files in<br><code>{esc(str(STATE["movies_dir"]))}</code>'
+        f"<br><br>Copy movies there, then tap Refresh.</div>"
+    )
+    url_html = "".join(f'<div class="url">{esc(u)}</div>' for u in urls)
+    boot = {
+        "movies": movies,
+        "movies_dir": str(STATE["movies_dir"]),
+        "count": len(movies),
+        "lan_urls": urls,
+        "ffmpeg": bool(STATE["ffmpeg"]),
+        "vlc": bool(STATE["vlc"]),
+    }
+    boot_json = json.dumps(boot, ensure_ascii=False).replace("</", "<\\/")
+
+    html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Reel</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet"/>
+<meta name="theme-color" content="#0c0b0a"/>
+<title>Reel — {len(movies)} movies</title>
 <style>
-  :root {
-    --ink: #0c0b0a;
-    --panel: #161310;
-    --panel2: #1e1a15;
-    --line: #2f2920;
-    --text: #f3ebe0;
-    --muted: #a89880;
-    --gold: #e0a84a;
-    --gold-dim: #b07a22;
-    --haze: rgba(224, 168, 74, 0.12);
-    --danger: #e07060;
-    --ok: #6cbc7a;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; min-height: 100%; }
-  body {
-    font-family: "Figtree", sans-serif;
-    color: var(--text);
+  :root {{
+    --ink:#0c0b0a; --panel:#161310; --panel2:#1e1a15; --line:#2f2920;
+    --text:#f3ebe0; --muted:#a89880; --gold:#e0a84a; --gold-dim:#b07a22; --ok:#6cbc7a;
+  }}
+  * {{ box-sizing:border-box; }}
+  body {{
+    margin:0; font-family: Georgia, "Times New Roman", serif; color:var(--text);
     background:
       radial-gradient(900px 500px at 0% 0%, #2a2114 0%, transparent 55%),
-      radial-gradient(800px 480px at 100% 10%, #1a1510 0%, transparent 50%),
-      linear-gradient(180deg, #100e0c 0%, var(--ink) 40%, #0a0908 100%);
-    background-attachment: fixed;
-  }
-  .shell { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 28px 20px 80px; }
-  header.hero {
-    min-height: min(42vh, 340px);
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-bottom: 22px;
-    animation: rise 0.7s ease-out both;
-  }
-  .brand {
-    font-family: "Syne", sans-serif;
-    font-weight: 800;
-    font-size: clamp(3.4rem, 12vw, 6.5rem);
-    line-height: 0.9;
-    letter-spacing: -0.03em;
-    margin: 0;
-  }
-  .brand em { font-style: normal; color: var(--gold); }
-  .tagline { margin: 0; max-width: 32rem; color: var(--muted); font-size: 1.05rem; line-height: 1.45; }
-  .wifi-box {
-    margin-top: 8px;
-    padding: 14px 16px;
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    background: linear-gradient(180deg, var(--panel2), var(--panel));
-    animation: rise 0.7s ease-out 0.08s both;
-  }
-  .wifi-box h2 {
-    margin: 0 0 8px;
-    font-family: "Syne", sans-serif;
-    font-size: 1rem;
-    font-weight: 700;
-  }
-  .wifi-box ol { margin: 0; padding-left: 1.2rem; color: var(--muted); }
-  .wifi-box li { margin: 4px 0; }
-  .wifi-box code, .url {
-    color: var(--gold);
-    word-break: break-all;
-    font-family: ui-monospace, Consolas, monospace;
-    font-size: 0.92rem;
-  }
-  .meta-row {
-    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
-    margin-top: 6px; color: var(--muted); font-size: 0.92rem;
-  }
-  .meta-row strong { color: var(--text); font-weight: 600; }
-  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); display: inline-block; animation: pulse 2.2s ease-in-out infinite; }
-  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 22px; animation: rise 0.7s ease-out 0.1s both; }
-  #q {
-    flex: 1 1 220px; min-width: 0; background: var(--panel); border: 1px solid var(--line);
-    color: var(--text); border-radius: 10px; padding: 12px 14px; font: inherit; outline: none;
-  }
-  #q:focus { border-color: var(--gold-dim); box-shadow: 0 0 0 3px var(--haze); }
-  button, .btn {
-    font: inherit; font-weight: 600; border: 1px solid var(--line); background: var(--panel2);
-    color: var(--text); border-radius: 10px; padding: 12px 16px; cursor: pointer; text-decoration: none; display: inline-block;
-  }
-  button.primary, .btn.primary {
-    background: linear-gradient(180deg, #f0b85a, var(--gold-dim));
-    border-color: transparent; color: #1a1206;
-  }
-  button:hover, .btn:hover { filter: brightness(1.06); }
-  .grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 14px; animation: rise 0.75s ease-out 0.18s both;
-  }
-  .tile {
-    text-align: left; padding: 0; overflow: hidden;
-    background: linear-gradient(165deg, var(--panel2), var(--panel));
-    border: 1px solid var(--line); border-radius: 14px;
-    transition: border-color 0.2s, transform 0.2s;
-  }
-  .tile:hover { border-color: #4a3d2a; transform: translateY(-2px); }
-  .poster {
-    height: 120px; display: flex; align-items: flex-end; padding: 14px;
-    background:
-      linear-gradient(180deg, transparent 20%, rgba(12,11,10,0.85) 100%),
-      linear-gradient(135deg, #3a2d18 0%, #1a1510 55%, #241c12 100%);
-    font-family: "Syne", sans-serif; font-weight: 700; font-size: 1.55rem;
-    letter-spacing: -0.02em; line-height: 1.1;
-  }
-  .poster span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .info { padding: 12px 14px 14px; }
-  .info h2 { font-family: "Syne", sans-serif; font-size: 1.05rem; font-weight: 700; margin: 0 0 6px; line-height: 1.25; }
-  .info p { margin: 0; color: var(--muted); font-size: 0.86rem; }
-  .badge {
-    display: inline-block; margin-top: 8px; font-size: 0.72rem; font-weight: 700;
-    letter-spacing: 0.06em; color: var(--gold); border: 1px solid #4a3d2a;
-    padding: 3px 7px; border-radius: 6px;
-  }
-  .empty, .error { padding: 28px 8px; color: var(--muted); text-align: center; }
-  .error { color: var(--danger); }
-  #player-view { display: none; }
-  #player-view.show { display: block; animation: rise 0.45s ease-out both; }
-  #library-view.hide { display: none; }
-  .player-head {
-    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
-    justify-content: space-between; margin-bottom: 16px;
-  }
-  .player-head h1 {
-    font-family: "Syne", sans-serif; font-size: clamp(1.4rem, 4vw, 2rem);
-    margin: 0; letter-spacing: -0.02em;
-  }
-  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 14px; }
-  video {
-    width: 100%; max-height: min(70vh, 720px); background: #000;
-    border-radius: 12px; border: 1px solid var(--line); outline: none;
-  }
-  .hint { margin-top: 12px; color: var(--muted); font-size: 0.88rem; line-height: 1.45; }
-  .hint .url { display: block; margin-top: 6px; }
-  .ok { color: var(--ok); }
-  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
-  @keyframes pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
-  @media (max-width: 560px) {
-    .shell { padding: 18px 14px 64px; }
-    header.hero { min-height: auto; margin-bottom: 14px; }
-    .poster { height: 100px; }
-  }
+      linear-gradient(180deg,#100e0c,#0a0908);
+    min-height:100%;
+  }}
+  .shell {{ max-width:960px; margin:0 auto; padding:22px 16px 72px; }}
+  .brand {{
+    font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+    font-size:clamp(3rem,14vw,5.5rem); letter-spacing:.02em; margin:0; line-height:.95;
+  }}
+  .brand em {{ font-style:normal; color:var(--gold); }}
+  .tag {{ color:var(--muted); font-family: system-ui,sans-serif; font-size:1rem; max-width:34rem; }}
+  .box {{
+    margin:16px 0; padding:14px; border:1px solid var(--line); border-radius:12px;
+    background:linear-gradient(180deg,var(--panel2),var(--panel));
+    font-family: system-ui,sans-serif;
+  }}
+  .box h2 {{ margin:0 0 8px; font-size:1rem; color:var(--gold); }}
+  .url {{ color:var(--gold); word-break:break-all; font-family: Consolas, monospace; margin:6px 0; font-size:1.05rem; }}
+  .meta {{ color:var(--muted); font-family:system-ui,sans-serif; margin:8px 0 16px; }}
+  .meta strong {{ color:var(--text); }}
+  .toolbar {{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; font-family:system-ui,sans-serif; }}
+  #q {{
+    flex:1; min-width:140px; padding:12px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel); color:var(--text); font:inherit;
+  }}
+  button {{
+    font:inherit; font-weight:700; border:0; border-radius:10px; padding:12px 16px; cursor:pointer;
+    background:linear-gradient(180deg,#f0b85a,var(--gold-dim)); color:#1a1206;
+  }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }}
+  a.tile {{
+    text-decoration:none; color:inherit; display:block; border:1px solid var(--line);
+    border-radius:14px; overflow:hidden; background:linear-gradient(165deg,var(--panel2),var(--panel));
+  }}
+  .poster {{
+    min-height:100px; padding:14px; display:flex; align-items:flex-end;
+    background:linear-gradient(135deg,#3a2d18,#1a1510 55%,#241c12);
+    font-family: Impact, Haettenschweiler, sans-serif; font-size:1.4rem; line-height:1.1;
+  }}
+  .info {{ padding:12px 14px 14px; font-family:system-ui,sans-serif; }}
+  .info h2 {{ margin:0 0 6px; font-size:1rem; }}
+  .info p {{ margin:0; color:var(--muted); font-size:.86rem; }}
+  .badge {{
+    display:inline-block; margin-top:8px; margin-right:6px; font-size:.7rem; font-weight:800;
+    letter-spacing:.06em; color:var(--gold); border:1px solid #4a3d2a; padding:3px 7px; border-radius:6px;
+  }}
+  .badge.open {{ color:var(--ok); border-color:#2a4a32; }}
+  .empty {{ text-align:center; color:var(--muted); padding:28px 8px; font-family:system-ui,sans-serif; line-height:1.5; }}
+  code {{ color:var(--gold); }}
+  #player {{ display:none; }}
+  #player.show {{ display:block; }}
+  #library.hide {{ display:none; }}
+  video {{ width:100%; max-height:70vh; background:#000; border-radius:12px; border:1px solid var(--line); }}
+  .actions {{ display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; font-family:system-ui,sans-serif; }}
+  .actions a, .actions button {{
+    background:var(--panel2); color:var(--text); border:1px solid var(--line); text-decoration:none;
+  }}
+  .actions a.primary, .actions button.primary {{
+    background:linear-gradient(180deg,#f0b85a,var(--gold-dim)); color:#1a1206; border:0;
+  }}
 </style>
 </head>
 <body>
-  <div class="shell">
-    <div id="library-view">
-      <header class="hero">
-        <h1 class="brand">Re<em>el</em></h1>
-        <p class="tagline">Movies from this PC over Wi‑Fi. Use <strong style="color:var(--text)">VLC</strong> on your phone for sound — browsers often drop movie audio.</p>
-        <div class="meta-row">
-          <span class="dot" aria-hidden="true"></span>
-          <span><strong id="count">0</strong> titles</span>
-          <span id="folder-label">…</span>
-          <span id="engine-label"></span>
-        </div>
-      </header>
-      <div class="wifi-box" id="wifi-box">
-        <h2>Phone on same Wi‑Fi</h2>
-        <ol>
-          <li>Install <strong style="color:var(--text)">VLC</strong> from the app store.</li>
-          <li>On this phone open one of these (same Wi‑Fi as the PC):</li>
-        </ol>
-        <p id="lan-urls" class="url" style="margin:10px 0 0">Loading…</p>
-        <p class="hint" style="margin-top:10px">If it won’t load: on the PC re-run <code>Reel.bat</code> and allow the Windows Firewall popup / “Private network”.</p>
-      </div>
-      <div class="toolbar">
-        <input id="q" type="search" placeholder="Search titles…" autocomplete="off"/>
-        <button type="button" id="refresh" class="primary">Refresh</button>
-      </div>
-      <div id="grid" class="grid"></div>
-      <div id="empty" class="empty" hidden>No MKVs or MP4s found in this folder.</div>
-      <div id="err" class="error" hidden></div>
+<div class="shell">
+  <div id="library">
+    <h1 class="brand">Re<em>el</em></h1>
+    <p class="tag">Movies on this PC. On your phone use the Wi‑Fi link below, then open titles in <b>VLC</b> for sound.</p>
+    <div class="box">
+      <h2>Phone link (same Wi‑Fi)</h2>
+      {url_html}
+      <p style="color:var(--muted);margin:10px 0 0;font-size:.9rem">
+        If this page opened on the PC but not the phone: keep Reel.bat running as Administrator,
+        and type the link into the phone browser. Not 127.0.0.1.
+      </p>
     </div>
-
-    <div id="player-view">
-      <div class="player-head">
-        <h1 id="play-title">Playing</h1>
-        <button type="button" id="back">← Library</button>
-      </div>
-      <div class="actions">
-        <a id="vlc-link" class="btn primary" href="#">Open in VLC (audio)</a>
-        <button type="button" id="copy-url">Copy VLC URL</button>
-        <button type="button" id="play-browser">Play in browser</button>
-        <button type="button" id="play-pc-vlc" hidden>Play on this PC (VLC)</button>
-      </div>
-      <video id="vid" controls playsinline preload="metadata"></video>
-      <p class="hint" id="play-hint"></p>
+    <p class="meta"><strong id="count">{len(movies)}</strong> titles · <span id="folder">{esc(str(STATE["movies_dir"]))}</span></p>
+    <div class="toolbar">
+      <input id="q" type="search" placeholder="Search…" autocomplete="off"/>
+      <button type="button" id="refresh" onclick="location.reload()">Refresh</button>
+    </div>
+    <div id="grid" class="grid">
+      {grid_html}
     </div>
   </div>
+
+  <div id="player">
+    <h1 id="play-title" class="brand" style="font-size:2rem">Playing</h1>
+    <div class="actions">
+      <a id="vlc-link" class="primary" href="#">Open in VLC (audio)</a>
+      <button type="button" id="copy-url">Copy URL</button>
+      <button type="button" id="play-browser">Try browser</button>
+      <button type="button" id="back">← Library</button>
+    </div>
+    <video id="vid" controls playsinline preload="metadata"></video>
+    <p id="play-hint" class="tag"></p>
+  </div>
+</div>
 <script>
-const grid = document.getElementById("grid");
-const empty = document.getElementById("empty");
-const err = document.getElementById("err");
-const countEl = document.getElementById("count");
-const folderLabel = document.getElementById("folder-label");
-const engineLabel = document.getElementById("engine-label");
-const lanUrls = document.getElementById("lan-urls");
-const q = document.getElementById("q");
-const libraryView = document.getElementById("library-view");
-const playerView = document.getElementById("player-view");
-const vid = document.getElementById("vid");
-const playTitle = document.getElementById("play-title");
-const playHint = document.getElementById("play-hint");
-const vlcLink = document.getElementById("vlc-link");
-const playPcVlc = document.getElementById("play-pc-vlc");
-
-let movies = [];
-let info = { ffmpeg: false, vlc: false, lan_urls: [] };
+const BOOT = {boot_json};
+let movies = BOOT.movies || [];
 let current = null;
+const grid = document.getElementById("grid");
+const q = document.getElementById("q");
 
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-  }[c]));
-}
-
-function absUrl(path) {
-  return location.origin + path;
-}
-
-function vlcStreamUrl(m) {
-  // Raw file URL — VLC plays AC3/DTS/etc. browsers usually can't
-  return absUrl("/raw/" + encodeURIComponent(m.id) + "/" + encodeURIComponent(m.rel.split("/").pop()));
-}
-
-function render(list) {
-  grid.innerHTML = "";
-  empty.hidden = list.length > 0;
-  for (const m of list) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "tile";
-    btn.innerHTML =
-      `<div class="poster"><span>${esc(m.title)}</span></div>` +
-      `<div class="info"><h2>${esc(m.title)}</h2>` +
-      `<p>${esc(m.folder || "Movies")} · ${esc(m.size_label)}</p>` +
-      `<span class="badge">${esc(m.ext)}</span></div>`;
-    btn.addEventListener("click", () => openMovie(m));
-    grid.appendChild(btn);
-  }
-}
-
-function filter() {
-  const needle = q.value.trim().toLowerCase();
-  if (!needle) return render(movies);
-  render(movies.filter(m =>
-    m.title.toLowerCase().includes(needle) ||
-    (m.folder || "").toLowerCase().includes(needle) ||
-    m.rel.toLowerCase().includes(needle)
-  ));
-}
-
-async function load() {
-  err.hidden = true;
-  try {
-    const res = await fetch("/api/movies?refresh=1");
-    if (!res.ok) throw new Error("Could not load library");
-    const data = await res.json();
-    movies = data.movies || [];
-    info = data;
-    countEl.textContent = String(movies.length);
-    folderLabel.textContent = data.movies_dir || "";
-    const bits = [];
-    bits.push(data.ffmpeg ? "ffmpeg audio fix: on" : "ffmpeg: off");
-    bits.push(data.vlc ? "VLC on PC: found" : "VLC on PC: not found");
-    engineLabel.textContent = bits.join(" · ");
-    playPcVlc.hidden = !data.vlc;
-    const urls = (data.lan_urls || []).map(u => `<div class="url">${esc(u)}</div>`).join("") ||
-      `<div class="url">${esc(location.origin + "/")}</div>`;
-    lanUrls.innerHTML = urls;
-    filter();
-  } catch (e) {
-    err.hidden = false;
-    err.textContent = e.message || String(e);
-  }
-}
-
-function openMovie(m) {
+function esc(s) {{
+  return String(s).replace(/[&<>"']/g, c => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
+}}
+function rawUrl(m) {{
+  const name = (m.rel || "movie").split("/").pop();
+  return location.origin + "/raw/" + encodeURIComponent(m.id) + "/" + encodeURIComponent(name);
+}}
+function render(list) {{
+  if (!list.length) {{
+    grid.innerHTML = '<div class="empty">No matches.</div>';
+    return;
+  }}
+  grid.innerHTML = list.map(m =>
+    `<button type="button" class="tile" data-id="${{esc(m.id)}}" style="width:100%;text-align:left;padding:0;cursor:pointer;font:inherit;color:inherit">` +
+    `<div class="poster"><span>${{esc(m.title)}}</span></div>` +
+    `<div class="info"><h2>${{esc(m.title)}}</h2>` +
+    `<p>${{esc(m.folder || "Movies")}} · ${{esc(m.size_label)}}</p>` +
+    `<span class="badge">${{esc(m.ext)}}</span></div></button>`
+  ).join("");
+  grid.querySelectorAll("button.tile").forEach(btn => {{
+    btn.addEventListener("click", () => {{
+      const m = movies.find(x => x.id === btn.getAttribute("data-id"));
+      if (m) openMovie(m);
+    }});
+  }});
+}}
+function openMovie(m) {{
   current = m;
-  playTitle.textContent = m.title;
-  const raw = vlcStreamUrl(m);
-  vlcLink.href = raw;
-  // Android VLC intent when possible
-  const isAndroid = /Android/i.test(navigator.userAgent);
-  if (isAndroid) {
-    vlcLink.href = "intent:" + raw.replace(/^https?:/, "") +
+  document.getElementById("play-title").textContent = m.title;
+  const raw = rawUrl(m);
+  const a = document.getElementById("vlc-link");
+  if (/Android/i.test(navigator.userAgent)) {{
+    a.href = "intent:" + raw.replace(/^https?:/, "") +
       "#Intent;action=android.intent.action.VIEW;scheme=http;type=video/*;package=org.videolan.vlc;end";
-  }
-  playHint.innerHTML =
-    `Best audio: tap <strong class="ok">Open in VLC</strong>, or in VLC → Network → paste:<br>` +
-    `<span class="url">${esc(raw)}</span><br><br>` +
-    (info.ffmpeg
-      ? "Browser play remuxes audio to AAC via ffmpeg on the PC."
-      : "Browser play may have no sound without ffmpeg. Use VLC.");
-  libraryView.classList.add("hide");
-  playerView.classList.add("show");
-  // Prefer VLC path — don't autoplay browser (often silent)
-  vid.removeAttribute("src");
-  vid.load();
-}
-
-function playInBrowser() {
+  }} else {{
+    a.href = raw;
+  }}
+  document.getElementById("play-hint").innerHTML =
+    "For audio: <b>Open in VLC</b> or paste this in VLC → Network:<br><span class='url'>" + esc(raw) + "</span>";
+  document.getElementById("library").classList.add("hide");
+  document.getElementById("player").classList.add("show");
+  document.getElementById("vid").removeAttribute("src");
+}}
+document.getElementById("back").onclick = () => {{
+  const v = document.getElementById("vid");
+  v.pause(); v.removeAttribute("src"); v.load();
+  document.getElementById("player").classList.remove("show");
+  document.getElementById("library").classList.remove("hide");
+}};
+document.getElementById("play-browser").onclick = () => {{
   if (!current) return;
-  const src = info.ffmpeg
-    ? "/play/" + encodeURIComponent(current.id)
-    : "/raw/" + encodeURIComponent(current.id);
-  vid.src = src;
-  vid.play().catch(() => {});
-}
-
-async function playOnPcVlc() {
+  const v = document.getElementById("vid");
+  v.src = BOOT.ffmpeg ? ("/play/" + encodeURIComponent(current.id)) : rawUrl(current);
+  v.play().catch(() => {{}});
+}};
+document.getElementById("copy-url").onclick = async () => {{
   if (!current) return;
-  try {
-    const res = await fetch("/api/vlc/" + encodeURIComponent(current.id), { method: "POST" });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "VLC launch failed");
-    playHint.innerHTML = `<span class="ok">Opened in VLC on this PC.</span>`;
-  } catch (e) {
-    playHint.textContent = e.message || String(e);
-  }
-}
-
-async function copyUrl() {
-  if (!current) return;
-  const raw = vlcStreamUrl(current);
-  try {
-    await navigator.clipboard.writeText(raw);
-    playHint.innerHTML = `<span class="ok">Copied.</span> Paste into VLC → Open Network Stream.<br><span class="url">${esc(raw)}</span>`;
-  } catch {
-    playHint.innerHTML = `Copy this into VLC:<br><span class="url">${esc(raw)}</span>`;
-  }
-}
-
-function closePlayer() {
-  vid.pause();
-  vid.removeAttribute("src");
-  vid.load();
-  current = null;
-  playerView.classList.remove("show");
-  libraryView.classList.remove("hide");
-}
-
-document.getElementById("refresh").addEventListener("click", load);
-document.getElementById("back").addEventListener("click", closePlayer);
-document.getElementById("play-browser").addEventListener("click", playInBrowser);
-document.getElementById("copy-url").addEventListener("click", copyUrl);
-playPcVlc.addEventListener("click", playOnPcVlc);
-q.addEventListener("input", filter);
-load();
+  const raw = rawUrl(current);
+  try {{ await navigator.clipboard.writeText(raw); }} catch (e) {{}}
+  document.getElementById("play-hint").textContent = "Copied: " + raw;
+}};
+q.addEventListener("input", () => {{
+  const n = q.value.trim().toLowerCase();
+  render(!n ? movies : movies.filter(m =>
+    m.title.toLowerCase().includes(n) || (m.rel || "").toLowerCase().includes(n)));
+}});
+// Enhance SSR anchors into interactive player when JS works
+if (movies.length) {{
+  render(movies);
+}}
 </script>
 </body>
 </html>
 """
+    return html.encode("utf-8")
+
+
+class ThreadingHTTPServerReuse(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 class ReelHandler(BaseHTTPRequestHandler):
-    server_version = "Reel/1.1"
-    protocol_version = "HTTP/1.1"
+    server_version = "Reel/1.2"
+    protocol_version = "HTTP/1.0"  # simpler for flaky phone stacks
 
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -582,7 +487,6 @@ class ReelHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Connection", "close")
         if extra:
             for k, v in extra.items():
                 self.send_header(k, v)
@@ -591,28 +495,25 @@ class ReelHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _json(self, code: int, obj) -> None:
-        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-        self._send(code, data, "application/json; charset=utf-8")
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Range, Content-Type")
-        self.send_header("Connection", "close")
         self.end_headers()
 
     def do_HEAD(self) -> None:
-        self._route(head_only=True)
+        self._route(True)
 
     def do_GET(self) -> None:
-        self._route(head_only=False)
+        self._route(False)
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        if path.startswith("/api/vlc/"):
-            mid = urllib.parse.unquote(path[len("/api/vlc/") :])
+        if parsed.path.startswith("/api/vlc/"):
+            mid = urllib.parse.unquote(parsed.path[len("/api/vlc/") :])
             self._launch_vlc(mid)
             return
         self._send(404, b"Not found", "text/plain; charset=utf-8")
@@ -623,34 +524,32 @@ class ReelHandler(BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(parsed.query)
 
         if path in ("/", "/index.html"):
-            self._send(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
+            body = render_html()
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+
+        if path == "/health":
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "movies": len(STATE["index"]),
+                    "movies_dir": str(STATE["movies_dir"]),
+                    "lan_urls": STATE["lan_urls"],
+                },
+            )
             return
 
         if path == "/api/movies":
             if qs.get("refresh", ["0"])[0] in ("1", "true", "yes"):
                 refresh_index()
-            port = STATE["port"]
-            urls = [f"http://{ip}:{port}/" for ip in lan_ips()]
-            movies = [
-                {
-                    "id": m["id"],
-                    "title": m["title"],
-                    "rel": m["rel"],
-                    "folder": m["folder"],
-                    "size": m["size"],
-                    "size_label": m["size_label"],
-                    "ext": m["ext"],
-                    "mtime": m["mtime"],
-                }
-                for m in STATE["index"].values()
-            ]
             self._json(
                 200,
                 {
-                    "movies": movies,
+                    "movies": movies_payload(),
                     "movies_dir": str(STATE["movies_dir"]),
-                    "count": len(movies),
-                    "lan_urls": urls,
+                    "count": len(STATE["index"]),
+                    "lan_urls": STATE["lan_urls"],
                     "ffmpeg": bool(STATE["ffmpeg"]),
                     "vlc": bool(STATE["vlc"]),
                 },
@@ -682,49 +581,39 @@ class ReelHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "Movie not found"})
             return
         if not vlc:
-            self._json(400, {"error": "VLC not found on this PC. Install VLC, then restart Reel."})
+            self._json(400, {"error": "VLC not installed on this PC"})
             return
-        path = meta["path"]
         try:
-            subprocess.Popen(
-                [vlc, "--fullscreen", path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            subprocess.Popen([vlc, "--fullscreen", meta["path"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:
             self._json(500, {"error": str(e)})
             return
-        self._json(200, {"ok": True, "path": path})
+        self._json(200, {"ok": True})
 
     def _stream_file(self, mid: str, head_only: bool) -> None:
         meta = resolve_movie(mid)
         if not meta:
             self._send(404, b"Movie not found", "text/plain; charset=utf-8")
             return
-
         path = Path(meta["path"])
         ext = path.suffix.lower()
         ctype = MIME.get(ext) or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         size = path.stat().st_size
-        range_header = self.headers.get("Range")
-        # Helpful for VLC / media players
         disposition = 'inline; filename="%s"' % path.name.replace('"', "")
+        range_header = self.headers.get("Range")
 
         if range_header:
             m = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
             if not m:
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{size}")
-                self.send_header("Connection", "close")
                 self.end_headers()
                 return
-            start_s, end_s = m.group(1), m.group(2)
-            start = int(start_s) if start_s else 0
-            end = int(end_s) if end_s else size - 1
+            start = int(m.group(1)) if m.group(1) else 0
+            end = int(m.group(2)) if m.group(2) else size - 1
             if start >= size or end < start:
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{size}")
-                self.send_header("Connection", "close")
                 self.end_headers()
                 return
             end = min(end, size - 1)
@@ -736,7 +625,6 @@ class ReelHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(length))
             self.send_header("Content-Disposition", disposition)
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
             self.end_headers()
             if head_only:
                 return
@@ -760,7 +648,6 @@ class ReelHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(size))
         self.send_header("Content-Disposition", disposition)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Connection", "close")
         self.end_headers()
         if head_only:
             return
@@ -775,68 +662,36 @@ class ReelHandler(BaseHTTPRequestHandler):
                     return
 
     def _stream_ffmpeg(self, mid: str, head_only: bool) -> None:
-        """Remux/transcode to fragmented MP4 with AAC so browsers get audio."""
         meta = resolve_movie(mid)
         ffmpeg = STATE["ffmpeg"]
         if not meta:
             self._send(404, b"Movie not found", "text/plain; charset=utf-8")
             return
         if not ffmpeg:
-            # Fall back to raw file
             self._stream_file(mid, head_only=head_only)
             return
-
-        path = meta["path"]
         if head_only:
             self.send_response(200)
             self.send_header("Content-Type", "video/mp4")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
             self.end_headers()
             return
-
-        # Copy video when possible; always encode audio to AAC (movie tracks are often AC3/DTS)
         cmd = [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            path,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a:0?",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-ac",
-            "2",
-            "-b:a",
-            "192k",
-            "-movflags",
-            "frag_keyframe+empty_moov+default_base_moof",
-            "-f",
-            "mp4",
-            "pipe:1",
+            ffmpeg, "-hide_banner", "-loglevel", "error",
+            "-i", meta["path"],
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "copy", "-c:a", "aac", "-ac", "2", "-b:a", "192k",
+            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+            "-f", "mp4", "pipe:1",
         ]
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=1024 * 64,
-            )
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024 * 64)
         except OSError as e:
             self._send(500, str(e).encode(), "text/plain; charset=utf-8")
             return
-
         self.send_response(200)
         self.send_header("Content-Type", "video/mp4")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Connection", "close")
         self.end_headers()
         try:
             assert proc.stdout is not None
@@ -861,11 +716,12 @@ class ReelHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Reel — stream local movies over Wi‑Fi (VLC-friendly)")
+    parser = argparse.ArgumentParser(description="Reel — Wi‑Fi movies from D:\\Movies")
     parser.add_argument("--movies", "-m", type=Path, default=default_movies_dir())
-    parser.add_argument("--host", default="0.0.0.0", help="Bind address (0.0.0.0 = all Wi‑Fi adapters)")
-    parser.add_argument("--port", "-p", type=int, default=8080)
-    parser.add_argument("--open", action="store_true", help="Open library in this PC's browser")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", "-p", type=int, default=8787)
+    parser.add_argument("--announce", default="", help="Preferred LAN IP to show phones")
+    parser.add_argument("--open", action="store_true")
     args = parser.parse_args()
 
     movies_dir = args.movies.expanduser()
@@ -873,37 +729,61 @@ def main() -> int:
     STATE["port"] = args.port
     STATE["ffmpeg"] = find_ffmpeg()
     STATE["vlc"] = find_vlc()
+    STATE["announce"] = (args.announce or "").strip()
     refresh_index()
 
-    if not movies_dir.is_dir():
-        print(f"Movies folder not found yet: {movies_dir}", file=sys.stderr)
-        print("Create it (or pass --movies PATH). Server will still start.", file=sys.stderr)
-    else:
-        print(f"Scanning: {movies_dir}")
-        print(f"Found {len(STATE['index'])} video(s)")
+    ips = lan_ips()
+    if STATE["announce"] and STATE["announce"] not in ips and not STATE["announce"].startswith("REPLACE"):
+        ips = [STATE["announce"]] + ips
+    STATE["lan_urls"] = [f"http://{ip}:{args.port}/" for ip in ips]
 
-    print(f"VLC on PC:   {STATE['vlc'] or 'NOT FOUND (install for Play on this PC)'}")
-    print(f"ffmpeg:      {STATE['ffmpeg'] or 'NOT FOUND (browser play may have no audio — use VLC on phone)'}")
+    if not movies_dir.is_dir():
+        print(f"WARNING: folder missing: {movies_dir}", file=sys.stderr)
+    print(f"Movies folder: {movies_dir}")
+    print(f"Videos found:  {len(STATE['index'])}")
+    if STATE["index"]:
+        for m in list(STATE["index"].values())[:12]:
+            print(f"  - {m['rel']}")
+        if len(STATE["index"]) > 12:
+            print(f"  … +{len(STATE['index']) - 12} more")
+    else:
+        print("  (none — put .mkv / .mp4 files in the folder above)")
 
     try:
-        httpd = ThreadingHTTPServer((args.host, args.port), ReelHandler)
+        httpd = ThreadingHTTPServerReuse((args.host, args.port), ReelHandler)
     except OSError as e:
-        print(f"\nCould not bind {args.host}:{args.port} — {e}", file=sys.stderr)
-        print("Is another Reel/app already using that port?", file=sys.stderr)
+        print(f"\nERROR: cannot listen on {args.host}:{args.port} — {e}", file=sys.stderr)
         return 1
 
-    ips = lan_ips()
+    # Confirm we are actually listening on all interfaces
+    try:
+        sockname = httpd.socket.getsockname()
+        print(f"Listening:    {sockname[0]}:{sockname[1]}")
+    except OSError:
+        pass
+
+    phone_txt = Path(__file__).resolve().parent / "PHONE-URL.txt"
+    primary = STATE["lan_urls"][0] if STATE["lan_urls"] else f"http://127.0.0.1:{args.port}/"
+    try:
+        phone_txt.write_text(
+            "Open this on your PHONE (same Wi-Fi). Keep Reel.bat running.\n\n"
+            + "\n".join(STATE["lan_urls"])
+            + "\n\nThen tap a movie -> Open in VLC for audio.\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
     print()
     print("================================================")
-    print("  Reel is live — use your PHONE on same Wi-Fi")
+    print("  ON YOUR PHONE browser open:")
+    for u in STATE["lan_urls"]:
+        print(f"     {u}")
     print("================================================")
-    print(f"  This PC:   http://127.0.0.1:{args.port}/")
-    for ip in ips:
-        print(f"  PHONE:     http://{ip}:{args.port}/")
-    print()
-    print("  On phone: install VLC → open a movie → Open in VLC")
-    print("  (or VLC → Network → paste the /raw/... URL)")
-    print("  If phone can't connect: allow Windows Firewall for Python/port")
+    print("  Test on this PC first:")
+    print(f"     http://127.0.0.1:{args.port}/")
+    print(f"     http://127.0.0.1:{args.port}/health")
+    print("  Movies should list immediately (no login).")
     print("================================================")
     print()
 

@@ -9,15 +9,20 @@ short key `sk-nova-m00ny4xe` also works).
 Anything beyond her training ("what is a black hole?") is answered live from
 **Wikipedia**; without internet she still works fully offline.
 
-Project: [`NovaAI/`](NovaAI/) · Ready APK: [`releases/NovaAI.apk`](releases/NovaAI.apk) · Full docs: [`NovaAI/README.md`](NovaAI/README.md)
+Project: [`NovaAI/`](NovaAI/) · Ready APK: [`releases/NovaAI.apk`](releases/NovaAI.apk) · Windows: [`releases/NovaAI-Windows.zip`](releases/NovaAI-Windows.zip) · Full docs: [`NovaAI/README.md`](NovaAI/README.md)
 
-### Quick start
+### Quick start (Android)
 
 1. Install `releases/NovaAI.apk`.
 2. Open **Nova AI** and paste a master API key from `NovaAI/MASTER_KEY.txt`
    (easiest: `sk-nova-m00ny4xe`).
 3. Chat: try `tell me a joke`, `what is 7 plus 5`, `name 3 colors`, `what is a black hole?`.
 
+### Quick start (Windows)
+
+1. Download [`releases/NovaAI-Windows.zip`](releases/NovaAI-Windows.zip) and unzip.
+2. Double-click **`NovaAI.exe`** (browser opens the chat).
+3. Unlock with `sk-nova-m00ny4xe`. First run downloads the model (~11 MB).
 ## Notify apps (Android, Bluetooth)
 
 Two apps that send phone notifications over **Bluetooth** — no Wi‑Fi, data, hotspot, or IPs.

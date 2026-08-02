@@ -70,8 +70,11 @@ cd .. && ./gradlew assembleDebug
 ## Nova on Discord
 
 The same model also runs as a Discord bot: [`../bot3.py`](../bot3.py). It
-decrypts the same encrypted weights with the master API key and has the same
-Wikipedia fallback. `python bot3.py --selftest` verifies it without Discord.
+unlocks with the master API key you input (decrypting `nova_model.sc`, a
+stdlib-friendly encryption of the same weights) and has the same Wikipedia
+fallback. It needs **only `pip install discord.py`** — inference is pure
+Python, no numpy/torch. `python bot3.py --selftest` verifies it without
+Discord.
 
 ## Tests
 

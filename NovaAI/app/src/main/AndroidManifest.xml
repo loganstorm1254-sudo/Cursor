@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Nova is fully offline: no permissions at all. -->
+    <!-- Internet is used only for optional Wikipedia lookups; the AI itself
+         runs fully on-device and works without any connection. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="true"

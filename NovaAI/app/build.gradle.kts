@@ -11,12 +11,18 @@ android {
         applicationId = "com.nova.ai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.1.0"
     }
 
     buildFeatures {
         buildConfig = true
+    }
+
+    testOptions {
+        unitTests.all {
+            it.systemProperty("runLiveTests", System.getProperty("runLiveTests") ?: "false")
+        }
     }
 
     buildTypes {

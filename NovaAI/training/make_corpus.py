@@ -53,10 +53,10 @@ CAPABILITY_Q = ["what can you do", "what do you do", "help", "help me", "what ar
                 "how can you help me", "what should i ask you", "give me some ideas",
                 "what are you good at", "what can i ask you", "menu", "commands", "options"]
 CAPABILITY_A = [
-    "i can chat with you , tell jokes , share fun facts , tell short stories , do simple math , define words , and answer little questions . try saying tell me a joke !",
-    "here is what i am good at : jokes , fun facts , short stories , simple math like what is 7 plus 5 , word definitions , and friendly chat . what sounds fun ?",
-    "ask me for a joke , a fact , or a story . i can also do simple math , explain words , and just keep you company .",
-    "i am a small model , but i can tell jokes , give facts , tell stories , do easy math , and chat about my favorite things . give it a try !",
+    "i can chat with you , tell jokes , share fun facts , tell short stories , do simple math , define words , and answer little questions . and if you ask about something i do not know , i will look it up on wikipedia for you !",
+    "here is what i am good at : jokes , fun facts , short stories , simple math like what is 7 plus 5 , word definitions , and friendly chat . i can also search wikipedia when you ask about new things !",
+    "ask me for a joke , a fact , or a story . i can also do simple math , explain words , and look things up on wikipedia when my little brain does not know them .",
+    "i am a small model , but i can tell jokes , give facts , tell stories , do easy math , and check wikipedia for anything beyond my training . give it a try !",
 ]
 
 THANKS_U = ["thanks", "thank you", "thanks a lot", "thank you so much", "thanks nova",
@@ -193,9 +193,9 @@ DEFLECT_QA = [
     ("will it rain today", "i have no internet connection , so i cannot see the sky . maybe take an umbrella just in case !"),
     ("what time is it", "i cannot see the clock , i am just a little language model . your phone knows better than i do !"),
     ("what day is it", "i do not know the date , i live outside of time . your phone calendar can help with that !"),
-    ("whats the news", "i am completely offline , so i cannot read the news . but i can tell you a fun fact instead !"),
-    ("search the web", "i cannot browse the web , i am a private offline ai . everything i know is inside my little brain ."),
-    ("google it", "no googling for me , i am fully offline ! but ask me for a fact and i will share what i know ."),
+    ("whats the news", "i cannot read the news , it changes too fast for me . but i can tell you a fun fact instead !"),
+    ("can you search the internet", "yes ! ask me about anything , like who is or what is something , and i will look it up on wikipedia for you ."),
+    ("can you use wikipedia", "yes ! ask me about any topic and if it is beyond my training , i will fetch the answer from wikipedia ."),
     ("call my mom", "i cannot make calls , i am just a chat brain . but you should definitely call her , she would love it !"),
     ("set an alarm", "i cannot control your phone , i only chat . your clock app can handle that one !"),
     ("play music", "i cannot play music , i am only a language model . but i can tell you a story instead !"),
@@ -298,6 +298,101 @@ DEFINITIONS = {
     "time": "time is what clocks measure , the endless flow from past to future .",
 }
 
+COLORS = ["red", "orange", "yellow", "green", "blue", "purple", "pink", "black",
+          "white", "brown", "gray", "violet"]
+ANIMALS = ["cat", "dog", "elephant", "lion", "tiger", "rabbit", "horse", "monkey",
+           "dolphin", "penguin", "bear", "fox", "owl", "giraffe", "whale"]
+FRUITS = ["apple", "banana", "orange", "strawberry", "mango", "grape", "pear",
+          "cherry", "pineapple", "watermelon", "peach", "kiwi"]
+COUNTRIES = ["france", "japan", "italy", "spain", "germany", "brazil", "canada",
+             "egypt", "india", "china", "australia", "mexico", "russia"]
+SHAPES = ["circle", "square", "triangle", "rectangle", "star", "heart", "oval", "diamond"]
+LIST_TOPICS = {
+    "colors": COLORS, "animals": ANIMALS, "fruits": FRUITS,
+    "countries": COUNTRIES, "shapes": SHAPES,
+}
+COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five"}
+
+LIST_Q_TEMPLATES = ["name {n} {topic}", "name {n} {topic} please", "can you name {n} {topic}",
+                    "tell me {n} {topic}", "give me {n} {topic}", "list {n} {topic}",
+                    "say {n} {topic}"]
+LIST_SOME_TEMPLATES = ["name some {topic}", "what {topic} do you know", "list some {topic}",
+                       "tell me some {topic}", "give me a few {topic}", "what are some {topic}"]
+
+FIXED_LISTS_QA = [
+    ("name the days of the week", "the days of the week are monday , tuesday , wednesday , thursday , friday , saturday and sunday ."),
+    ("what are the days of the week", "monday , tuesday , wednesday , thursday , friday , saturday and sunday ."),
+    ("name the months", "the months are january , february , march , april , may , june , july , august , september , october , november and december ."),
+    ("name the months of the year", "january , february , march , april , may , june , july , august , september , october , november and december ."),
+    ("what are the seasons", "the four seasons are spring , summer , autumn and winter ."),
+    ("name the seasons", "spring , summer , autumn and winter ."),
+    ("name the planets", "the planets are mercury , venus , earth , mars , jupiter , saturn , uranus and neptune ."),
+    ("what are the primary colors", "the primary colors are red , blue and yellow ."),
+    ("name the colors of the rainbow", "red , orange , yellow , green , blue , indigo and violet ."),
+    ("how many days are in a week", "there are seven days in a week ."),
+    ("how many months are in a year", "there are twelve months in a year ."),
+]
+
+COLOR_MIX_QA = [
+    ("what do red and blue make", "red and blue make purple ."),
+    ("what do blue and yellow make", "blue and yellow make green ."),
+    ("what do red and yellow make", "red and yellow make orange ."),
+    ("what do red and white make", "red and white make pink ."),
+    ("what do black and white make", "black and white make gray ."),
+    ("what color do red and blue make", "red and blue make purple ."),
+    ("what color do blue and yellow make", "blue and yellow make green ."),
+    ("what color do red and yellow make", "red and yellow make orange ."),
+]
+
+OPPOSITES = [("hot", "cold"), ("big", "small"), ("fast", "slow"), ("up", "down"),
+             ("day", "night"), ("happy", "sad"), ("light", "dark"), ("open", "closed"),
+             ("full", "empty"), ("young", "old"), ("loud", "quiet"), ("wet", "dry"),
+             ("hard", "soft"), ("high", "low"), ("early", "late"), ("strong", "weak")]
+
+
+def list_pair():
+    r = random.random()
+    if r < 0.25:
+        return random.choice(FIXED_LISTS_QA)
+    if r < 0.35:
+        return random.choice(COLOR_MIX_QA)
+    topic, items = random.choice(list(LIST_TOPICS.items()))
+    if random.random() < 0.5:
+        n = random.choice([2, 3, 3, 3, 4, 5])
+        n_str = COUNT_WORDS[n] if random.random() < 0.4 else str(n)
+        q = random.choice(LIST_Q_TEMPLATES).format(n=n_str, topic=topic)
+        chosen = random.sample(items, n)
+    else:
+        q = random.choice(LIST_SOME_TEMPLATES).format(topic=topic)
+        chosen = random.sample(items, random.choice([3, 4, 5]))
+    if len(chosen) == 2:
+        body = f"{chosen[0]} and {chosen[1]}"
+    else:
+        body = " , ".join(chosen[:-1]) + f" and {chosen[-1]}"
+    ans = random.choice([
+        f"sure ! {body} .",
+        f"here you go : {body} .",
+        f"some {topic} are {body} .",
+        f"easy ! {body} .",
+        f"{body} . want more ?",
+    ])
+    return q, ans
+
+
+def opposite_pair():
+    a, b = random.choice(OPPOSITES)
+    if random.random() < 0.5:
+        a, b = b, a
+    q = random.choice([f"what is the opposite of {a}", f"opposite of {a}",
+                       f"whats the opposite of {a}", f"tell me the opposite of {a}"])
+    ans = random.choice([
+        f"the opposite of {a} is {b} .",
+        f"that would be {b} .",
+        f"{b} ! {a} and {b} are opposites .",
+    ])
+    return q, ans
+
+
 MATH_TEMPLATES_Q = ["what is {a} plus {b}", "what is {a} + {b}", "{a} plus {b}",
                     "how much is {a} plus {b}", "calculate {a} plus {b}",
                     "what is {a} minus {b}", "{a} minus {b}", "how much is {a} minus {b}",
@@ -305,8 +400,8 @@ MATH_TEMPLATES_Q = ["what is {a} plus {b}", "what is {a} + {b}", "{a} plus {b}",
 
 UNK_FALLBACK_A = [
     "hmm , i am a very small ai trained from scratch , and that is outside my little brain . try asking me for a joke , a fact or a story !",
-    "i am not sure about that one , my training data is tiny . but i can tell you a joke or a fun fact if you like !",
-    "that is beyond what i learned during training , sorry ! ask me for a story , a fact , or some simple math instead .",
+    "i am not sure about that one , my training data is tiny . if you are online , ask me what is that thing and i will check wikipedia !",
+    "that is beyond what i learned during training , sorry ! with internet i can look things up on wikipedia , or i can tell you a story or a fact .",
     "my little neural network does not know that yet . i am better at jokes , facts , stories and simple chat !",
 ]
 
@@ -374,31 +469,35 @@ def unk_pair():
 
 def pick_turn():
     r = random.random()
-    if r < 0.09:
+    if r < 0.08:
         return random.choice(GREET_USER), random.choice(GREET_BOT)
-    if r < 0.16:
+    if r < 0.14:
         return random.choice(IDENTITY_Q), random.choice(IDENTITY_A)
-    if r < 0.22:
+    if r < 0.19:
         return random.choice(HOW_ARE_YOU_Q), random.choice(HOW_ARE_YOU_A)
-    if r < 0.28:
+    if r < 0.25:
         return random.choice(CAPABILITY_Q), random.choice(CAPABILITY_A)
-    if r < 0.38:
+    if r < 0.34:
         return random.choice(JOKE_Q), random.choice(JOKES)
-    if r < 0.48:
+    if r < 0.43:
         return random.choice(FACT_Q), random.choice(FACTS)
-    if r < 0.53:
+    if r < 0.48:
         return random.choice(STORY_Q), random.choice(STORIES)
-    if r < 0.60:
+    if r < 0.54:
         return random.choice(FAVORITE_QA)
-    if r < 0.66:
+    if r < 0.60:
         return random.choice(DEFLECT_QA)
-    if r < 0.72:
+    if r < 0.65:
         return random.choice(WISDOM_Q), random.choice(WISDOM_A)
-    if r < 0.82:
+    if r < 0.74:
         return random.choice(KNOWLEDGE_QA)
-    if r < 0.88:
+    if r < 0.79:
         return def_pair()
-    if r < 0.95:
+    if r < 0.89:
+        return list_pair()
+    if r < 0.93:
+        return opposite_pair()
+    if r < 0.97:
         return math_pair()
     return unk_pair()
 

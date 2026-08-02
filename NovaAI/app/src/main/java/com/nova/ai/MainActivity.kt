@@ -171,7 +171,27 @@ class MainActivity : AppCompatActivity() {
         val bubble = addBubble("…", fromUser = false)
         generating = true
         sendBtn.isEnabled = false
+        val wikiSubject = WikiRouter.subjectFor(text) { w -> eng.knowsWord(w) }
         thread {
+            if (wikiSubject != null) {
+                runOnUiThread { bubble.text = getString(R.string.wiki_checking) }
+                val res = WikiClient.lookup(wikiSubject)
+                if (res != null) {
+                    runOnUiThread {
+                        bubble.text = getString(R.string.wiki_answer, res.title, res.extract)
+                        // history gets a short in-vocabulary stand-in reply
+                        historyIds.addAll(eng.encode("i looked that up on wikipedia for you ."))
+                        historyIds.add(eng.tokenId("<end>"))
+                        while (historyIds.size > 512) historyIds.removeAt(0)
+                        generating = false
+                        sendBtn.isEnabled = true
+                        scrollDown()
+                    }
+                    return@thread
+                }
+                // offline or nothing found — let the local model answer
+                runOnUiThread { bubble.text = "…" }
+            }
             val words = ArrayList<String>()
             val outIds = eng.generate(ArrayList(historyIds), onToken = { word ->
                 words.add(word)

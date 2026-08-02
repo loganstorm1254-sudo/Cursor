@@ -6,7 +6,7 @@
 | [`NotifyReceiver.apk`](NotifyReceiver.apk) | Notify: phone that should **get** notifications (Bluetooth only) |
 | [`NotifySender.apk`](NotifySender.apk) | Notify: phone that should **send** notifications (Bluetooth only) |
 | [`Walkie.apk`](Walkie.apk) | **Walkie-talkie** — install on any number of phones, works over internet on any network |
-| [`NovaAI.apk`](NovaAI.apk) | **Nova AI** — your own AI trained from scratch, fully offline, unlocks with your master API key |
+| [`NovaAI.apk`](NovaAI.apk) | **Nova AI** — your own AI trained from scratch + Wikipedia lookups, unlocks with your master API key |
 
 ## Install on Samsung
 
@@ -29,6 +29,6 @@
 
 ### Nova AI (your own AI)
 
-1. Install `NovaAI.apk` — no internet or permissions needed, the AI lives inside the app.
+1. Install `NovaAI.apk` — the AI lives inside the app; internet is only used when it checks Wikipedia.
 2. Open it and paste the **master API key** from [`NovaAI/MASTER_KEY.txt`](../NovaAI/MASTER_KEY.txt) → **Unlock Nova**.
-3. Chat! Try `tell me a joke`, `what is 7 plus 5`, `tell me a story`, `who are you`.
+3. Chat! Try `tell me a joke`, `what is 7 plus 5`, `name 3 colors`, `what is a black hole?`.

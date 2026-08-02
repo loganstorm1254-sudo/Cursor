@@ -19,11 +19,11 @@ torch.set_num_threads(4)
 
 # --- hyperparameters ---
 N_LAYER = 4
-N_HEAD = 6
-N_EMBD = 192
+N_HEAD = 8
+N_EMBD = 256
 BLOCK = 128
 BATCH = 32
-MAX_STEPS = 5000
+MAX_STEPS = 6000
 WARMUP = 100
 LR = 3e-4
 DEVICE = "cpu"
@@ -171,7 +171,10 @@ def generate(prompt_words, max_new=80, temp=0.8, topk=40):
 for p in ["<user> hello <bot>", "<user> tell me a joke <bot>",
           "<user> who are you <bot>", "<user> what is 3 plus 4 <bot>",
           "<user> what is the capital of france <bot>",
-          "<user> tell me a fact <bot>", "<user> i am sad <bot>"]:
+          "<user> tell me a fact <bot>", "<user> i am sad <bot>",
+          "<user> name 3 colors <bot>", "<user> what are the seasons <bot>",
+          "<user> what is the opposite of hot <bot>",
+          "<user> name some animals <bot>"]:
     print("SAMPLE:", generate(p.split()))
 
 # --- export weights ---

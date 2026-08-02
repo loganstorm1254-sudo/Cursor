@@ -2,9 +2,11 @@
 
 ## Nova — your own AI (Android, offline, trained from scratch)
 
-A **1.99M-parameter GPT transformer trained from zero** just for you. Fully
-offline — the neural network lives inside the APK, AES-256 encrypted, and only
-unlocks with your **master API key** (see [`NovaAI/MASTER_KEY.txt`](NovaAI/MASTER_KEY.txt)).
+A **3.46M-parameter GPT transformer trained from zero** just for you. The
+neural network lives inside the APK, AES-256 encrypted, and only unlocks with
+your **master API key** (see [`NovaAI/MASTER_KEY.txt`](NovaAI/MASTER_KEY.txt)).
+Anything beyond her training ("what is a black hole?") is answered live from
+**Wikipedia**; without internet she still works fully offline.
 
 Project: [`NovaAI/`](NovaAI/) · Ready APK: [`releases/NovaAI.apk`](releases/NovaAI.apk) · Full docs: [`NovaAI/README.md`](NovaAI/README.md)
 
@@ -12,7 +14,7 @@ Project: [`NovaAI/`](NovaAI/) · Ready APK: [`releases/NovaAI.apk`](releases/Nov
 
 1. Install `releases/NovaAI.apk`.
 2. Open **Nova AI** and paste the master API key from `NovaAI/MASTER_KEY.txt`.
-3. Chat: try `tell me a joke`, `what is 7 plus 5`, `tell me a story`, `who are you`.
+3. Chat: try `tell me a joke`, `what is 7 plus 5`, `name 3 colors`, `what is a black hole?`.
 
 ## Notify apps (Android, Bluetooth)
 

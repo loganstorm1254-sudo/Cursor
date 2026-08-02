@@ -118,6 +118,8 @@ class NovaEngine(configText: String, weightBytes: ByteArray) {
 
     fun tokenId(word: String): Int = stoi[word] ?: unkId
 
+    fun knowsWord(word: String): Boolean = stoi.containsKey(word)
+
     // ---- transformer forward pass (one token, KV cached) ----
 
     private fun layerNorm(x: FloatArray, wOff: Int, bOff: Int): FloatArray {

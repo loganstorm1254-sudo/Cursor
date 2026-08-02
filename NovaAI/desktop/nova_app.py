@@ -2,8 +2,8 @@
 Nova for Windows — local chat UI for the same from-scratch neural network.
 
 Stdlib only. Starts a tiny localhost server and opens your browser.
-First run downloads the encrypted model from GitHub; unlock with your
-master API key (sk-nova-m00ny4xe or the long key).
+The Windows pack bundles the encrypted model + a native math DLL for speed.
+Unlock with your master API key (sk-nova-m00ny4xe or the long key).
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import sys
 import threading
 import traceback
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Resolve sibling bot3.py (repo root, or next to this file in the Windows bundle)
@@ -33,7 +34,11 @@ STATE = {
     "rng": random.Random(),
     "status": "locked",  # locked | loading | ready | error
     "message": "Enter your master API key to unlock Nova.",
+    "lock": threading.Lock(),
 }
+
+# Heavy work (decrypt + first tokens) off the HTTP acceptor thread.
+POOL = ThreadPoolExecutor(max_workers=2)
 
 
 HTML = r"""<!DOCTYPE html>
@@ -136,7 +141,7 @@ HTML = r"""<!DOCTYPE html>
     </div>
     <div id="lockErr"></div>
     <p class="sub" style="margin-top:18px">
-      On first unlock Nova downloads her brain (~11 MB) from GitHub, then works offline.
+      The Windows pack already includes Nova's brain — unlock is local and offline.
       Same key as the Android app and Discord bot.
     </p>
   </section>
@@ -225,10 +230,12 @@ function lockAgain() {
 
 
 def unlock(key: str) -> dict:
-    STATE["status"] = "loading"
-    STATE["message"] = "Downloading / unlocking model…"
+    with STATE["lock"]:
+        if STATE["status"] == "loading":
+            return {"ok": False, "error": "Already unlocking — wait a moment."}
+        STATE["status"] = "loading"
+        STATE["message"] = "Unlocking model…"
     try:
-        # fetch once (cached next to bot3 / cwd)
         blob = bot3.fetch_model()
         data = bot3.decrypt_model(key, blob)
         if data is None:
@@ -241,19 +248,22 @@ def unlock(key: str) -> dict:
         STATE["engine"] = engine
         STATE["session"] = bot3.ChatSession(engine)
         STATE["status"] = "ready"
+        accel = " · native accel" if getattr(engine, "_fast", False) else ""
         info = (f"{engine.n_layer}L · {engine.n_embd}d · "
-                f"{len(engine.vocab)} vocab · ready")
+                f"{len(engine.vocab)} vocab · ready{accel}")
         welcome = (
             "Hello! I am Nova, your own personal AI, trained from scratch. "
             "Ask me for a joke, a story, math, capitals, spelling — or anything "
             "and I will check Wikipedia when I need to."
         )
+        print(f"Nova unlocked ({info})")
         return {"ok": True, "info": info, "welcome": welcome}
     except SystemExit as e:
         STATE["status"] = "error"
         return {"ok": False, "error": str(e)}
     except Exception as e:
         STATE["status"] = "error"
+        traceback.print_exc()
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
@@ -266,23 +276,24 @@ def chat(text: str) -> dict:
     if not text:
         return {"ok": False, "error": "Empty message."}
     try:
-        math = bot3.try_math(text)
-        if math is not None:
-            session.note(math.rstrip("."))
-            return {"ok": True, "reply": math[0].upper() + math[1:]}
+        with STATE["lock"]:
+            math = bot3.try_math(text)
+            if math is not None:
+                session.note(math.rstrip("."))
+                return {"ok": True, "reply": math[0].upper() + math[1:]}
 
-        subject = bot3.wiki_subject(text, engine.knows_word)
-        if subject is not None:
-            res = bot3.wiki_lookup_sync(subject)
-            if res is not None:
-                title, extract = res
-                session.note("i looked that up on wikipedia for you .")
-                return {"ok": True, "reply": f"📖 {title}\n\n{extract}\n\n— from Wikipedia"}
+            subject = bot3.wiki_subject(text, engine.knows_word)
+            if subject is not None:
+                res = bot3.wiki_lookup_sync(subject)
+                if res is not None:
+                    title, extract = res
+                    session.note("i looked that up on wikipedia for you .")
+                    return {"ok": True, "reply": f"📖 {title}\n\n{extract}\n\n— from Wikipedia"}
 
-        out = session.reply(text, STATE["rng"])
-        if not out:
-            return {"ok": True, "reply": "Hmm, I am not sure what to say. Try a joke or a fact!"}
-        return {"ok": True, "reply": engine.decode(out)}
+            out = session.reply(text, STATE["rng"])
+            if not out:
+                return {"ok": True, "reply": "Hmm, I am not sure what to say. Try a joke or a fact!"}
+            return {"ok": True, "reply": engine.decode(out)}
     except Exception as e:
         traceback.print_exc()
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -297,6 +308,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -305,6 +317,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -325,12 +338,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": "bad json"})
 
         if self.path == "/api/unlock":
-            return self._json(200, unlock(str(data.get("key") or "")))
+            # Run decrypt/load in the pool so other requests stay snappy.
+            fut = POOL.submit(unlock, str(data.get("key") or ""))
+            return self._json(200, fut.result())
         if self.path == "/api/chat":
-            return self._json(200, chat(str(data.get("text") or "")))
+            fut = POOL.submit(chat, str(data.get("text") or ""))
+            return self._json(200, fut.result())
         if self.path == "/api/clear":
-            if STATE["engine"] is not None:
-                STATE["session"] = bot3.ChatSession(STATE["engine"])
+            with STATE["lock"]:
+                if STATE["engine"] is not None:
+                    STATE["session"] = bot3.ChatSession(STATE["engine"])
             return self._json(200, {"ok": True})
         self.send_error(404)
 
@@ -345,7 +362,10 @@ def main():
         port = httpd.server_address[1]
 
     url = f"http://127.0.0.1:{port}/"
+    bundled = os.path.exists(os.path.join(HERE, "nova_model.sc"))
     print(f"Nova is running at {url}")
+    if bundled:
+        print("Bundled model found — unlock stays offline.")
     print("Leave this window open while you chat. Close it to quit.")
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:

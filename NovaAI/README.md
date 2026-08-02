@@ -27,6 +27,8 @@ you press the lock button.
 
 ## Install
 
+### Android
+
 1. Install [`releases/NovaAI.apk`](../releases/NovaAI.apk).
 2. Open **Nova AI**, paste the master API key, tap **Unlock Nova**.
 3. Chat! Try: `tell me a joke`, `tell me a fact`, `tell me a story`,
@@ -34,6 +36,19 @@ you press the lock button.
    `what is the opposite of hot`, `what is the capital of japan`,
    `who are you`, `i am sad` — or anything at all, like
    `what is a black hole?` (answered live from Wikipedia).
+
+### Windows
+
+1. Download [`releases/NovaAI-Windows.zip`](../releases/NovaAI-Windows.zip) and unzip.
+2. Double-click **`NovaAI.exe`** — your browser opens the chat UI.
+3. Unlock with a master API key (same as Android). The model and a native
+   math DLL are bundled, so unlock and chat stay fast and offline.
+
+Rebuild the pack (needs `mingw-w64`):
+
+```bash
+NovaAI/desktop/build_windows.sh
+```
 
 Nova is a small model with a small brain — she is great at chat, jokes, facts,
 stories, lists, definitions, capitals and small math. For everything else she

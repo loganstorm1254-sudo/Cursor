@@ -57,6 +57,65 @@ from array import array
 from heapq import nlargest
 from operator import mul
 
+# Optional native accel (Windows: nova_fastmath.dll next to this file / in PATH).
+_FAST = None
+
+
+def _load_fastmath():
+    """Load nova_fastmath.dll/.so when present. Safe no-op otherwise."""
+    global _FAST
+    if _FAST is not None:
+        return _FAST
+    try:
+        import ctypes
+        from ctypes import c_float, c_int, c_uint16, POINTER
+    except Exception:
+        _FAST = False
+        return None
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates: list[str] = []
+    env = os.environ.get("NOVA_FASTMATH", "").strip()
+    if env:
+        candidates.append(env)
+    if sys.platform == "win32":
+        names = ["nova_fastmath.dll", "fastmath.dll"]
+    else:
+        names = ["nova_fastmath.so", "libnova_fastmath.so"]
+    for name in names:
+        for folder in (here, os.path.join(here, ".."), os.getcwd()):
+            candidates.append(os.path.join(folder, name))
+    lib = None
+    for path in candidates:
+        if os.path.isfile(path):
+            try:
+                lib = ctypes.CDLL(path)
+                break
+            except OSError:
+                continue
+    if lib is None:
+        _FAST = False
+        return None
+    try:
+        lib.nova_matvec.argtypes = [
+            POINTER(c_float), POINTER(c_float), POINTER(c_float), c_int, c_int]
+        lib.nova_matvec.restype = None
+        lib.nova_matvec_bias.argtypes = [
+            POINTER(c_float), POINTER(c_float), POINTER(c_float),
+            POINTER(c_float), c_int, c_int]
+        lib.nova_matvec_bias.restype = None
+        lib.nova_f16_to_f32.argtypes = [POINTER(c_float), POINTER(c_uint16), c_int]
+        lib.nova_f16_to_f32.restype = None
+        lib.nova_layernorm.argtypes = [
+            POINTER(c_float), POINTER(c_float), POINTER(c_float),
+            POINTER(c_float), c_int]
+        lib.nova_layernorm.restype = None
+    except Exception:
+        _FAST = False
+        return None
+    _FAST = lib
+    return lib
+
+
 # Paste your Discord bot token here, or leave empty to use DISCORD_TOKEN env.
 TOKEN = ""
 
@@ -99,38 +158,63 @@ class NovaEngine:
         self.unk_id = self.stoi["<unk>"]
 
         n = len(weight_bytes_f16) // 2
-        mv = memoryview(weight_bytes_f16)
-        flat = array("f")
-        chunk = 65536
-        for off in range(0, n, chunk):
-            cnt = min(chunk, n - off)
-            flat.extend(struct.unpack_from(f"<{cnt}e", mv, off * 2))
+        flat = array("f", [0.0]) * n
+        fast = _load_fastmath()
+        if fast:
+            import ctypes
+            from ctypes import c_float, c_uint16
+            src = (c_uint16 * n).from_buffer_copy(weight_bytes_f16)
+            dst = (c_float * n).from_buffer(flat)
+            fast.nova_f16_to_f32(dst, src, n)
+        else:
+            mv = memoryview(weight_bytes_f16)
+            # Larger chunks = fewer Python calls during half→float decode.
+            chunk = 262144
+            tmp = array("f")
+            for off in range(0, n, chunk):
+                cnt = min(chunk, n - off)
+                tmp.extend(struct.unpack_from(f"<{cnt}e", mv, off * 2))
+            flat[:] = tmp
         d, v, t = self.n_embd, len(self.vocab), self.block
         pos = 0
+        self._fast = bool(fast)
 
-        def rows(n, width):
+        def rows(n_rows, width):
+            """Row list for the Python path + contiguous matrix for the C path."""
             nonlocal pos
-            out = [flat[pos + i * width:pos + (i + 1) * width] for i in range(n)]
-            pos += n * width
+            mat = flat[pos:pos + n_rows * width]
+            out = [mat[i * width:(i + 1) * width] for i in range(n_rows)]
+            pos += n_rows * width
+            return out, mat
+
+        def vec(n_vec):
+            nonlocal pos
+            out = flat[pos:pos + n_vec]
+            pos += n_vec
             return out
 
-        def vec(n):
-            nonlocal pos
-            out = flat[pos:pos + n]
-            pos += n
-            return out
-
-        self.tok_emb = rows(v, d)
-        self.pos_emb = rows(t, d)
+        self.tok_emb, self.tok_emb_mat = rows(v, d)
+        self.pos_emb, _posm = rows(t, d)
         self.layers = []
         for _ in range(self.n_layer):
+            # Order must match the training checkpoint exactly.
+            ln1w, ln1b = vec(d), vec(d)
+            qkvW, qkvWm = rows(3 * d, d)
+            qkvB = vec(3 * d)
+            projW, projWm = rows(d, d)
+            projB = vec(d)
+            ln2w, ln2b = vec(d), vec(d)
+            fcW, fcWm = rows(4 * d, d)
+            fcB = vec(4 * d)
+            fc2W, fc2Wm = rows(d, 4 * d)
+            fc2B = vec(d)
             self.layers.append({
-                "ln1w": vec(d), "ln1b": vec(d),
-                "qkvW": rows(3 * d, d), "qkvB": vec(3 * d),
-                "projW": rows(d, d), "projB": vec(d),
-                "ln2w": vec(d), "ln2b": vec(d),
-                "fcW": rows(4 * d, d), "fcB": vec(4 * d),
-                "fc2W": rows(d, 4 * d), "fc2B": vec(d),
+                "ln1w": ln1w, "ln1b": ln1b,
+                "qkvW": qkvW, "qkvWm": qkvWm, "qkvB": qkvB,
+                "projW": projW, "projWm": projWm, "projB": projB,
+                "ln2w": ln2w, "ln2b": ln2b,
+                "fcW": fcW, "fcWm": fcWm, "fcB": fcB,
+                "fc2W": fc2W, "fc2Wm": fc2Wm, "fc2B": fc2B,
             })
         self.lnfw = vec(d)
         self.lnfb = vec(d)
@@ -176,6 +260,55 @@ class NovaEngine:
         inv = 1.0 / math.sqrt(var + 1e-5)
         return [(xi - m) * inv * wi + bi for xi, wi, bi in zip(x, w, b)]
 
+    def _ln_fast(self, x, w, b):
+        fast = _FAST if self._fast else None
+        if not fast:
+            return self._ln(x, w, b)
+        import ctypes
+        from ctypes import c_float
+        n = len(x)
+        xa = array("f", x)
+        out = array("f", [0.0]) * n
+        fast.nova_layernorm(
+            (c_float * n).from_buffer(out),
+            (c_float * n).from_buffer(xa),
+            (c_float * n).from_buffer(w),
+            (c_float * n).from_buffer(b),
+            n,
+        )
+        return out
+
+    def _matvec(self, rows, mat, x, bias=None):
+        """Matrix-vector product; uses nova_fastmath when available."""
+        fast = _FAST if self._fast else None
+        if fast and mat is not None:
+            import ctypes
+            from ctypes import c_float
+            rows_n = len(bias) if bias is not None else len(rows)
+            cols = len(x)
+            xa = array("f", x) if not isinstance(x, array) else x
+            out = array("f", [0.0]) * rows_n
+            if bias is not None:
+                ba = bias if isinstance(bias, array) else array("f", bias)
+                fast.nova_matvec_bias(
+                    (c_float * rows_n).from_buffer(out),
+                    (c_float * (rows_n * cols)).from_buffer(mat),
+                    (c_float * cols).from_buffer(xa),
+                    (c_float * rows_n).from_buffer(ba),
+                    rows_n, cols,
+                )
+            else:
+                fast.nova_matvec(
+                    (c_float * rows_n).from_buffer(out),
+                    (c_float * (rows_n * cols)).from_buffer(mat),
+                    (c_float * cols).from_buffer(xa),
+                    rows_n, cols,
+                )
+            return out
+        if bias is not None:
+            return [sum(map(mul, row, x)) + bb for row, bb in zip(rows, bias)]
+        return [sum(map(mul, row, x)) for row in rows]
+
     def step(self, tok_id: int, kcache: list[list], vcache: list[list]) -> list[float]:
         d, nh = self.n_embd, self.n_head
         hd = d // nh
@@ -184,10 +317,9 @@ class NovaEngine:
         x = list(map(sum, zip(self.tok_emb[tok_id], self.pos_emb[pos])))
 
         for li, L in enumerate(self.layers):
-            h = self._ln(x, L["ln1w"], L["ln1b"])
-            qkv = [sum(map(mul, row, h)) + bb
-                   for row, bb in zip(L["qkvW"], L["qkvB"])]
-            q, k, v = qkv[:d], qkv[d:2 * d], qkv[2 * d:]
+            h = self._ln_fast(x, L["ln1w"], L["ln1b"])
+            qkv = self._matvec(L["qkvW"], L["qkvWm"], h, L["qkvB"])
+            q, k, v = list(qkv[:d]), list(qkv[d:2 * d]), list(qkv[2 * d:])
             kcache[li].append(k)
             vcache[li].append(v)
             klist, vlist = kcache[li], vcache[li]
@@ -207,20 +339,21 @@ class NovaEngine:
                     for j in range(hd):
                         att[base + j] += p * seg[j]
 
-            for i, (row, bb) in enumerate(zip(L["projW"], L["projB"])):
-                x[i] += sum(map(mul, row, att)) + bb
+            proj = self._matvec(L["projW"], L["projWm"], att, L["projB"])
+            for i in range(d):
+                x[i] += proj[i]
 
-            h = self._ln(x, L["ln2w"], L["ln2b"])
-            f = [sum(map(mul, row, h)) + bb
-                 for row, bb in zip(L["fcW"], L["fcB"])]
+            h = self._ln_fast(x, L["ln2w"], L["ln2b"])
+            f = self._matvec(L["fcW"], L["fcWm"], h, L["fcB"])
             f = [0.5 * fi * (1.0 + math.tanh(0.7978845608028654 *
                                              (fi + 0.044715 * fi ** 3)))
                  for fi in f]
-            for i, (row, bb) in enumerate(zip(L["fc2W"], L["fc2B"])):
-                x[i] += sum(map(mul, row, f)) + bb
+            proj2 = self._matvec(L["fc2W"], L["fc2Wm"], f, L["fc2B"])
+            for i in range(d):
+                x[i] += proj2[i]
 
-        hf = self._ln(x, self.lnfw, self.lnfb)
-        return [sum(map(mul, row, hf)) for row in self.tok_emb]
+        hf = self._ln_fast(x, self.lnfw, self.lnfb)
+        return list(self._matvec(self.tok_emb, self.tok_emb_mat, hf))
 
     def sample(self, logits: list[float], rng: random.Random) -> int:
         # never emit special tokens as content
@@ -351,21 +484,36 @@ def _xor_unlock(k_enc: bytes, k_mac: bytes, body: bytes) -> bytes | None:
     want = hmac.new(k_mac, nonce + ct, hashlib.sha256).digest()
     if not hmac.compare_digest(want, tag):
         return None
-    blocks = [hashlib.blake2b(nonce + i.to_bytes(8, "little"),
-                              key=k_enc, digest_size=64).digest()
-              for i in range((len(ct) + 63) // 64)]
-    ks = b"".join(blocks)[:len(ct)]
-    return (int.from_bytes(ct, "little") ^ int.from_bytes(ks, "little")
-            ).to_bytes(len(ct), "little")
+    # Stream blake2b keystream in 64-byte blocks and XOR with small ints.
+    # (A single int XOR over the whole ciphertext is extremely slow on large
+    # models, especially on Windows.)
+    out = bytearray(len(ct))
+    mv_ct = memoryview(ct)
+    for i in range((len(ct) + 63) // 64):
+        block = hashlib.blake2b(
+            nonce + i.to_bytes(8, "little"), key=k_enc, digest_size=64
+        ).digest()
+        start = i * 64
+        end = min(start + 64, len(ct))
+        n = end - start
+        c = int.from_bytes(mv_ct[start:end], "little")
+        k = int.from_bytes(block[:n], "little")
+        out[start:end] = (c ^ k).to_bytes(n, "little")
+    return bytes(out)
 
 
 def _model_paths() -> list[str]:
     here = os.path.dirname(os.path.abspath(__file__))
-    return [
-        os.path.join(here, MODEL_NAME),                       # next to script
+    paths = []
+    env = os.environ.get("NOVA_MODEL_PATH", "").strip()
+    if env:
+        paths.append(env)
+    paths.extend([
+        os.path.join(here, MODEL_NAME),                       # next to script / Windows pack
         os.path.join(here, "NovaAI", MODEL_NAME),             # full repo clone
         os.path.join(os.path.expanduser("~"), ".cache", "nova", MODEL_NAME),
-    ]
+    ])
+    return paths
 
 
 def fetch_model() -> bytes:

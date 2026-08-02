@@ -22,7 +22,7 @@ Project: [`NovaAI/`](NovaAI/) · Ready APK: [`releases/NovaAI.apk`](releases/Nov
 
 1. Download [`releases/NovaAI-Windows.zip`](releases/NovaAI-Windows.zip) and unzip.
 2. Double-click **`NovaAI.exe`** (browser opens the chat).
-3. Unlock with `sk-nova-m00ny4xe`. First run downloads the model (~11 MB).
+3. Unlock with `sk-nova-m00ny4xe`. The brain is already in the zip (native accel on Windows).
 ## Notify apps (Android, Bluetooth)
 
 Two apps that send phone notifications over **Bluetooth** — no Wi‑Fi, data, hotspot, or IPs.

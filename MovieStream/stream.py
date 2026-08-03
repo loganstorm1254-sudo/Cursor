@@ -2,7 +2,8 @@
 """
 Reel — stream MKVs/MP4s from D:\\Movies over Wi‑Fi.
 
-Phone: open the printed http://IP:PORT/ URL, then Open in VLC for audio.
+Scan the QR on the PC (or open the printed URL) on your phone.
+Use VLC on the phone for full movie audio; browser play remuxes AAC when ffmpeg is available.
 """
 from __future__ import annotations
 
@@ -16,17 +17,24 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VIDEO_EXTS = {".mp4", ".mkv", ".m4v", ".webm", ".mov"}
+VIDEO_EXTS = {".mp4", ".mkv", ".m4v", ".webm", ".mov", ".avi", ".wmv", ".ts", ".m2ts"}
 MIME = {
     ".mp4": "video/mp4",
     ".m4v": "video/mp4",
     ".webm": "video/webm",
     ".mov": "video/quicktime",
     ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".wmv": "video/x-ms-wmv",
+    ".ts": "video/mp2t",
+    ".m2ts": "video/mp2t",
 }
 
 STATE: dict = {
@@ -34,9 +42,12 @@ STATE: dict = {
     "index": {},
     "port": 8787,
     "ffmpeg": None,
+    "ffprobe": None,
     "vlc": None,
     "announce": None,
     "lan_urls": [],
+    "thumb_dir": None,
+    "thumb_lock": threading.Lock(),
 }
 
 
@@ -57,37 +68,56 @@ def default_movies_dir() -> Path:
     return Path(r"D:\Movies")
 
 
+def find_tool(*names: str, extra: list[Path] | None = None) -> str | None:
+    for name in names:
+        env = os.environ.get(f"REEL_{name.upper()}") or os.environ.get(name.upper())
+        if env and Path(env).is_file():
+            return env
+        which = shutil.which(name) or shutil.which(f"{name}.exe")
+        if which:
+            return which
+    for path in extra or []:
+        if path.is_file():
+            return str(path)
+    return None
+
+
 def find_ffmpeg() -> str | None:
-    env = os.environ.get("REEL_FFMPEG") or os.environ.get("FFMPEG")
-    if env and Path(env).is_file():
-        return env
-    which = shutil.which("ffmpeg")
-    if which:
-        return which
-    for candidate in (
-        Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
-        Path(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"),
-    ):
-        if candidate.is_file():
-            return str(candidate)
+    return find_tool(
+        "ffmpeg",
+        extra=[
+            Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
+            Path(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"),
+        ],
+    )
+
+
+def find_ffprobe(ffmpeg: str | None) -> str | None:
+    probe = find_tool(
+        "ffprobe",
+        extra=[
+            Path(r"C:\ffmpeg\bin\ffprobe.exe"),
+            Path(r"C:\Program Files\ffmpeg\bin\ffprobe.exe"),
+        ],
+    )
+    if probe:
+        return probe
+    if ffmpeg:
+        cand = Path(ffmpeg).with_name("ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if cand.is_file():
+            return str(cand)
     return None
 
 
 def find_vlc() -> str | None:
-    env = os.environ.get("REEL_VLC") or os.environ.get("VLC")
-    if env and Path(env).is_file():
-        return env
-    which = shutil.which("vlc") or shutil.which("vlc.exe")
-    if which:
-        return which
-    for candidate in (
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "VideoLAN" / "VLC" / "vlc.exe",
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "VideoLAN" / "VLC" / "vlc.exe",
-        Path("/usr/bin/vlc"),
-    ):
-        if candidate.is_file():
-            return str(candidate)
-    return None
+    return find_tool(
+        "vlc",
+        extra=[
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "VideoLAN" / "VLC" / "vlc.exe",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "VideoLAN" / "VLC" / "vlc.exe",
+            Path("/usr/bin/vlc"),
+        ],
+    )
 
 
 def _ip_score(ip: str) -> int:
@@ -115,18 +145,10 @@ def lan_ips() -> list[str]:
     except OSError:
         pass
     try:
-        hostname = socket.gethostname()
-        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             found.add(info[4][0])
     except OSError:
         pass
-    # Windows: ipconfig parse via hostname aliases already covered; also try all hostnames
-    try:
-        for info in socket.getaddrinfo(None, 0, socket.AF_INET, socket.SOCK_DGRAM):
-            found.add(info[4][0])
-    except OSError:
-        pass
-
     cleaned = [ip for ip in found if ip and not ip.startswith("127.")]
     cleaned.sort(key=_ip_score)
     return cleaned or ["127.0.0.1"]
@@ -138,7 +160,8 @@ def movie_id(path: Path) -> str:
 
 def pretty_title(path: Path) -> str:
     name = re.sub(r"[._]+", " ", path.stem)
-    return re.sub(r"\s+", " ", name).strip() or path.name
+    name = re.sub(r"\b(1080p|720p|2160p|4k|bluray|web[- ]?dl|x264|x265|hevc|aac|dts|hdr)\b", "", name, flags=re.I)
+    return re.sub(r"\s+", " ", name).strip(" -_") or path.name
 
 
 def human_size(n: int) -> str:
@@ -150,17 +173,53 @@ def human_size(n: int) -> str:
     return f"{size:.1f} TB"
 
 
+def human_duration(seconds: float | None) -> str:
+    if not seconds or seconds <= 0:
+        return ""
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m"
+    return f"{m}m {sec:02d}s"
+
+
+def probe_duration(path: Path) -> float | None:
+    ffprobe = STATE.get("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        out = subprocess.check_output(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+        return float(out.decode().strip())
+    except Exception:
+        return None
+
+
 def scan_movies(root: Path) -> dict:
     index = {}
     if not root.is_dir():
         return index
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [
+        dirnames[:] = sorted(
             d
             for d in dirnames
-            if not d.startswith(".") and d.lower() not in {"@eadir", "system volume information", "$recycle.bin"}
-        ]
-        for name in filenames:
+            if not d.startswith(".")
+            and d.lower() not in {"@eadir", "system volume information", "$recycle.bin", "thumbs"}
+        )
+        for name in sorted(filenames):
             path = Path(dirpath) / name
             ext = path.suffix.lower()
             if ext not in VIDEO_EXTS:
@@ -185,6 +244,8 @@ def scan_movies(root: Path) -> dict:
                 "size_label": human_size(st.st_size),
                 "ext": ext.lstrip(".").upper(),
                 "mtime": int(st.st_mtime),
+                "duration": None,
+                "duration_label": "",
             }
     return dict(sorted(index.items(), key=lambda kv: kv[1]["title"].lower()))
 
@@ -231,191 +292,408 @@ def movies_payload() -> list[dict]:
             "size_label": m["size_label"],
             "ext": m["ext"],
             "mtime": m["mtime"],
+            "duration_label": m.get("duration_label") or "",
+            "thumb": f"/thumb/{m['id']}.jpg",
         }
         for m in STATE["index"].values()
     ]
 
 
-def render_html() -> bytes:
-    refresh_index()
-    movies = movies_payload()
+def primary_urls() -> list[str]:
     port = STATE["port"]
     urls = list(STATE["lan_urls"]) or [f"http://{ip}:{port}/" for ip in lan_ips()]
     announce = STATE.get("announce")
     if announce and announce not in ("", "REPLACE_WITH_IP_FROM_BELOW"):
         primary = f"http://{announce}:{port}/"
         urls = [primary] + [u for u in urls if u != primary]
+    # de-dupe preserve order
+    out, seen = [], set()
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
 
-    cards = []
-    for m in movies:
-        raw = f"/raw/{urllib.parse.quote(m['id'])}/{urllib.parse.quote(Path(m['rel']).name)}"
-        cards.append(
-            f'<a class="tile" href="{esc(raw)}">'
-            f'<div class="poster"><span>{esc(m["title"])}</span></div>'
-            f'<div class="info"><h2>{esc(m["title"])}</h2>'
-            f'<p>{esc(m["folder"] or "Movies")} · {esc(m["size_label"])}</p>'
-            f'<span class="badge">{esc(m["ext"])}</span>'
-            f'<span class="badge open">Tap = open / VLC</span></div></a>'
-        )
-    grid_html = "\n".join(cards) if cards else (
-        f'<div class="empty">No .mp4 / .mkv files in<br><code>{esc(str(STATE["movies_dir"]))}</code>'
-        f"<br><br>Copy movies there, then tap Refresh.</div>"
+
+def ensure_thumb(mid: str) -> Path | None:
+    meta = resolve_movie(mid)
+    ffmpeg = STATE.get("ffmpeg")
+    thumb_dir = STATE.get("thumb_dir")
+    if not meta or not ffmpeg or not thumb_dir:
+        return None
+    out = Path(thumb_dir) / f"{mid}.jpg"
+    if out.is_file() and out.stat().st_size > 0:
+        return out
+    with STATE["thumb_lock"]:
+        if out.is_file() and out.stat().st_size > 0:
+            return out
+        # grab a frame ~10% in (or 30s)
+        duration = meta.get("duration")
+        if duration is None:
+            duration = probe_duration(Path(meta["path"]))
+            meta["duration"] = duration
+            meta["duration_label"] = human_duration(duration)
+        ss = 3.0
+        if duration and duration > 60:
+            ss = min(duration * 0.12, 600)
+        elif duration and duration > 5:
+            ss = max(1.0, duration * 0.1)
+        elif duration and duration > 0:
+            ss = max(0.1, duration * 0.25)
+        cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(ss),
+            "-i",
+            meta["path"],
+            "-frames:v",
+            "1",
+            "-q:v",
+            "4",
+            "-vf",
+            "scale=480:-2",
+            "-y",
+            str(out),
+        ]
+        try:
+            subprocess.run(cmd, check=True, timeout=40, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            if out.exists():
+                try:
+                    out.unlink()
+                except OSError:
+                    pass
+            return None
+    return out if out.is_file() else None
+
+
+def warmup_thumbs() -> None:
+    if not STATE.get("ffmpeg"):
+        return
+
+    def worker() -> None:
+        for mid in list(STATE["index"].keys())[:40]:
+            ensure_thumb(mid)
+            time.sleep(0.05)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def render_html() -> bytes:
+    refresh_index()
+    movies = movies_payload()
+    urls = primary_urls()
+    folders = sorted({m["folder"] for m in movies if m["folder"]})
+    primary = urls[0] if urls else f"http://127.0.0.1:{STATE['port']}/"
+    qr_src = (
+        "https://quickchart.io/qr?size=280&margin=2&text="
+        + urllib.parse.quote(primary, safe="")
     )
-    url_html = "".join(f'<div class="url">{esc(u)}</div>' for u in urls)
+
+    ssr_cards = []
+    for m in movies[:60]:
+        raw = f"/raw/{urllib.parse.quote(m['id'])}/{urllib.parse.quote(Path(m['rel']).name)}"
+        ssr_cards.append(
+            f'<a class="tile" href="{esc(raw)}">'
+            f'<div class="poster" style="background-image:url(/thumb/{esc(m["id"])}.jpg)">'
+            f"<span>{esc(m['title'])}</span></div>"
+            f'<div class="info"><h2>{esc(m["title"])}</h2>'
+            f'<p>{esc(m["folder"] or "Movies")} · {esc(m["size_label"])}</p></div></a>'
+        )
+    grid_html = "\n".join(ssr_cards) if ssr_cards else (
+        f'<div class="empty">No videos in <code>{esc(str(STATE["movies_dir"]))}</code>. '
+        f"Drop .mp4 / .mkv files there, then Refresh.</div>"
+    )
+
     boot = {
         "movies": movies,
         "movies_dir": str(STATE["movies_dir"]),
         "count": len(movies),
         "lan_urls": urls,
+        "folders": folders,
         "ffmpeg": bool(STATE["ffmpeg"]),
         "vlc": bool(STATE["vlc"]),
+        "primary": primary,
     }
     boot_json = json.dumps(boot, ensure_ascii=False).replace("</", "<\\/")
+    url_html = "".join(f'<a class="url" href="{esc(u)}">{esc(u)}</a>' for u in urls)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<meta name="theme-color" content="#0c0b0a"/>
-<title>Reel — {len(movies)} movies</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="theme-color" content="#0b0a09"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<title>Reel · {len(movies)} movies</title>
 <style>
-  :root {{
-    --ink:#0c0b0a; --panel:#161310; --panel2:#1e1a15; --line:#2f2920;
-    --text:#f3ebe0; --muted:#a89880; --gold:#e0a84a; --gold-dim:#b07a22; --ok:#6cbc7a;
-  }}
-  * {{ box-sizing:border-box; }}
-  body {{
-    margin:0; font-family: Georgia, "Times New Roman", serif; color:var(--text);
-    background:
-      radial-gradient(900px 500px at 0% 0%, #2a2114 0%, transparent 55%),
-      linear-gradient(180deg,#100e0c,#0a0908);
-    min-height:100%;
-  }}
-  .shell {{ max-width:960px; margin:0 auto; padding:22px 16px 72px; }}
-  .brand {{
-    font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
-    font-size:clamp(3rem,14vw,5.5rem); letter-spacing:.02em; margin:0; line-height:.95;
-  }}
-  .brand em {{ font-style:normal; color:var(--gold); }}
-  .tag {{ color:var(--muted); font-family: system-ui,sans-serif; font-size:1rem; max-width:34rem; }}
-  .box {{
-    margin:16px 0; padding:14px; border:1px solid var(--line); border-radius:12px;
-    background:linear-gradient(180deg,var(--panel2),var(--panel));
-    font-family: system-ui,sans-serif;
-  }}
-  .box h2 {{ margin:0 0 8px; font-size:1rem; color:var(--gold); }}
-  .url {{ color:var(--gold); word-break:break-all; font-family: Consolas, monospace; margin:6px 0; font-size:1.05rem; }}
-  .meta {{ color:var(--muted); font-family:system-ui,sans-serif; margin:8px 0 16px; }}
-  .meta strong {{ color:var(--text); }}
-  .toolbar {{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; font-family:system-ui,sans-serif; }}
-  #q {{
-    flex:1; min-width:140px; padding:12px; border-radius:10px; border:1px solid var(--line);
-    background:var(--panel); color:var(--text); font:inherit;
-  }}
-  button {{
-    font:inherit; font-weight:700; border:0; border-radius:10px; padding:12px 16px; cursor:pointer;
-    background:linear-gradient(180deg,#f0b85a,var(--gold-dim)); color:#1a1206;
-  }}
-  .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }}
-  a.tile {{
-    text-decoration:none; color:inherit; display:block; border:1px solid var(--line);
-    border-radius:14px; overflow:hidden; background:linear-gradient(165deg,var(--panel2),var(--panel));
-  }}
-  .poster {{
-    min-height:100px; padding:14px; display:flex; align-items:flex-end;
-    background:linear-gradient(135deg,#3a2d18,#1a1510 55%,#241c12);
-    font-family: Impact, Haettenschweiler, sans-serif; font-size:1.4rem; line-height:1.1;
-  }}
-  .info {{ padding:12px 14px 14px; font-family:system-ui,sans-serif; }}
-  .info h2 {{ margin:0 0 6px; font-size:1rem; }}
-  .info p {{ margin:0; color:var(--muted); font-size:.86rem; }}
-  .badge {{
-    display:inline-block; margin-top:8px; margin-right:6px; font-size:.7rem; font-weight:800;
-    letter-spacing:.06em; color:var(--gold); border:1px solid #4a3d2a; padding:3px 7px; border-radius:6px;
-  }}
-  .badge.open {{ color:var(--ok); border-color:#2a4a32; }}
-  .empty {{ text-align:center; color:var(--muted); padding:28px 8px; font-family:system-ui,sans-serif; line-height:1.5; }}
-  code {{ color:var(--gold); }}
-  #player {{ display:none; }}
-  #player.show {{ display:block; }}
-  #library.hide {{ display:none; }}
-  video {{ width:100%; max-height:70vh; background:#000; border-radius:12px; border:1px solid var(--line); }}
-  .actions {{ display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; font-family:system-ui,sans-serif; }}
-  .actions a, .actions button {{
-    background:var(--panel2); color:var(--text); border:1px solid var(--line); text-decoration:none;
-  }}
-  .actions a.primary, .actions button.primary {{
-    background:linear-gradient(180deg,#f0b85a,var(--gold-dim)); color:#1a1206; border:0;
-  }}
+:root {{
+  --bg:#0b0a09; --panel:#15120e; --panel2:#1c1813; --line:#322b22;
+  --text:#f4ece2; --muted:#a7967d; --gold:#e2ad55; --gold2:#b8842a;
+  --ok:#62c47a; --danger:#e07060; --haze:rgba(226,173,85,.14);
+}}
+* {{ box-sizing:border-box; }}
+html,body {{ margin:0; min-height:100%; }}
+body {{
+  color:var(--text);
+  font-family:"Segoe UI", Candara, Calibri, sans-serif;
+  background:
+    radial-gradient(1000px 520px at 0% -10%, #2c2114 0%, transparent 55%),
+    radial-gradient(800px 420px at 100% 0%, #1a140e 0%, transparent 50%),
+    linear-gradient(180deg, #12100d, var(--bg) 45%, #080706);
+  background-attachment:fixed;
+}}
+.shell {{ max-width:1100px; margin:0 auto; padding:20px 16px 88px; }}
+.hero {{
+  display:grid; gap:18px; grid-template-columns:1.3fr .7fr; align-items:end;
+  margin-bottom:18px; animation:rise .55s ease both;
+}}
+@media (max-width:760px) {{ .hero {{ grid-template-columns:1fr; }} }}
+.brand {{
+  font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+  font-size:clamp(3.2rem, 13vw, 6rem); line-height:.9; letter-spacing:.02em; margin:0;
+}}
+.brand em {{ font-style:normal; color:var(--gold); }}
+.tag {{ margin:10px 0 0; color:var(--muted); max-width:34rem; line-height:1.45; }}
+.pair {{
+  background:linear-gradient(165deg,var(--panel2),var(--panel));
+  border:1px solid var(--line); border-radius:16px; padding:14px;
+  text-align:center; animation:rise .55s ease .08s both;
+}}
+.pair img {{
+  width:min(100%, 220px); height:auto; border-radius:10px; background:#fff; padding:8px;
+}}
+.pair .lbl {{ margin:8px 0 0; color:var(--muted); font-size:.85rem; }}
+.box {{
+  border:1px solid var(--line); border-radius:14px; padding:14px 16px;
+  background:linear-gradient(180deg,var(--panel2),var(--panel));
+  margin:0 0 16px; animation:rise .55s ease .12s both;
+}}
+.box h2 {{ margin:0 0 8px; font-size:.95rem; color:var(--gold); letter-spacing:.04em; text-transform:uppercase; }}
+.url {{
+  display:block; color:var(--gold); word-break:break-all; text-decoration:none;
+  font-family:Consolas, ui-monospace, monospace; font-size:1.02rem; margin:6px 0;
+}}
+.url:hover {{ text-decoration:underline; }}
+.meta {{ color:var(--muted); margin:0 0 12px; font-size:.92rem; }}
+.meta strong {{ color:var(--text); }}
+.toolbar, .filters, .actions {{
+  display:flex; flex-wrap:wrap; gap:8px; margin:0 0 14px; align-items:center;
+}}
+#q, select {{
+  flex:1 1 160px; min-width:0; padding:11px 12px; border-radius:10px;
+  border:1px solid var(--line); background:var(--panel); color:var(--text); font:inherit;
+}}
+#q:focus, select:focus {{ outline:none; border-color:var(--gold2); box-shadow:0 0 0 3px var(--haze); }}
+button, .btn {{
+  font:inherit; font-weight:700; border:1px solid var(--line); border-radius:10px;
+  padding:11px 14px; cursor:pointer; background:var(--panel2); color:var(--text);
+  text-decoration:none; display:inline-block;
+}}
+button.primary, .btn.primary {{
+  background:linear-gradient(180deg,#f0b85a,var(--gold2)); border-color:transparent; color:#1a1206;
+}}
+button:active {{ transform:translateY(1px); }}
+.chip {{
+  border:1px solid var(--line); background:transparent; color:var(--muted);
+  border-radius:999px; padding:7px 12px; font-size:.85rem; font-weight:600;
+}}
+.chip.on {{ color:var(--bg); background:var(--gold); border-color:transparent; }}
+.grid {{
+  display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:12px;
+  animation:rise .6s ease .16s both;
+}}
+.tile {{
+  text-align:left; padding:0; overflow:hidden; width:100%;
+  border:1px solid var(--line); border-radius:14px; color:inherit; font:inherit;
+  background:linear-gradient(165deg,var(--panel2),var(--panel)); cursor:pointer;
+  transition:transform .15s ease, border-color .15s ease;
+}}
+a.tile {{ display:block; text-decoration:none; color:inherit; }}
+.tile:hover {{ transform:translateY(-2px); border-color:#4a3d2a; }}
+.poster {{
+  aspect-ratio:16/10; background:
+    linear-gradient(180deg, transparent 30%, rgba(0,0,0,.85)),
+    linear-gradient(135deg,#3a2d18,#1a1510 60%);
+  background-size:cover; background-position:center;
+  display:flex; align-items:flex-end; padding:10px;
+  font-family:Impact, Haettenschweiler, sans-serif; font-size:1.15rem; line-height:1.05;
+}}
+.poster span {{
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  text-shadow:0 1px 8px #000;
+}}
+.progress {{
+  height:3px; background:#2a241c; margin-top:-3px; position:relative; z-index:1;
+}}
+.progress > i {{ display:block; height:100%; background:var(--gold); width:0; }}
+.info {{ padding:10px 11px 12px; }}
+.info h2 {{ margin:0 0 4px; font-size:.95rem; line-height:1.25; }}
+.info p {{ margin:0; color:var(--muted); font-size:.78rem; }}
+.badge {{
+  display:inline-block; margin-top:7px; margin-right:5px; font-size:.68rem; font-weight:800;
+  letter-spacing:.05em; color:var(--gold); border:1px solid #4a3d2a; padding:2px 6px; border-radius:6px;
+}}
+.empty {{ text-align:center; color:var(--muted); padding:36px 10px; line-height:1.5; }}
+#player {{ display:none; }}
+#player.show {{ display:block; animation:rise .35s ease both; }}
+#library.hide {{ display:none; }}
+.player-head {{ display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:center; }}
+.player-head h1 {{
+  margin:0; font-family:Impact, Haettenschweiler, sans-serif;
+  font-size:clamp(1.4rem,5vw,2.2rem); letter-spacing:.02em;
+}}
+video {{
+  width:100%; max-height:min(72vh,740px); background:#000; border-radius:12px;
+  border:1px solid var(--line); margin-top:8px;
+}}
+.hint {{ color:var(--muted); font-size:.9rem; line-height:1.45; margin-top:10px; }}
+.ok {{ color:var(--ok); }}
+@keyframes rise {{ from {{ opacity:0; transform:translateY(12px); }} to {{ opacity:1; transform:none; }} }}
 </style>
 </head>
 <body>
 <div class="shell">
   <div id="library">
-    <h1 class="brand">Re<em>el</em></h1>
-    <p class="tag">Movies on this PC. On your phone use the Wi‑Fi link below, then open titles in <b>VLC</b> for sound.</p>
+    <div class="hero">
+      <div>
+        <h1 class="brand">Re<em>el</em></h1>
+        <p class="tag">Your <code style="color:var(--gold)">{esc(str(STATE["movies_dir"]))}</code> library on Wi‑Fi.
+          Scan the QR with your phone, then open titles in <b>VLC</b> for full audio.</p>
+      </div>
+      <div class="pair">
+        <img src="{esc(qr_src)}" alt="QR code to open Reel on phone" width="220" height="220"
+             onerror="this.style.display='none'"/>
+        <div class="lbl">Scan on your phone · same Wi‑Fi</div>
+      </div>
+    </div>
+
     <div class="box">
-      <h2>Phone link (same Wi‑Fi)</h2>
+      <h2>Phone URL</h2>
       {url_html}
-      <p style="color:var(--muted);margin:10px 0 0;font-size:.9rem">
-        If this page opened on the PC but not the phone: keep Reel.bat running as Administrator,
-        and type the link into the phone browser. Not 127.0.0.1.
+      <p class="hint" style="margin:8px 0 0">Keep Reel.bat running. Never use 127.0.0.1 on the phone.
+        <button type="button" id="copy-primary" class="btn" style="margin-left:6px;padding:6px 10px;font-size:.85rem">Copy link</button>
       </p>
     </div>
-    <p class="meta"><strong id="count">{len(movies)}</strong> titles · <span id="folder">{esc(str(STATE["movies_dir"]))}</span></p>
+
+    <p class="meta"><strong id="count">{len(movies)}</strong> titles
+      · <span id="engine">{'ffmpeg audio' if STATE['ffmpeg'] else 'VLC for audio'}</span></p>
+
     <div class="toolbar">
-      <input id="q" type="search" placeholder="Search…" autocomplete="off"/>
-      <button type="button" id="refresh" onclick="location.reload()">Refresh</button>
+      <input id="q" type="search" placeholder="Search movies…" autocomplete="off"/>
+      <select id="sort" aria-label="Sort">
+        <option value="name">A–Z</option>
+        <option value="new">Newest</option>
+        <option value="size">Largest</option>
+      </select>
+      <button type="button" id="refresh" class="primary">Refresh</button>
     </div>
-    <div id="grid" class="grid">
-      {grid_html}
-    </div>
+    <div class="filters" id="filters"></div>
+    <div id="grid" class="grid">{grid_html}</div>
   </div>
 
   <div id="player">
-    <h1 id="play-title" class="brand" style="font-size:2rem">Playing</h1>
-    <div class="actions">
-      <a id="vlc-link" class="primary" href="#">Open in VLC (audio)</a>
-      <button type="button" id="copy-url">Copy URL</button>
-      <button type="button" id="play-browser">Try browser</button>
+    <div class="player-head">
+      <h1 id="play-title">Playing</h1>
       <button type="button" id="back">← Library</button>
     </div>
+    <div class="actions">
+      <a id="vlc-link" class="btn primary" href="#">Open in VLC</a>
+      <button type="button" id="copy-url">Copy stream URL</button>
+      <button type="button" id="play-browser" class="primary">Play here</button>
+      <button type="button" id="play-pc-vlc" hidden>VLC on this PC</button>
+    </div>
     <video id="vid" controls playsinline preload="metadata"></video>
-    <p id="play-hint" class="tag"></p>
+    <p class="hint" id="play-hint"></p>
   </div>
 </div>
 <script>
 const BOOT = {boot_json};
+const KEY = "reel-progress-v1";
 let movies = BOOT.movies || [];
+let folder = "";
 let current = null;
 const grid = document.getElementById("grid");
 const q = document.getElementById("q");
+const sortEl = document.getElementById("sort");
+const filters = document.getElementById("filters");
+const vid = document.getElementById("vid");
+const playPcVlc = document.getElementById("play-pc-vlc");
+playPcVlc.hidden = !BOOT.vlc;
 
 function esc(s) {{
   return String(s).replace(/[&<>"']/g, c => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
+}}
+function progressMap() {{
+  try {{ return JSON.parse(localStorage.getItem(KEY) || "{{}}"); }} catch (e) {{ return {{}}; }}
+}}
+function saveProgress(id, t, d) {{
+  if (!id || !d || d < 30) return;
+  const m = progressMap();
+  const pct = Math.min(99, Math.round((t / d) * 100));
+  if (pct < 2 || pct > 95) {{ delete m[id]; }}
+  else {{ m[id] = {{ t, d, pct, at: Date.now() }}; }}
+  localStorage.setItem(KEY, JSON.stringify(m));
 }}
 function rawUrl(m) {{
   const name = (m.rel || "movie").split("/").pop();
   return location.origin + "/raw/" + encodeURIComponent(m.id) + "/" + encodeURIComponent(name);
 }}
-function render(list) {{
+function playUrl(m) {{
+  return BOOT.ffmpeg ? (location.origin + "/play/" + encodeURIComponent(m.id)) : rawUrl(m);
+}}
+function sortedFiltered() {{
+  let list = movies.slice();
+  const needle = q.value.trim().toLowerCase();
+  if (folder) list = list.filter(m => m.folder === folder);
+  if (needle) list = list.filter(m =>
+    m.title.toLowerCase().includes(needle) ||
+    (m.rel || "").toLowerCase().includes(needle) ||
+    (m.folder || "").toLowerCase().includes(needle)
+  );
+  const mode = sortEl.value;
+  if (mode === "new") list.sort((a,b) => b.mtime - a.mtime);
+  else if (mode === "size") list.sort((a,b) => b.size - a.size);
+  else list.sort((a,b) => a.title.localeCompare(b.title));
+  return list;
+}}
+function renderFilters() {{
+  const folders = BOOT.folders || [];
+  const bits = [`<button type="button" class="chip ${{folder===""?"on":""}}" data-f="">All</button>`];
+  for (const f of folders) {{
+    bits.push(`<button type="button" class="chip ${{folder===f?"on":""}}" data-f="${{esc(f)}}">${{esc(f)}}</button>`);
+  }}
+  filters.innerHTML = bits.join("");
+  filters.querySelectorAll(".chip").forEach(btn => {{
+    btn.onclick = () => {{ folder = btn.getAttribute("data-f") || ""; renderFilters(); render(); }};
+  }});
+}}
+function render() {{
+  const list = sortedFiltered();
+  document.getElementById("count").textContent = String(list.length);
+  const prog = progressMap();
   if (!list.length) {{
-    grid.innerHTML = '<div class="empty">No matches.</div>';
+    grid.innerHTML = '<div class="empty">No matches. Try another search or folder.</div>';
     return;
   }}
-  grid.innerHTML = list.map(m =>
-    `<button type="button" class="tile" data-id="${{esc(m.id)}}" style="width:100%;text-align:left;padding:0;cursor:pointer;font:inherit;color:inherit">` +
-    `<div class="poster"><span>${{esc(m.title)}}</span></div>` +
-    `<div class="info"><h2>${{esc(m.title)}}</h2>` +
-    `<p>${{esc(m.folder || "Movies")}} · ${{esc(m.size_label)}}</p>` +
-    `<span class="badge">${{esc(m.ext)}}</span></div></button>`
-  ).join("");
-  grid.querySelectorAll("button.tile").forEach(btn => {{
-    btn.addEventListener("click", () => {{
+  grid.innerHTML = list.map(m => {{
+    const p = prog[m.id];
+    const bar = p ? `<div class="progress"><i style="width:${{p.pct}}%"></i></div>` : "";
+    const sub = [m.folder || "Movies", m.duration_label, m.size_label].filter(Boolean).join(" · ");
+    return `<button type="button" class="tile" data-id="${{esc(m.id)}}">` +
+      `<div class="poster" style="background-image:url('/thumb/${{esc(m.id)}}.jpg')"><span>${{esc(m.title)}}</span></div>` +
+      bar +
+      `<div class="info"><h2>${{esc(m.title)}}</h2><p>${{esc(sub)}}</p>` +
+      `<span class="badge">${{esc(m.ext)}}</span>${{p?`<span class="badge">${{p.pct}}%</span>`:""}}</div></button>`;
+  }}).join("");
+  grid.querySelectorAll(".tile").forEach(btn => {{
+    btn.onclick = () => {{
       const m = movies.find(x => x.id === btn.getAttribute("data-id"));
       if (m) openMovie(m);
-    }});
+    }};
   }});
 }}
 function openMovie(m) {{
@@ -425,43 +703,77 @@ function openMovie(m) {{
   const a = document.getElementById("vlc-link");
   if (/Android/i.test(navigator.userAgent)) {{
     a.href = "intent:" + raw.replace(/^https?:/, "") +
-      "#Intent;action=android.intent.action.VIEW;scheme=http;type=video/*;package=org.videolan.vlc;end";
+      "#Intent;action=android.intent.action.VIEW;scheme=http;type=video/*;package=org.videolan.vlc;S.browser_fallback_url=" +
+      encodeURIComponent(raw) + ";end";
+  }} else if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {{
+    a.href = "vlc-x-callback://x-callback-url/stream?url=" + encodeURIComponent(raw);
   }} else {{
     a.href = raw;
   }}
   document.getElementById("play-hint").innerHTML =
-    "For audio: <b>Open in VLC</b> or paste this in VLC → Network:<br><span class='url'>" + esc(raw) + "</span>";
+    `<span class="ok">Best audio:</span> Open in VLC.<br>Stream URL: <span class="url">${{esc(raw)}}</span>` +
+    (BOOT.ffmpeg ? "<br>Play here remuxes audio to AAC via ffmpeg." : "<br>Install ffmpeg on the PC for browser audio.");
   document.getElementById("library").classList.add("hide");
   document.getElementById("player").classList.add("show");
-  document.getElementById("vid").removeAttribute("src");
+  // auto-start browser playback (with ffmpeg audio when available)
+  const src = playUrl(m);
+  vid.src = src;
+  const saved = progressMap()[m.id];
+  const start = () => {{
+    if (saved && saved.t > 15) {{
+      try {{ vid.currentTime = saved.t; }} catch (e) {{}}
+    }}
+    vid.play().catch(() => {{}});
+  }};
+  vid.onloadedmetadata = start;
+  vid.play().catch(() => {{}});
 }}
-document.getElementById("back").onclick = () => {{
-  const v = document.getElementById("vid");
-  v.pause(); v.removeAttribute("src"); v.load();
+function closePlayer() {{
+  if (current) saveProgress(current.id, vid.currentTime || 0, vid.duration || 0);
+  vid.pause(); vid.removeAttribute("src"); vid.load();
+  current = null;
   document.getElementById("player").classList.remove("show");
   document.getElementById("library").classList.remove("hide");
-}};
+  render();
+}}
+vid.addEventListener("timeupdate", () => {{
+  if (current && vid.duration) saveProgress(current.id, vid.currentTime, vid.duration);
+}});
+document.getElementById("back").onclick = closePlayer;
 document.getElementById("play-browser").onclick = () => {{
   if (!current) return;
-  const v = document.getElementById("vid");
-  v.src = BOOT.ffmpeg ? ("/play/" + encodeURIComponent(current.id)) : rawUrl(current);
-  v.play().catch(() => {{}});
+  vid.src = playUrl(current);
+  vid.play().catch(() => {{}});
 }};
 document.getElementById("copy-url").onclick = async () => {{
   if (!current) return;
   const raw = rawUrl(current);
-  try {{ await navigator.clipboard.writeText(raw); }} catch (e) {{}}
-  document.getElementById("play-hint").textContent = "Copied: " + raw;
+  try {{ await navigator.clipboard.writeText(raw); document.getElementById("play-hint").innerHTML = `<span class="ok">Copied.</span> ${{esc(raw)}}`; }}
+  catch (e) {{ document.getElementById("play-hint").textContent = raw; }}
 }};
-q.addEventListener("input", () => {{
-  const n = q.value.trim().toLowerCase();
-  render(!n ? movies : movies.filter(m =>
-    m.title.toLowerCase().includes(n) || (m.rel || "").toLowerCase().includes(n)));
-}});
-// Enhance SSR anchors into interactive player when JS works
-if (movies.length) {{
-  render(movies);
-}}
+document.getElementById("copy-primary").onclick = async () => {{
+  try {{ await navigator.clipboard.writeText(BOOT.primary); }} catch (e) {{}}
+}};
+playPcVlc.onclick = async () => {{
+  if (!current) return;
+  const res = await fetch("/api/vlc/" + encodeURIComponent(current.id), {{ method:"POST" }});
+  const data = await res.json().catch(() => ({{}}));
+  document.getElementById("play-hint").textContent = res.ok ? "Opened in VLC on this PC." : (data.error || "VLC launch failed");
+}};
+document.getElementById("refresh").onclick = async () => {{
+  const res = await fetch("/api/movies?refresh=1");
+  const data = await res.json();
+  movies = data.movies || [];
+  BOOT.folders = [...new Set(movies.map(m => m.folder).filter(Boolean))].sort();
+  BOOT.ffmpeg = data.ffmpeg; BOOT.vlc = data.vlc;
+  document.getElementById("engine").textContent = data.ffmpeg ? "ffmpeg audio" : "VLC for audio";
+  playPcVlc.hidden = !data.vlc;
+  renderFilters(); render();
+}};
+q.oninput = render;
+sortEl.onchange = render;
+renderFilters();
+render();
 </script>
 </body>
 </html>
@@ -475,8 +787,8 @@ class ThreadingHTTPServerReuse(ThreadingHTTPServer):
 
 
 class ReelHandler(BaseHTTPRequestHandler):
-    server_version = "Reel/1.2"
-    protocol_version = "HTTP/1.0"  # simpler for flaky phone stacks
+    server_version = "Reel/2.0"
+    protocol_version = "HTTP/1.0"
 
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -523,9 +835,8 @@ class ReelHandler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
 
-        if path in ("/", "/index.html"):
-            body = render_html()
-            self._send(200, body, "text/html; charset=utf-8")
+        if path in ("/", "/index.html", "/connect"):
+            self._send(200, render_html(), "text/html; charset=utf-8")
             return
 
         if path == "/health":
@@ -535,7 +846,9 @@ class ReelHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "movies": len(STATE["index"]),
                     "movies_dir": str(STATE["movies_dir"]),
-                    "lan_urls": STATE["lan_urls"],
+                    "lan_urls": primary_urls(),
+                    "ffmpeg": bool(STATE["ffmpeg"]),
+                    "vlc": bool(STATE["vlc"]),
                 },
             )
             return
@@ -543,17 +856,36 @@ class ReelHandler(BaseHTTPRequestHandler):
         if path == "/api/movies":
             if qs.get("refresh", ["0"])[0] in ("1", "true", "yes"):
                 refresh_index()
+                warmup_thumbs()
+            movies = movies_payload()
             self._json(
                 200,
                 {
-                    "movies": movies_payload(),
+                    "movies": movies,
                     "movies_dir": str(STATE["movies_dir"]),
-                    "count": len(STATE["index"]),
-                    "lan_urls": STATE["lan_urls"],
+                    "count": len(movies),
+                    "lan_urls": primary_urls(),
+                    "folders": sorted({m["folder"] for m in movies if m["folder"]}),
                     "ffmpeg": bool(STATE["ffmpeg"]),
                     "vlc": bool(STATE["vlc"]),
                 },
             )
+            return
+
+        if path.startswith("/thumb/"):
+            name = path[len("/thumb/") :]
+            mid = name[:-4] if name.endswith(".jpg") else name
+            mid = urllib.parse.unquote(mid)
+            thumb = ensure_thumb(mid)
+            if not thumb:
+                gif = (
+                    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!"
+                    b"\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+                )
+                self._send(200, gif, "image/gif", {"Cache-Control": "no-store"})
+                return
+            data = thumb.read_bytes()
+            self._send(200, data, "image/jpeg", {"Cache-Control": "public, max-age=86400"})
             return
 
         if path.startswith("/raw/"):
@@ -683,6 +1015,7 @@ class ReelHandler(BaseHTTPRequestHandler):
             "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-f", "mp4", "pipe:1",
         ]
+        # If video codec won't play in browsers (hevc/mpeg), re-encode lightly
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024 * 64)
         except OSError as e:
@@ -720,7 +1053,7 @@ def main() -> int:
     parser.add_argument("--movies", "-m", type=Path, default=default_movies_dir())
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", "-p", type=int, default=8787)
-    parser.add_argument("--announce", default="", help="Preferred LAN IP to show phones")
+    parser.add_argument("--announce", default="", help="Preferred LAN IP for phones")
     parser.add_argument("--open", action="store_true")
     args = parser.parse_args()
 
@@ -728,26 +1061,26 @@ def main() -> int:
     STATE["movies_dir"] = movies_dir
     STATE["port"] = args.port
     STATE["ffmpeg"] = find_ffmpeg()
+    STATE["ffprobe"] = find_ffprobe(STATE["ffmpeg"])
     STATE["vlc"] = find_vlc()
     STATE["announce"] = (args.announce or "").strip()
+    STATE["thumb_dir"] = Path(tempfile.gettempdir()) / "reel-thumbs"
+    STATE["thumb_dir"].mkdir(parents=True, exist_ok=True)
     refresh_index()
 
     ips = lan_ips()
-    if STATE["announce"] and STATE["announce"] not in ips and not STATE["announce"].startswith("REPLACE"):
-        ips = [STATE["announce"]] + ips
+    if STATE["announce"] and not STATE["announce"].startswith("REPLACE"):
+        ips = [STATE["announce"]] + [i for i in ips if i != STATE["announce"]]
     STATE["lan_urls"] = [f"http://{ip}:{args.port}/" for ip in ips]
 
-    if not movies_dir.is_dir():
-        print(f"WARNING: folder missing: {movies_dir}", file=sys.stderr)
     print(f"Movies folder: {movies_dir}")
     print(f"Videos found:  {len(STATE['index'])}")
-    if STATE["index"]:
-        for m in list(STATE["index"].values())[:12]:
-            print(f"  - {m['rel']}")
-        if len(STATE["index"]) > 12:
-            print(f"  … +{len(STATE['index']) - 12} more")
-    else:
-        print("  (none — put .mkv / .mp4 files in the folder above)")
+    for m in list(STATE["index"].values())[:10]:
+        print(f"  - {m['rel']}")
+    if len(STATE["index"]) > 10:
+        print(f"  … +{len(STATE['index']) - 10} more")
+    print(f"ffmpeg: {STATE['ffmpeg'] or 'not found'}")
+    print(f"VLC:    {STATE['vlc'] or 'not found'}")
 
     try:
         httpd = ThreadingHTTPServerReuse((args.host, args.port), ReelHandler)
@@ -755,41 +1088,32 @@ def main() -> int:
         print(f"\nERROR: cannot listen on {args.host}:{args.port} — {e}", file=sys.stderr)
         return 1
 
-    # Confirm we are actually listening on all interfaces
-    try:
-        sockname = httpd.socket.getsockname()
-        print(f"Listening:    {sockname[0]}:{sockname[1]}")
-    except OSError:
-        pass
+    warmup_thumbs()
 
     phone_txt = Path(__file__).resolve().parent / "PHONE-URL.txt"
-    primary = STATE["lan_urls"][0] if STATE["lan_urls"] else f"http://127.0.0.1:{args.port}/"
+    urls = primary_urls()
     try:
         phone_txt.write_text(
-            "Open this on your PHONE (same Wi-Fi). Keep Reel.bat running.\n\n"
-            + "\n".join(STATE["lan_urls"])
-            + "\n\nThen tap a movie -> Open in VLC for audio.\n",
+            "Open on your PHONE (same Wi-Fi). Keep Reel.bat running.\n\n"
+            + "\n".join(urls)
+            + "\n\nScan the QR on the PC page, or type a URL above.\n"
+            "Tap a movie → Open in VLC for best audio.\n",
             encoding="utf-8",
         )
     except OSError:
         pass
 
     print()
-    print("================================================")
-    print("  ON YOUR PHONE browser open:")
-    for u in STATE["lan_urls"]:
+    print("=" * 56)
+    print("  PHONE — open / scan QR on the PC page:")
+    for u in urls:
         print(f"     {u}")
-    print("================================================")
-    print("  Test on this PC first:")
-    print(f"     http://127.0.0.1:{args.port}/")
-    print(f"     http://127.0.0.1:{args.port}/health")
-    print("  Movies should list immediately (no login).")
-    print("================================================")
+    print(f"  THIS PC: http://127.0.0.1:{args.port}/")
+    print("=" * 56)
     print()
 
     if args.open:
         import webbrowser
-
         webbrowser.open(f"http://127.0.0.1:{args.port}/")
 
     try:

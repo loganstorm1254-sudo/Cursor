@@ -1,20 +1,26 @@
 # Reel — Wi‑Fi movies from D:\Movies
 
-## Fix: phone can’t connect / no movies
+Stream `.mkv` / `.mp4` (and more) from your PC to any phone on the same Wi‑Fi.
 
-1. Re-download [`releases/Reel-Windows.zip`](../releases/Reel-Windows.zip) and unzip (overwrite old files).
-2. Put `.mp4` / `.mkv` files in **`D:\Movies`**.
-3. Double-click **`Reel.bat`** → click **Yes** on the Administrator prompt (required for firewall).
-4. On the PC, confirm movies are listed in the window and at `http://127.0.0.1:8787/`.
-5. On your phone (same Wi‑Fi), open the big URL shown, e.g. `http://192.168.x.x:8787/`  
-   Also saved in **`PHONE-URL.txt`**. Never use `127.0.0.1` on the phone.
-6. Tap a movie → **Open in VLC** for audio.
+## Use it
 
-### Still can’t connect from phone?
+1. Download [`releases/Reel-Windows.zip`](../releases/Reel-Windows.zip) and unzip.
+2. Put movies in **`D:\Movies`**.
+3. Run **`Reel.bat`** → click **Yes** (Administrator / firewall).
+4. On the PC, scan the **QR** with your phone, or open the URL in **PHONE-URL.txt** (port **8787**).
+5. Tap a movie → **Open in VLC** for full audio (or **Play here** if ffmpeg is installed).
 
-- PC and phone on the **same Wi‑Fi** (not guest / “AP isolation”).
-- Windows Wi‑Fi profile = **Private**.
-- Try turning the PC into a hotspot and joining from the phone, or join the PC to the phone’s hotspot — then use the new IP Reel prints.
-- Antivirus may block Python; allow it when asked.
+## What’s new
 
-Port is **8787** (not 8080).
+- QR code on the library page for easy phone pairing
+- Folder filters, search, sort (A–Z / newest / largest)
+- Poster thumbnails (when ffmpeg is on the PC)
+- Resume progress bars
+- Auto browser play with AAC audio remux when ffmpeg is available
+- Opens Windows Firewall for Python + port 8787
+
+## Phone still can’t connect?
+
+- Same Wi‑Fi (not guest / AP isolation); Windows network = **Private**
+- Use the `192.168…` link — never `127.0.0.1` on the phone
+- Or join the PC to your phone hotspot and use the new IP Reel prints

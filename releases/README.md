@@ -46,7 +46,6 @@
 
 1. Download [`Reel-Windows.zip`](Reel-Windows.zip), unzip, overwrite old files.
 2. Put `.mkv` / `.mp4` in `D:\Movies`.
-3. Double-click **`Reel.bat`** → **Yes** to Administrator (opens firewall). Needs Python.
-4. On PC check `http://127.0.0.1:8787/` shows your movies.
-5. On phone (same Wi‑Fi) open the URL in **PHONE-URL.txt** / the bat window (port **8787**, not `127.0.0.1`).
-6. Tap a movie → **Open in VLC** for sound.
+3. Run **`Reel.bat`** → **Yes** to Administrator.
+4. On PC: scan the **QR** with your phone, or open PHONE-URL.txt (`http://YOUR-IP:8787/`).
+5. Tap a movie → **Open in VLC** (best audio) or **Play here**.

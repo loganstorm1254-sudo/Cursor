@@ -5504,4 +5504,8 @@ async def on_app_command_error(interaction: discord.Interaction, error):
         pass
 
 
+import logging
+logging.getLogger("discord.voice_state").setLevel(logging.WARNING)
+logging.getLogger("discord.player").setLevel(logging.WARNING)
+
 bot.run(TOKEN or os.environ.get("DISCORD_TOKEN", ""))

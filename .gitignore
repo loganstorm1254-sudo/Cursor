@@ -3,6 +3,7 @@ __pycache__/
 .env
 .venv/
 venv/
+vcbot_state.json
 
 # Android / Gradle
 .gradle/

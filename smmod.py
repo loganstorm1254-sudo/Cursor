@@ -2151,32 +2151,17 @@ async def on_ready():
 
     start_dashboard()
 
-    # Make sure TTS slash group is registered (safe on reloads)
     try:
         if tree.get_command("tts") is None:
             tree.add_command(tts_slash)
-            print("Registered /tts slash group.")
-    except Exception as e:
-        print("TTS slash register:", e)
-
-    # Per-guild sync = slash commands show up immediately (global can lag ~1 hour)
-    for guild in bot.guilds:
-        try:
-            synced = await tree.sync(guild=guild)
-            names = [c.name for c in synced]
-            print(f"Synced {len(synced)} slash cmds → {guild.name}")
-            if "tts" in names:
-                print("  ✓ /tts group visible in this server")
-            else:
-                print("  ✗ /tts missing after guild sync")
-        except Exception as e:
-            print(f"Guild slash sync failed ({guild.id}):", e)
+    except Exception:
+        pass
 
     try:
         synced = await tree.sync()
-        print(f"Global synced {len(synced)} slash commands.")
+        print(f"Synced {len(synced)} slash commands.")
     except Exception as e:
-        print("Global slash sync failed:", e)
+        print(f"Slash sync failed: {e}")
 
     for guild in bot.guilds:
         get_guild(guild.id)
@@ -2630,9 +2615,9 @@ On trigger:
 `/userinfo` or `*userinfo` - User info.
 `/membercount` or `*membercount` - Member count.
 `/dirt` or `*dirt` - DIRT.
-`/tts join` or `*tts join` - Join your voice channel (multi-server OK).
-`/tts leave` or `*tts leave` - Leave voice.
-`/tts say` or `*tts <text>` - Speak text in the joined VC.
+`/tts join` · `/tts_join` or `*tts join` - Join your voice channel (multi-server OK).
+`/tts leave` · `/tts_leave` or `*tts leave` - Leave voice.
+`/tts say` · `/tts_say` or `*tts <text>` - Speak text in the joined VC.
 """
 
         elif choice == "Free Features":

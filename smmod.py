@@ -2151,11 +2151,32 @@ async def on_ready():
 
     start_dashboard()
 
+    # Make sure TTS slash group is registered (safe on reloads)
+    try:
+        if tree.get_command("tts") is None:
+            tree.add_command(tts_slash)
+            print("Registered /tts slash group.")
+    except Exception as e:
+        print("TTS slash register:", e)
+
+    # Per-guild sync = slash commands show up immediately (global can lag ~1 hour)
+    for guild in bot.guilds:
+        try:
+            synced = await tree.sync(guild=guild)
+            names = [c.name for c in synced]
+            print(f"Synced {len(synced)} slash cmds → {guild.name}")
+            if "tts" in names:
+                print("  ✓ /tts group visible in this server")
+            else:
+                print("  ✗ /tts missing after guild sync")
+        except Exception as e:
+            print(f"Guild slash sync failed ({guild.id}):", e)
+
     try:
         synced = await tree.sync()
-        print(f"Synced {len(synced)} slash commands.")
+        print(f"Global synced {len(synced)} slash commands.")
     except Exception as e:
-        print(e)
+        print("Global slash sync failed:", e)
 
     for guild in bot.guilds:
         get_guild(guild.id)
@@ -5450,7 +5471,31 @@ async def tts_slash_say(interaction: discord.Interaction, text: str):
     await do_tts_say(interaction.guild, interaction.user, text, _slash_send(interaction))
 
 
-tree.add_command(tts_slash)
+try:
+    if tree.get_command("tts") is None:
+        tree.add_command(tts_slash)
+except Exception as e:
+    print("tree.add_command(tts_slash):", e)
+
+
+# Extra top-level slash aliases (easier to find in Discord's command list)
+@tree.command(name="tts_join", description="TTS: join your voice channel")
+async def slash_tts_join(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    await do_tts_join(interaction.guild, interaction.user, _slash_send(interaction, ephemeral=True))
+
+
+@tree.command(name="tts_leave", description="TTS: leave voice channel")
+async def slash_tts_leave(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    await do_tts_leave(interaction.guild, _slash_send(interaction, ephemeral=True))
+
+
+@tree.command(name="tts_say", description="TTS: speak text in voice")
+@app_commands.describe(text="What Beacon should say")
+async def slash_tts_say(interaction: discord.Interaction, text: str):
+    await interaction.response.defer()
+    await do_tts_say(interaction.guild, interaction.user, text, _slash_send(interaction))
 
 
 # ============================================================

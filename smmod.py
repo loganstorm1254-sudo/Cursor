@@ -2759,6 +2759,12 @@ Needs: `pip install yt-dlp --break-system-packages` and ffmpeg.
 `/remind` or `*remind 2h take out trash` - Set a reminder in this channel.
 `/level` or `*level` / `*rank [@user]` - View XP level (basic, no role rewards).
 `/leaderboard` or `*leaderboard` - Top XP in this server.
+
+**Economy (free)**
+`/balance` `/daily` `/pay` or `*balance` `*daily` `*pay @user amount`
+`/shop` `/buy` or `*shop` `*buy <item>`
+`/shopadd` `/shoprole` `/shopremove` — manage shop (Manage Server)
+`/givemoney` or `*givemoney @user amount` — owner only
 """
 
         elif choice == "Premium Features":
@@ -2767,11 +2773,6 @@ Needs: `pip install yt-dlp --break-system-packages` and ffmpeg.
 
 `/temprole` or `*temprole @user @Role 7d` - Temporary role grant (auto-removes).
 `/temproles` or `*temproles` - List active temp roles in this server.
-
-`/balance` `/daily` `/pay` or `*balance` `*daily` `*pay @user amount` - Economy coins.
-`/givemoney` or `*givemoney @user amount` - Owner only: spawn coins for someone.
-`/shop` `/buy` or `*shop` `*buy <item>` - Browse / buy shop items.
-`/shopadd` `/shoprole` `/shopremove` or `*shopadd` `*shoprole` `*shopremove` - Manage shop.
 
 `/autorespond` or `*autorespond add <keyword> | <response>` - Keyword auto-reply.
 `*autorespond regex <pattern> | <response>` / `list` / `remove <number>`
@@ -4953,16 +4954,12 @@ async def do_temproles_list(guild, author, send):
 
 
 async def do_balance(guild, author, member, send):
-    if not has_premium_access(guild, author):
-        return await send("❌ Economy is a Beacon Premium feature.")
     member = member or author
     bal = get_balance(guild.id, member.id)
     await send(f"💰 {member.mention} has **{bal}** coins.")
 
 
 async def do_daily(guild, author, send):
-    if not has_premium_access(guild, author):
-        return await send("❌ Economy is a Beacon Premium feature.")
     g = get_economy_guild(guild.id)
     last = int(g["daily"].get(str(author.id), 0))
     now = int(time.time())
@@ -4975,8 +4972,6 @@ async def do_daily(guild, author, send):
 
 
 async def do_pay(guild, author, member, amount, send):
-    if not has_premium_access(guild, author):
-        return await send("❌ Economy is a Beacon Premium feature.")
     if member is None or amount is None or amount <= 0:
         return await send("Usage: `*pay @user 50` or `/pay`")
     if member.id == author.id:
@@ -5002,8 +4997,6 @@ async def do_givemoney(guild, author, member, amount, send):
 
 
 async def do_shop(guild, author, send):
-    if not has_premium_access(guild, author):
-        return await send("❌ Economy is a Beacon Premium feature.")
     g = get_economy_guild(guild.id)
     if not g["shop"]:
         return await send("Shop is empty. Admins: `/shopadd` or `*shopadd 100 Cool Item`")
@@ -5017,8 +5010,6 @@ async def do_shop(guild, author, send):
 
 
 async def do_shopadd(guild, author, price, name, send):
-    if not has_premium_access(guild, author):
-        return await send("❌ Economy is a Beacon Premium feature.")
     if price is None or price < 0 or not name:
         return await send("Usage: `*shopadd 100 Cool Item` or `/shopadd`")
     g = get_economy_guild(guild.id)
@@ -5028,8 +5019,6 @@ async def do_shopadd(guild, author, price, name, send):
 
 
 async def do_shoprole(guild, author, price, role, send):
-    if not has_premium_access(guild, author):
-        return await send("❌ Economy is a Beacon Premium feature.")
     if price is None or role is None:
         return await send("Usage: `*shoprole 500 @VIP` or `/shoprole`")
     g = get_economy_guild(guild.id)
@@ -5039,8 +5028,6 @@ async def do_shoprole(guild, author, price, role, send):
 
 
 async def do_shopremove(guild, author, name, send):
-    if not has_premium_access(guild, author):
-        return await send("❌ Economy is a Beacon Premium feature.")
     if not name:
         return await send("Usage: `*shopremove <item name>` or `/shopremove`")
     g = get_economy_guild(guild.id)
@@ -5053,8 +5040,6 @@ async def do_shopremove(guild, author, name, send):
 
 
 async def do_buy(guild, author, name, send):
-    if not has_premium_access(guild, author):
-        return await send("❌ Economy is a Beacon Premium feature.")
     if not name:
         return await send("Usage: `*buy <item name>` or `/buy`")
     g = get_economy_guild(guild.id)
@@ -5197,7 +5182,7 @@ async def balance_cmd(ctx, member: discord.Member = None):
     await do_balance(ctx.guild, ctx.author, member, ctx.send)
 
 
-@tree.command(name="balance", description="Check coin balance (Premium)")
+@tree.command(name="balance", description="Check coin balance")
 @app_commands.describe(member="Member (optional)")
 async def slash_balance(interaction: discord.Interaction, member: discord.Member = None):
     await interaction.response.defer()
@@ -5209,7 +5194,7 @@ async def daily_cmd(ctx):
     await do_daily(ctx.guild, ctx.author, ctx.send)
 
 
-@tree.command(name="daily", description="Claim daily coins (Premium)")
+@tree.command(name="daily", description="Claim daily coins")
 async def slash_daily(interaction: discord.Interaction):
     await interaction.response.defer()
     await do_daily(interaction.guild, interaction.user, _slash_send(interaction))
@@ -5220,7 +5205,7 @@ async def pay_cmd(ctx, member: discord.Member = None, amount: int = None):
     await do_pay(ctx.guild, ctx.author, member, amount, ctx.send)
 
 
-@tree.command(name="pay", description="Pay coins to a member (Premium)")
+@tree.command(name="pay", description="Pay coins to a member")
 @app_commands.describe(member="Member to pay", amount="Amount of coins")
 async def slash_pay(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000]):
     await interaction.response.defer()
@@ -5254,7 +5239,7 @@ async def shop_cmd(ctx):
     await do_shop(ctx.guild, ctx.author, ctx.send)
 
 
-@tree.command(name="shop", description="View the economy shop (Premium)")
+@tree.command(name="shop", description="View the economy shop")
 async def slash_shop(interaction: discord.Interaction):
     await interaction.response.defer()
     await do_shop(interaction.guild, interaction.user, _slash_send(interaction))
@@ -5266,7 +5251,7 @@ async def shopadd_cmd(ctx, price: int = None, *, name: str = None):
     await do_shopadd(ctx.guild, ctx.author, price, name, ctx.send)
 
 
-@tree.command(name="shopadd", description="Add a shop item (Premium)")
+@tree.command(name="shopadd", description="Add a shop item")
 @app_commands.describe(price="Price in coins", name="Item name")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def slash_shopadd(interaction: discord.Interaction, price: app_commands.Range[int, 0, 1_000_000], name: str):
@@ -5280,7 +5265,7 @@ async def shoprole_cmd(ctx, price: int = None, role: discord.Role = None):
     await do_shoprole(ctx.guild, ctx.author, price, role, ctx.send)
 
 
-@tree.command(name="shoprole", description="Add a role to the shop (Premium)")
+@tree.command(name="shoprole", description="Add a role to the shop")
 @app_commands.describe(price="Price in coins", role="Role to sell")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def slash_shoprole(interaction: discord.Interaction, price: app_commands.Range[int, 0, 1_000_000], role: discord.Role):
@@ -5294,7 +5279,7 @@ async def shopremove_cmd(ctx, *, name: str = None):
     await do_shopremove(ctx.guild, ctx.author, name, ctx.send)
 
 
-@tree.command(name="shopremove", description="Remove a shop item (Premium)")
+@tree.command(name="shopremove", description="Remove a shop item")
 @app_commands.describe(name="Item name")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def slash_shopremove(interaction: discord.Interaction, name: str):
@@ -5307,7 +5292,7 @@ async def buy_cmd(ctx, *, name: str = None):
     await do_buy(ctx.guild, ctx.author, name, ctx.send)
 
 
-@tree.command(name="buy", description="Buy a shop item (Premium)")
+@tree.command(name="buy", description="Buy a shop item")
 @app_commands.describe(name="Item name")
 async def slash_buy(interaction: discord.Interaction, name: str):
     await interaction.response.defer()

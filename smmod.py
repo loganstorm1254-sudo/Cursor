@@ -2769,6 +2769,7 @@ Needs: `pip install yt-dlp --break-system-packages` and ffmpeg.
 `/temproles` or `*temproles` - List active temp roles in this server.
 
 `/balance` `/daily` `/pay` or `*balance` `*daily` `*pay @user amount` - Economy coins.
+`/givemoney` or `*givemoney @user amount` - Owner only: spawn coins for someone.
 `/shop` `/buy` or `*shop` `*buy <item>` - Browse / buy shop items.
 `/shopadd` `/shoprole` `/shopremove` or `*shopadd` `*shoprole` `*shopremove` - Manage shop.
 
@@ -4988,6 +4989,18 @@ async def do_pay(guild, author, member, amount, send):
     await send(f"✅ Paid **{amount}** coins to {member.mention}.")
 
 
+async def do_givemoney(guild, author, member, amount, send):
+    """Owner-only: spawn coins for someone (does not take from your balance)."""
+    if author.id != BOT_OWNER_ID:
+        return await send("❌ Only the bot owner can use this.")
+    if guild is None:
+        return await send("Use this in a server.")
+    if member is None or amount is None or amount <= 0:
+        return await send("Usage: `*givemoney @user 1000` or `/givemoney`")
+    bal = add_coins(guild.id, member.id, int(amount))
+    await send(f"✅ Gave **{amount}** coins to {member.mention}. Their balance is now **{bal}**.")
+
+
 async def do_shop(guild, author, send):
     if not has_premium_access(guild, author):
         return await send("❌ Economy is a Beacon Premium feature.")
@@ -5212,6 +5225,28 @@ async def pay_cmd(ctx, member: discord.Member = None, amount: int = None):
 async def slash_pay(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000]):
     await interaction.response.defer()
     await do_pay(interaction.guild, interaction.user, member, amount, _slash_send(interaction))
+
+
+@bot.command(name="givemoney", aliases=["givebucks", "addmoney", "ecoadd"])
+async def givemoney_cmd(ctx, member: discord.Member = None, amount: int = None):
+    await do_givemoney(ctx.guild, ctx.author, member, amount, ctx.send)
+
+
+@tree.command(name="givemoney", description="Owner only: give coins to a member")
+@app_commands.describe(member="Member to fund", amount="Coins to add")
+async def slash_givemoney(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    amount: app_commands.Range[int, 1, 1_000_000_000],
+):
+    await interaction.response.defer(ephemeral=True)
+    await do_givemoney(
+        interaction.guild,
+        interaction.user,
+        member,
+        amount,
+        _slash_send(interaction, ephemeral=True),
+    )
 
 
 @bot.command(name="shop")

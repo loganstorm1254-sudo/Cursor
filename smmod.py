@@ -2845,7 +2845,8 @@ Fake invites = joined accounts younger than 7 days.
 
 **Seekara staff** (bot owner assigns with `*staff add`)
 `/staff` or `*staff add|remove|list` — owner only
-Staff can use: `/premium` `/broadcast` `/givemoney`
+Staff can use: `/givemoney`
+Owner only: `/premium` `/broadcast`
 """
 
         elif choice == "Backups":
@@ -3393,8 +3394,8 @@ async def slash_welcomeinfo(interaction: discord.Interaction):
 
 # BROADCAST
 async def do_broadcast(author, message, send):
-    if not is_seekara_staff(author.id):
-        return await send("❌ Seekara staff only.")
+    if not is_bot_owner(author.id):
+        return await send("❌ Only the bot owner can use this.")
 
     sent = 0
     failed = 0
@@ -3451,11 +3452,11 @@ async def prefix_broadcast(ctx, *, message: str = None):
 
 
 # ============================================================
-# PREMIUM (Seekara staff) — writes premium_users.txt next to smmod.py
+# PREMIUM (bot owner only) — writes premium_users.txt next to smmod.py
 # Premium unlocks are checked against the SERVER OWNER's Discord id.
 # ============================================================
 
-@tree.command(name="premium", description="Add/remove/list premium user ids (Seekara staff)")
+@tree.command(name="premium", description="Add/remove/list premium user ids (bot owner only)")
 @app_commands.describe(
     action="add, remove, or list",
     user_id="Discord user id (server owner id) or @mention — required for add/remove",
@@ -3472,8 +3473,8 @@ async def slash_premium(
     action: app_commands.Choice[str],
     user_id: str = None,
 ):
-    if not is_seekara_staff(interaction.user.id):
-        await interaction.response.send_message("❌ Seekara staff only.", ephemeral=True)
+    if not is_bot_owner(interaction.user.id):
+        await interaction.response.send_message("❌ Only the bot owner can use this.", ephemeral=True)
         return
 
     act = action.value
@@ -3539,8 +3540,8 @@ async def slash_premium(
 
 @bot.command(name="premium")
 async def prefix_premium(ctx, action: str = None, user_id: str = None):
-    if not is_seekara_staff(ctx.author.id):
-        return await ctx.send("❌ Seekara staff only.")
+    if not is_bot_owner(ctx.author.id):
+        return await ctx.send("❌ Only the bot owner can use this.")
 
     action = (action or "").strip().lower()
 

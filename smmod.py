@@ -68,6 +68,7 @@ except ImportError:
 # Always read/write premium next to this script (not the shell's cwd).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PREMIUM_FILE = os.path.join(BASE_DIR, "premium_users.txt")
+STAFF_FILE = os.path.join(BASE_DIR, "seekara_staff.txt")
 BOT_OWNER_ID = 1257060226029584459
 MENTION_ID_RE = re.compile(r"<@!?(\d+)>")
 
@@ -151,6 +152,68 @@ def remove_premium_user(user_id):
         return False, uid
     ids.discard(uid)
     save_premium_ids(ids)
+    return True, uid
+
+
+def load_staff_ids():
+    ids = set()
+    try:
+        with open(STAFF_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                uid = normalize_premium_id(line)
+                if uid:
+                    ids.add(uid)
+    except FileNotFoundError:
+        pass
+    return ids
+
+
+def save_staff_ids(ids):
+    tmp = STAFF_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for uid in sorted(ids, key=lambda x: int(x)):
+            f.write(f"{uid}\n")
+    os.replace(tmp, STAFF_FILE)
+
+
+def is_bot_owner(user_id) -> bool:
+    uid = normalize_premium_id(user_id)
+    return uid == str(BOT_OWNER_ID)
+
+
+def is_seekara_staff(user_id) -> bool:
+    """Owner + Seekara staff can use former owner-only bot commands."""
+    uid = normalize_premium_id(user_id)
+    if not uid:
+        return False
+    if uid == str(BOT_OWNER_ID):
+        return True
+    return uid in load_staff_ids()
+
+
+def add_staff_user(user_id):
+    uid = normalize_premium_id(user_id)
+    if not uid:
+        return False, None
+    if uid == str(BOT_OWNER_ID):
+        return False, uid  # owner already staff
+    ids = load_staff_ids()
+    if uid in ids:
+        return False, uid
+    ids.add(uid)
+    save_staff_ids(ids)
+    return True, uid
+
+
+def remove_staff_user(user_id):
+    uid = normalize_premium_id(user_id)
+    if not uid:
+        return False, None
+    ids = load_staff_ids()
+    if uid not in ids:
+        return False, uid
+    ids.discard(uid)
+    save_staff_ids(ids)
     return True, uid
 
 
@@ -2764,7 +2827,7 @@ Needs: `pip install yt-dlp --break-system-packages` and ffmpeg.
 `/balance` `/daily` `/pay` or `*balance` `*daily` `*pay @user amount`
 `/shop` `/buy` or `*shop` `*buy <item>`
 `/shopadd` `/shoprole` `/shopremove` — manage shop (Manage Server)
-`/givemoney` or `*givemoney @user amount` — owner only
+`/givemoney` or `*givemoney @user amount` — Seekara staff only
 """
 
         elif choice == "Premium Features":
@@ -2779,6 +2842,10 @@ Needs: `pip install yt-dlp --break-system-packages` and ffmpeg.
 
 `/invites` or `*invites [@user]` - Invite tracker (real vs fake).
 Fake invites = joined accounts younger than 7 days.
+
+**Seekara staff** (bot owner assigns with `*staff add`)
+`/staff` or `*staff add|remove|list` — owner only
+Staff can use: `/premium` `/broadcast` `/givemoney`
 """
 
         elif choice == "Backups":
@@ -3326,8 +3393,8 @@ async def slash_welcomeinfo(interaction: discord.Interaction):
 
 # BROADCAST
 async def do_broadcast(author, message, send):
-    if author.id != BOT_OWNER_ID:
-        return await send("❌ You can't use this command.")
+    if not is_seekara_staff(author.id):
+        return await send("❌ Seekara staff only.")
 
     sent = 0
     failed = 0
@@ -3384,11 +3451,11 @@ async def prefix_broadcast(ctx, *, message: str = None):
 
 
 # ============================================================
-# PREMIUM (bot owner only) — writes premium_users.txt next to smmod.py
+# PREMIUM (Seekara staff) — writes premium_users.txt next to smmod.py
 # Premium unlocks are checked against the SERVER OWNER's Discord id.
 # ============================================================
 
-@tree.command(name="premium", description="Add/remove/list premium user ids (bot owner only)")
+@tree.command(name="premium", description="Add/remove/list premium user ids (Seekara staff)")
 @app_commands.describe(
     action="add, remove, or list",
     user_id="Discord user id (server owner id) or @mention — required for add/remove",
@@ -3405,8 +3472,8 @@ async def slash_premium(
     action: app_commands.Choice[str],
     user_id: str = None,
 ):
-    if interaction.user.id != BOT_OWNER_ID:
-        await interaction.response.send_message("❌ You can't use this command.", ephemeral=True)
+    if not is_seekara_staff(interaction.user.id):
+        await interaction.response.send_message("❌ Seekara staff only.", ephemeral=True)
         return
 
     act = action.value
@@ -3472,8 +3539,8 @@ async def slash_premium(
 
 @bot.command(name="premium")
 async def prefix_premium(ctx, action: str = None, user_id: str = None):
-    if ctx.author.id != BOT_OWNER_ID:
-        return await ctx.send("❌ You can't use this command.")
+    if not is_seekara_staff(ctx.author.id):
+        return await ctx.send("❌ Seekara staff only.")
 
     action = (action or "").strip().lower()
 
@@ -3514,6 +3581,142 @@ async def prefix_premium(ctx, action: str = None, user_id: str = None):
     if removed:
         return await ctx.send(f"✅ Removed premium from <@{uid}> (`{uid}`).")
     return await ctx.send(f"<@{uid}> (`{uid}`) was not premium.")
+
+
+# ============================================================
+# SEEKARA STAFF — only bot owner assigns; staff can use owner cmds
+# ============================================================
+
+@tree.command(name="staff", description="Add/remove/list Seekara staff (bot owner only)")
+@app_commands.describe(
+    action="add, remove, or list",
+    user_id="Discord user id or @mention — required for add/remove",
+)
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="add", value="add"),
+        app_commands.Choice(name="remove", value="remove"),
+        app_commands.Choice(name="list", value="list"),
+    ]
+)
+async def slash_staff(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+    user_id: str = None,
+):
+    if not is_bot_owner(interaction.user.id):
+        await interaction.response.send_message(
+            "❌ Only the bot owner can manage Seekara staff.",
+            ephemeral=True,
+        )
+        return
+
+    act = action.value
+    if act == "list":
+        ids = sorted(load_staff_ids(), key=lambda x: int(x))
+        if not ids:
+            await interaction.response.send_message(
+                f"No Seekara staff yet (you are always staff).\nFile: `{STAFF_FILE}`",
+                ephemeral=True,
+            )
+            return
+        lines = "\n".join(f"<@{uid}> `{uid}`" for uid in ids)
+        await interaction.response.send_message(
+            f"**Seekara staff** ({len(ids)})\n{lines}\n"
+            f"+ owner <@{BOT_OWNER_ID}>\nFile: `{STAFF_FILE}`",
+            ephemeral=True,
+        )
+        return
+
+    uid = normalize_premium_id(user_id)
+    if uid is None:
+        await interaction.response.send_message(
+            "Usage: `/staff add user_id:<id>` or `/staff remove user_id:<id>`",
+            ephemeral=True,
+        )
+        return
+
+    if act == "add":
+        if uid == str(BOT_OWNER_ID):
+            await interaction.response.send_message(
+                "Owner is already Seekara staff.", ephemeral=True
+            )
+            return
+        added, uid = add_staff_user(uid)
+        if added:
+            await interaction.response.send_message(
+                f"✅ Added Seekara staff <@{uid}> (`{uid}`).\nSaved to `{STAFF_FILE}`",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"<@{uid}> (`{uid}`) is already Seekara staff.",
+                ephemeral=True,
+            )
+        return
+
+    if uid == str(BOT_OWNER_ID):
+        await interaction.response.send_message(
+            "Can't remove the bot owner from staff.", ephemeral=True
+        )
+        return
+    removed, uid = remove_staff_user(uid)
+    if removed:
+        await interaction.response.send_message(
+            f"✅ Removed Seekara staff <@{uid}> (`{uid}`).",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            f"<@{uid}> (`{uid}`) was not Seekara staff.",
+            ephemeral=True,
+        )
+
+
+@bot.command(name="staff", aliases=["seekara", "seekarastaff"])
+async def prefix_staff(ctx, action: str = None, user_id: str = None):
+    if not is_bot_owner(ctx.author.id):
+        return await ctx.send("❌ Only the bot owner can manage Seekara staff.")
+
+    action = (action or "").strip().lower()
+    if action in {"", "list", "ls"}:
+        ids = sorted(load_staff_ids(), key=lambda x: int(x))
+        if not ids:
+            return await ctx.send(
+                f"No Seekara staff yet (you are always staff).\nFile: `{STAFF_FILE}`"
+            )
+        lines = "\n".join(f"<@{uid}> `{uid}`" for uid in ids)
+        return await ctx.send(
+            f"**Seekara staff** ({len(ids)})\n{lines}\n+ owner <@{BOT_OWNER_ID}>"
+        )
+
+    if action not in {"add", "remove", "rm", "del", "delete"}:
+        return await ctx.send(
+            "Usage: `*staff add <id|@user>` · `*staff remove <id|@user>` · `*staff list`"
+        )
+
+    uid = None
+    if ctx.message.mentions:
+        uid = normalize_premium_id(ctx.message.mentions[0].id)
+    if uid is None:
+        uid = normalize_premium_id(user_id)
+    if uid is None:
+        return await ctx.send("Put a valid Discord user id or @mention.")
+
+    if action == "add":
+        if uid == str(BOT_OWNER_ID):
+            return await ctx.send("Owner is already Seekara staff.")
+        added, uid = add_staff_user(uid)
+        if added:
+            return await ctx.send(f"✅ Added Seekara staff <@{uid}> (`{uid}`).")
+        return await ctx.send(f"<@{uid}> (`{uid}`) is already Seekara staff.")
+
+    if uid == str(BOT_OWNER_ID):
+        return await ctx.send("Can't remove the bot owner from staff.")
+    removed, uid = remove_staff_user(uid)
+    if removed:
+        return await ctx.send(f"✅ Removed Seekara staff <@{uid}> (`{uid}`).")
+    return await ctx.send(f"<@{uid}> (`{uid}`) was not Seekara staff.")
 
 
 # ============================================================
@@ -4991,9 +5194,9 @@ async def do_pay(guild, author, member, amount, send):
 
 
 async def do_givemoney(guild, author, member, amount, send):
-    """Owner-only: spawn coins for someone (does not take from your balance)."""
-    if author.id != BOT_OWNER_ID:
-        return await send("❌ Only the bot owner can use this.")
+    """Seekara staff: spawn coins for someone (does not take from your balance)."""
+    if not is_seekara_staff(author.id):
+        return await send("❌ Seekara staff only.")
     if guild is None:
         return await send("Use this in a server.")
     if member is None or amount is None or amount <= 0:
@@ -5223,7 +5426,7 @@ async def givemoney_cmd(ctx, member: discord.Member = None, amount: int = None):
     await do_givemoney(ctx.guild, ctx.author, member, amount, ctx.send)
 
 
-@tree.command(name="givemoney", description="Owner only: give coins to a member")
+@tree.command(name="givemoney", description="Seekara staff: give coins to a member")
 @app_commands.describe(member="Member to fund", amount="Coins to add")
 async def slash_givemoney(
     interaction: discord.Interaction,

@@ -2185,17 +2185,21 @@ async def announce_power_loss(reason: str = "shutdown"):
         return
     _power_alert_sent = True
 
-    # Prefer webhook if set (also useful for external tools)
     webhook = (POWER_ALERT_WEBHOOK_URL or "").strip()
     if webhook:
+        def _post_webhook():
+            data = json.dumps({"content": POWER_ALERT_MESSAGE}).encode("utf-8")
+            req = urllib.request.Request(
+                webhook,
+                data=data,
+                headers={"Content-Type": "application/json", "User-Agent": "BeaconBot"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as res:
+                res.read()
+
         try:
-            session = await ensure_http() if "ensure_http" in globals() else None
-        except Exception:
-            session = None
-        try:
-            import aiohttp
-            async with aiohttp.ClientSession() as http:
-                await http.post(webhook, json={"content": POWER_ALERT_MESSAGE})
+            await asyncio.to_thread(_post_webhook)
             print(f"Power alert sent via webhook ({reason})")
             return
         except Exception as e:

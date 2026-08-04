@@ -3325,32 +3325,18 @@ async def slash_welcomeinfo(interaction: discord.Interaction):
 
 
 # BROADCAST
-@tree.command(name="broadcast", description="Broadcast a message to every server.")
-@app_commands.describe(message="The announcement to send")
-async def slash_broadcast(interaction: discord.Interaction, message: str):
-
-    OWNER_ID = 1257060226029584459
-
-    if interaction.user.id != OWNER_ID:
-        await interaction.response.send_message(
-            "❌ You can't use this command.",
-            ephemeral=True
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True)
+async def do_broadcast(author, message, send):
+    if author.id != BOT_OWNER_ID:
+        return await send("❌ You can't use this command.")
 
     sent = 0
     failed = 0
 
     for guild in bot.guilds:
-
         channel = guild.system_channel
 
-        # Fall back to the first text channel the bot can send in
         if channel is None or not channel.permissions_for(guild.me).send_messages:
             channel = None
-
             for c in guild.text_channels:
                 perms = c.permissions_for(guild.me)
                 if perms.view_channel and perms.send_messages:
@@ -3365,26 +3351,36 @@ async def slash_broadcast(interaction: discord.Interaction, message: str):
             embed = discord.Embed(
                 title="📢 Beacon Announcement",
                 description=message,
-                color=0x5865F2
+                color=0x5865F2,
             )
-
             await channel.send(
                 embed=embed,
-                allowed_mentions=discord.AllowedMentions.none()
+                allowed_mentions=discord.AllowedMentions.none(),
             )
-
             sent += 1
-
         except Exception as e:
             print(f"{guild.name}: {e}")
             failed += 1
 
-    await interaction.followup.send(
+    await send(
         f"✅ Broadcast complete.\n"
         f"Sent: **{sent}** server(s)\n"
-        f"Failed: **{failed}**",
-        ephemeral=True
+        f"Failed: **{failed}**"
     )
+
+
+@tree.command(name="broadcast", description="Broadcast a message to every server.")
+@app_commands.describe(message="The announcement to send")
+async def slash_broadcast(interaction: discord.Interaction, message: str):
+    await interaction.response.defer(ephemeral=True)
+    await do_broadcast(interaction.user, message, _slash_send(interaction, ephemeral=True))
+
+
+@bot.command(name="broadcast")
+async def prefix_broadcast(ctx, *, message: str = None):
+    if not message:
+        return await ctx.send("Usage: `*broadcast <message>`")
+    await do_broadcast(ctx.author, message, ctx.send)
 
 
 # ============================================================
@@ -4480,6 +4476,16 @@ async def prefix_welcometoggle(ctx):
     save_config()
     state = "enabled" if cfg["welcome_enabled"] else "disabled"
     await ctx.send(f"Welcome system {state}.")
+
+
+@bot.command(name="welcomeembed")
+@commands.has_permissions(administrator=True)
+async def prefix_welcomeembed(ctx):
+    cfg = get_guild(ctx.guild.id)
+    cfg["welcome_embed"] = not cfg.get("welcome_embed", True)
+    save_config()
+    state = "enabled" if cfg["welcome_embed"] else "disabled"
+    await ctx.send(f"Welcome embed {state}.")
 
 
 @bot.command(name="welcomeinfo")
@@ -5632,6 +5638,21 @@ async def slash_tts_leave(interaction: discord.Interaction):
 async def slash_tts_say(interaction: discord.Interaction, text: str):
     await interaction.response.defer()
     await do_tts_say(interaction.guild, interaction.user, text, _slash_send(interaction))
+
+
+@bot.command(name="tts_join")
+async def prefix_tts_join(ctx):
+    await do_tts_join(ctx.guild, ctx.author, ctx.send)
+
+
+@bot.command(name="tts_leave")
+async def prefix_tts_leave(ctx):
+    await do_tts_leave(ctx.guild, ctx.send)
+
+
+@bot.command(name="tts_say")
+async def prefix_tts_say(ctx, *, text: str = None):
+    await do_tts_say(ctx.guild, ctx.author, text, ctx.send)
 
 
 # ============================================================

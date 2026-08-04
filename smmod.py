@@ -27,6 +27,12 @@ DISCORD_CLIENT_SECRET = ""  # paste OAuth client secret
 DISCORD_REDIRECT_URI = "https://dashboard.locker-rover.dev/callback"
 DISCORD_API = "https://discord.com/api/v10"
 
+# Offline / power-loss announce target
+POWER_ALERT_GUILD_ID = 1511411841421807839
+POWER_ALERT_MESSAGE = "BOT LOST POWER, OWNER WILL RESTART SOON"
+# Optional Discord webhook URL in that server (used by external uptime monitors for HARD power cuts)
+POWER_ALERT_WEBHOOK_URL = ""
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -34,6 +40,7 @@ import json
 import os
 import random
 import re
+import signal
 import time
 import tempfile
 from pathlib import Path
@@ -2020,6 +2027,21 @@ p{color:#9fb7d6}
             self.end_headers()
             return
 
+        # Public health check for UptimeRobot / external monitors (no login).
+        # If this stops responding, the Pi likely lost power or the bot died.
+        if parsed.path in {"/health", "/api/health"}:
+            ready = bool(bot.user) and bot.is_ready()
+            dashboard_json(
+                self,
+                {
+                    "ok": ready,
+                    "status": "online" if ready else "starting",
+                    "bot": str(bot.user) if bot.user else None,
+                },
+                200 if ready else 503,
+            )
+            return
+
         if parsed.path == "/api/status":
             session = require_session(self)
 
@@ -2149,6 +2171,82 @@ def start_dashboard():
 # EVENTS
 # ============================================================
 
+_power_alert_sent = False
+
+
+async def announce_power_loss(reason: str = "shutdown"):
+    """Post POWER_ALERT_MESSAGE to POWER_ALERT_GUILD_ID.
+
+    Works for graceful stops (Ctrl+C, systemctl stop, reboot).
+    Hard power cuts need an EXTERNAL monitor hitting /health (see bot start tip).
+    """
+    global _power_alert_sent
+    if _power_alert_sent:
+        return
+    _power_alert_sent = True
+
+    # Prefer webhook if set (also useful for external tools)
+    webhook = (POWER_ALERT_WEBHOOK_URL or "").strip()
+    if webhook:
+        try:
+            session = await ensure_http() if "ensure_http" in globals() else None
+        except Exception:
+            session = None
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as http:
+                await http.post(webhook, json={"content": POWER_ALERT_MESSAGE})
+            print(f"Power alert sent via webhook ({reason})")
+            return
+        except Exception as e:
+            print("Power alert webhook failed:", e)
+
+    guild = bot.get_guild(POWER_ALERT_GUILD_ID)
+    if guild is None:
+        try:
+            guild = await bot.fetch_guild(POWER_ALERT_GUILD_ID)
+        except Exception as e:
+            print("Power alert: guild not found:", e)
+            return
+
+    channel = guild.system_channel
+    if channel is None or not channel.permissions_for(guild.me).send_messages:
+        channel = None
+        for c in guild.text_channels:
+            perms = c.permissions_for(guild.me)
+            if perms.view_channel and perms.send_messages:
+                channel = c
+                break
+    if channel is None:
+        print("Power alert: no sendable channel")
+        return
+
+    try:
+        await channel.send(POWER_ALERT_MESSAGE)
+        print(f"Power alert sent to #{channel.name} ({reason})")
+    except Exception as e:
+        print("Power alert send failed:", e)
+
+
+def _handle_stop_signal(signum, frame):
+    print(f"Caught signal {signum} — sending power-loss alert, then shutting down")
+
+    async def _shutdown():
+        try:
+            await announce_power_loss(reason=f"signal {signum}")
+        finally:
+            await bot.close()
+
+    try:
+        loop = bot.loop
+        if loop.is_running():
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(_shutdown()))
+        else:
+            pass
+    except Exception as e:
+        print("Shutdown schedule failed:", e)
+
+
 @bot.event
 async def on_ready():
     print(f"Beacon online as {bot.user}")
@@ -2176,7 +2274,15 @@ async def on_ready():
     if not getattr(bot, "_feature_loop_started", False):
         bot._feature_loop_started = True
         bot.loop.create_task(feature_background_loop())
-        print("Feature background loop started (reminders + temp roles).")
+
+    if not getattr(bot, "_stop_signals_hooked", False):
+        bot._stop_signals_hooked = True
+        signal.signal(signal.SIGTERM, _handle_stop_signal)
+        signal.signal(signal.SIGINT, _handle_stop_signal)
+        print(
+            "Power-loss alert armed for guild "
+            f"{POWER_ALERT_GUILD_ID}. Hard power cuts: point UptimeRobot at /health."
+        )
 
 
 @bot.event

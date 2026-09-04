@@ -36,6 +36,8 @@ NovaAI/training/hf_extra.txt
 # Windows desktop build scratch / unpacked bundle (ship the .zip only)
 NovaAI/desktop/_build/
 releases/NovaAI-Windows/
+BotConsole/agent/_build/
+releases/BeaconConsoleBridge-Windows/
 
 # Beacon Console (Vercel)
 BotConsole/node_modules/

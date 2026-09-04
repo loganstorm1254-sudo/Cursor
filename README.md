@@ -95,6 +95,13 @@ pip install discord.py g4f
 python bot.py
 ```
 
+## Beacon Console (Vercel) — read-only remote CMD mirror
+
+Watch your server PC bot console (`smmod.py` / exe) from a phone or laptop.
+Username/password are set on the PC; the website is **view-only** (no typing, no shell).
+
+Project: [`BotConsole/`](BotConsole/) · PC bridge: [`BotConsole/agent/`](BotConsole/agent/) · Docs: [`BotConsole/README.md`](BotConsole/README.md)
+
 ## `bot2.py` — HTML website generator (one file)
 Turns a description into HTML. Replies with a downloadable `.html` file only (no code in chat).
 

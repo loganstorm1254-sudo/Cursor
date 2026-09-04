@@ -1,0 +1,8 @@
+# Copy to bridge_config.json (the bridge also creates this on first run)
+{
+  "base_url": "https://YOUR-APP.vercel.app",
+  "username": "logan",
+  "password": "change-me",
+  "command": "py smmod.py",
+  "bot_label": "smmod"
+}

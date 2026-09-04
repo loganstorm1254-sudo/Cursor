@@ -12,6 +12,13 @@ py smmod.py  ──bridge──push logs──▶  /api/push  ──store──�
                  claim user/pass──▶  /api/claim             / login
 ```
 
+## Downloads
+
+| File | What |
+|------|------|
+| [`releases/BotConsole-Vercel.zip`](../releases/BotConsole-Vercel.zip) | Website pack for Vercel |
+| [`releases/BeaconConsoleBridge-Windows.zip`](../releases/BeaconConsoleBridge-Windows.zip) | Windows bridge (`BeaconConsoleBridge.exe`) |
+
 ## 1. Deploy the website to Vercel
 
 1. Push this repo (or import `BotConsole/` as the project root).

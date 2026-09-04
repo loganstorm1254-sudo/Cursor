@@ -9,6 +9,8 @@
 | [`NovaAI.apk`](NovaAI.apk) | **Nova AI** — your own AI trained from scratch + Wikipedia lookups, unlocks with your master API key |
 | [`NovaAI-Windows.zip`](NovaAI-Windows.zip) | **Nova AI for Windows** — unzip, double-click `NovaAI.exe`, chat in your browser |
 | [`Reel-Windows.zip`](Reel-Windows.zip) | **Reel** — Wi‑Fi movie stream from `D:\Movies` (MKV/MP4). Unzip, double-click `Reel.bat` |
+| [`BotConsole-Vercel.zip`](BotConsole-Vercel.zip) | **Beacon Console** website — upload / deploy this folder to Vercel |
+| [`BeaconConsoleBridge-Windows.zip`](BeaconConsoleBridge-Windows.zip) | **Beacon Console Bridge** — Windows exe that streams your bot CMD to Vercel |
 
 ## Install on Samsung
 
@@ -49,3 +51,10 @@
 3. Run **`Reel.bat`** → **Yes** to Administrator.
 4. On PC: scan the **QR** with your phone, or open PHONE-URL.txt (`http://YOUR-IP:8787/`).
 5. Tap a movie → **Open in VLC** (best audio) or **Play here**.
+
+### Beacon Console (Vercel + Windows)
+
+1. Deploy [`BotConsole-Vercel.zip`](BotConsole-Vercel.zip) to Vercel (Root Directory `BotConsole`, set `SESSION_SECRET`).
+2. Download [`BeaconConsoleBridge-Windows.zip`](BeaconConsoleBridge-Windows.zip), unzip, double-click **`BeaconConsoleBridge.exe`**.
+3. Enter your Vercel URL + username/password + bot command (`py smmod.py` or your `.exe`).
+4. Open the Vercel site anywhere and log in — read-only CMD mirror.

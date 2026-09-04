@@ -1,0 +1,7 @@
+node_modules/
+.next/
+.env
+.env.local
+.vercel
+agent/bridge_config.json
+*.log

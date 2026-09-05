@@ -34,7 +34,9 @@ POWER_ALERT_WEBHOOK_URL = ""
 import discord
 from discord.ext import commands
 from discord import app_commands
+from discord.errors import ConnectionClosed
 import json
+import logging
 import os
 import random
 import re
@@ -2304,22 +2306,33 @@ def _handle_stop_signal(signum, frame):
         print("Shutdown schedule failed:", e)
 
 
+async def _safe_set_presence():
+    """Best-effort presence; never raise on flaky Termux / phone Wi-Fi sockets."""
+    try:
+        if bot.is_closed() or bot.ws is None:
+            return
+        await bot.change_presence(activity=discord.Game(name="*help"))
+    except (ConnectionClosed, OSError, asyncio.TimeoutError) as e:
+        print(f"Presence update skipped: {type(e).__name__}: {e}")
+    except Exception as e:
+        # aiohttp / gateway write can fail mid-reconnect with assorted errors.
+        print(f"Presence update skipped: {type(e).__name__}: {e}")
+
+
 @bot.event
 async def on_ready():
-    # on_ready also fires on reconnects (common on Termux/mobile Wi-Fi).
+    # on_ready also fires after session invalidation / full reconnect
+    # (very common on Termux / mobile Wi-Fi). Keep this handler crash-proof.
     first_ready = not getattr(bot, "_beacon_ready_once", False)
     print(f"Beacon online as {bot.user}" + ("" if first_ready else " (reconnect)"))
 
-    try:
-        if bot.ws is not None:
-            await bot.change_presence(activity=discord.Game(name="*help"))
-    except Exception as e:
-        # Socket often already closing during flaky phone networks — don't spam traceback.
-        print(f"Presence update skipped: {type(e).__name__}: {e}")
-
-    if not first_ready:
+    if first_ready:
+        # Set status once. Re-setting on every reconnect races a closing websocket
+        # and was spamming tracebacks that looked like the bot "stopped".
+        await _safe_set_presence()
+        bot._beacon_ready_once = True
+    else:
         return
-    bot._beacon_ready_once = True
 
     start_dashboard()
 
@@ -2345,6 +2358,12 @@ async def on_ready():
             "Power-loss alert armed for guild "
             f"{POWER_ALERT_GUILD_ID}. Hard power cuts: point UptimeRobot at /health."
         )
+
+
+@bot.event
+async def on_resumed():
+    # Quiet acknowledge — discord.py resumes without calling on_ready.
+    print("Beacon gateway resumed")
 
 
 @bot.event
@@ -5584,5 +5603,9 @@ async def on_app_command_error(interaction: discord.Interaction, error):
     except:
         pass
 
+
+# Termux / phone Wi-Fi: discord.py reconnects on its own; gateway WARNING spam is normal.
+logging.getLogger("discord.gateway").setLevel(logging.ERROR)
+logging.getLogger("discord.client").setLevel(logging.WARNING)
 
 bot.run(TOKEN or os.environ.get("DISCORD_TOKEN", ""))

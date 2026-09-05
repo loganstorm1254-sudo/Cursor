@@ -218,7 +218,6 @@ tree = bot.tree
 CONFIG_FILE = "beacon_config.json"
 WARNS_FILE = "beacon_warns.json"
 BACKUP_DIR = "backups"
-MESSAGE_BACKUP_DIR = "message_backups"
 DM_SENT_FILE = "beacon_owner_dms.json"
 STICKIES_FILE = os.path.join(BASE_DIR, "beacon_stickies.json")
 REMINDERS_FILE = os.path.join(BASE_DIR, "beacon_reminders.json")
@@ -290,12 +289,7 @@ except FileNotFoundError:
 custom_db.commit()
 
 os.makedirs(BACKUP_DIR, exist_ok=True)
-os.makedirs(MESSAGE_BACKUP_DIR, exist_ok=True)
 
-# Regular /backup now also backs up recent messages from every readable text channel.
-# Regular /restore and /wiperestore replay the latest all-channel message backup after restoring structure.
-DEFAULT_BACKUP_MESSAGE_LIMIT_PER_CHANNEL = 500
-DEFAULT_RESTORE_MESSAGE_LIMIT_PER_CHANNEL = 100
 
 antinuke_cache = {}
 mention_raid_cache = {}
@@ -770,9 +764,6 @@ def get_guild(guild_id):
         "restore_cooldown_seconds": 90,
         "wipe_before_restore": True,
         "rebackup_after_restore": True,
-        # Message backup system
-        "message_backup_live_enabled": False,
-        "message_backup_include_bots": False,
         # Welcome system
         "welcome_enabled": False,
         "welcome_channel": None,
@@ -828,505 +819,6 @@ DISCORD_SAFE_FILE_LIMIT = 7_500_000
 
 def public_backup_filename(guild):
     return f"{clean_filename(guild.name)}_{guild.id}_backup.json"
-
-
-def latest_message_backup_file_for_guild(guild_id):
-    folder = message_backup_guild_dir(guild_id)
-
-    files = [
-        os.path.join(folder, name)
-        for name in os.listdir(folder)
-        if name.endswith(".json")
-    ]
-
-    if not files:
-        return None
-
-    return max(files, key=os.path.getmtime)
-
-
-def public_message_backup_filename(guild, path):
-    return f"{clean_filename(guild.name)}_{guild.id}_{os.path.basename(path)}"
-
-
-def message_backup_guild_dir(guild_id):
-    path = os.path.join(MESSAGE_BACKUP_DIR, str(guild_id))
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def clean_filename(value):
-    value = str(value)
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in value)
-    return safe[:80] or "backup"
-
-
-def message_to_backup_dict(message, event="message", before_content=None, after_content=None):
-    return {
-        "event": event,
-        "message_id": message.id,
-        "guild_id": message.guild.id if message.guild else None,
-        "guild_name": message.guild.name if message.guild else None,
-        "channel_id": message.channel.id if message.channel else None,
-        "channel_name": getattr(message.channel, "name", None),
-        "channel_type": str(getattr(message.channel, "type", "unknown")),
-        "author_id": message.author.id if message.author else None,
-        "author": str(message.author) if message.author else None,
-        "author_bot": bool(getattr(message.author, "bot", False)),
-        "content": message.content,
-        "before_content": before_content,
-        "after_content": after_content,
-        "created_at": message.created_at.isoformat() if message.created_at else None,
-        "edited_at": message.edited_at.isoformat() if message.edited_at else None,
-        "jump_url": getattr(message, "jump_url", None),
-        "pinned": getattr(message, "pinned", False),
-        "mentions": [user.id for user in getattr(message, "mentions", [])],
-        "role_mentions": [role.id for role in getattr(message, "role_mentions", [])],
-        "attachments": [
-            {
-                "id": attachment.id,
-                "filename": attachment.filename,
-                "url": attachment.url,
-                "proxy_url": attachment.proxy_url,
-                "size": attachment.size,
-                "content_type": getattr(attachment, "content_type", None)
-            }
-            for attachment in getattr(message, "attachments", [])
-        ],
-        "embeds": [embed.to_dict() for embed in getattr(message, "embeds", [])]
-    }
-
-
-async def save_live_message_backup(message, event="created", before_content=None, after_content=None):
-    """Append one message event to a per-channel JSONL file."""
-    if not message.guild:
-        return
-
-    cfg = get_guild(message.guild.id)
-
-    if not cfg.get("message_backup_live_enabled", False):
-        return
-
-    if getattr(message.author, "bot", False) and not cfg.get("message_backup_include_bots", False):
-        return
-
-    folder = message_backup_guild_dir(message.guild.id)
-    path = os.path.join(folder, f"live_{message.channel.id}.jsonl")
-    data = message_to_backup_dict(
-        message,
-        event=event,
-        before_content=before_content,
-        after_content=after_content
-    )
-
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(data, ensure_ascii=False) + "\n")
-
-
-async def backup_channel_messages(channel, limit=1000):
-    """Back up recent messages from one text channel/thread into a JSON file."""
-    limit = max(1, min(int(limit), 10000))
-    guild = channel.guild
-    folder = message_backup_guild_dir(guild.id)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{clean_filename(channel.name)}_{channel.id}.json"
-    path = os.path.join(folder, filename)
-
-    messages = []
-
-    async for message in channel.history(limit=limit, oldest_first=True):
-        messages.append(message_to_backup_dict(message, event="history"))
-
-    data = {
-        "backup_type": "channel_messages",
-        "created_at": int(time.time()),
-        "guild_id": guild.id,
-        "guild_name": guild.name,
-        "channel_id": channel.id,
-        "channel_name": channel.name,
-        "requested_limit": limit,
-        "message_count": len(messages),
-        "messages": messages
-    }
-
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-    return path, len(messages)
-
-
-async def backup_all_text_messages(guild, limit_per_channel=500):
-    """Back up recent messages from every readable text channel into one JSON file."""
-    limit_per_channel = max(1, min(int(limit_per_channel), 5000))
-    folder = message_backup_guild_dir(guild.id)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(folder, f"{timestamp}_{clean_filename(guild.name)}_all_messages.json")
-
-    result = {
-        "backup_type": "all_text_channel_messages",
-        "created_at": int(time.time()),
-        "guild_id": guild.id,
-        "guild_name": guild.name,
-        "limit_per_channel": limit_per_channel,
-        "channels": [],
-        "skipped_channels": []
-    }
-
-    for channel in guild.text_channels:
-        try:
-            perms = channel.permissions_for(guild.me)
-
-            if not perms.view_channel or not perms.read_message_history:
-                result["skipped_channels"].append({
-                    "channel_id": channel.id,
-                    "channel_name": channel.name,
-                    "reason": "missing view_channel or read_message_history permission"
-                })
-                continue
-
-            channel_messages = []
-
-            async for message in channel.history(limit=limit_per_channel, oldest_first=True):
-                channel_messages.append(message_to_backup_dict(message, event="history"))
-
-            result["channels"].append({
-                "channel_id": channel.id,
-                "channel_name": channel.name,
-                "message_count": len(channel_messages),
-                "messages": channel_messages
-            })
-
-            await asyncio.sleep(1)
-
-        except Exception as e:
-            result["skipped_channels"].append({
-                "channel_id": getattr(channel, "id", None),
-                "channel_name": getattr(channel, "name", None),
-                "reason": str(e)
-            })
-
-    result["total_messages"] = sum(c["message_count"] for c in result["channels"])
-
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
-
-    return path, result["total_messages"], len(result["channels"]), len(result["skipped_channels"])
-
-
-
-def safe_backup_file_path(guild_id, file_name):
-    """Return a safe path inside this guild's message backup folder."""
-    folder = os.path.abspath(message_backup_guild_dir(guild_id))
-    file_name = os.path.basename(str(file_name or ""))
-
-    if not file_name or file_name in [".", ".."]:
-        return None
-
-    path = os.path.abspath(os.path.join(folder, file_name))
-
-    if not path.startswith(folder + os.sep):
-        return None
-
-    if not os.path.exists(path):
-        return None
-
-    return path
-
-
-def channel_name_matches(saved_name, current_name):
-    """Loose channel-name match for restored channels whose Discord IDs changed."""
-    if not saved_name or not current_name:
-        return False
-
-    return clean_filename(str(saved_name).lower()) == clean_filename(str(current_name).lower())
-
-
-def load_messages_from_backup_file(path, channel_id=None, channel_name=None):
-    """Load messages for one channel from a message backup JSON file.
-
-    First matches by channel ID. If the server was wiped/restored, Discord gives
-    recreated channels new IDs, so this also falls back to the channel name.
-    """
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    backup_type = data.get("backup_type")
-
-    if backup_type == "channel_messages":
-        saved_id = data.get("channel_id")
-        saved_name = data.get("channel_name")
-
-        if channel_id is not None and saved_id is not None:
-            try:
-                if int(saved_id) == int(channel_id):
-                    return data.get("messages", [])
-            except:
-                pass
-
-        if channel_name_matches(saved_name, channel_name):
-            return data.get("messages", [])
-
-    if backup_type == "all_text_channel_messages":
-        # Prefer exact channel ID first.
-        if channel_id is not None:
-            for channel_data in data.get("channels", []):
-                try:
-                    if int(channel_data.get("channel_id", 0)) == int(channel_id):
-                        return channel_data.get("messages", [])
-                except:
-                    pass
-
-        # Fallback for restored channels with new IDs.
-        for channel_data in data.get("channels", []):
-            if channel_name_matches(channel_data.get("channel_name"), channel_name):
-                return channel_data.get("messages", [])
-
-    return []
-
-
-def find_latest_message_backup_for_channel(guild_id, channel_id=None, channel_name=None):
-    """Find the newest normal JSON message backup containing this channel.
-
-    Matches by channel ID first, then by channel name. The name fallback matters
-    after /wiperestore because recreated channels get new Discord IDs.
-    """
-    folder = message_backup_guild_dir(guild_id)
-
-    files = [
-        os.path.join(folder, name)
-        for name in os.listdir(folder)
-        if name.endswith(".json")
-    ]
-
-    files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-
-    for path in files:
-        try:
-            messages = load_messages_from_backup_file(path, channel_id=channel_id, channel_name=channel_name)
-            if messages:
-                return path, messages
-        except Exception as e:
-            print("Message backup scan failed:", path, e)
-
-    return None, []
-
-
-async def get_restore_webhook(channel):
-    """Get or create a webhook used to replay messages."""
-    try:
-        webhooks = await channel.webhooks()
-
-        for hook in webhooks:
-            if hook.name == "Beacon Message Restore":
-                return hook
-
-        return await channel.create_webhook(
-            name="Beacon Message Restore",
-            reason="Beacon message backup restore"
-        )
-    except Exception as e:
-        print("Could not get/create restore webhook:", e)
-        return None
-
-
-def build_restored_message_content(message_data, include_timestamps=True):
-    content = message_data.get("content") or ""
-
-    attachment_lines = []
-    for attachment in message_data.get("attachments", []):
-        filename = attachment.get("filename") or "attachment"
-        url = attachment.get("url") or attachment.get("proxy_url")
-        if url:
-            attachment_lines.append(f"📎 {filename}: {url}")
-
-    if attachment_lines:
-        if content:
-            content += "\n\n"
-        content += "\n".join(attachment_lines)
-
-    if include_timestamps:
-        created_at = message_data.get("created_at")
-        if created_at:
-            if content:
-                content += "\n"
-            content += f"`Originally sent: {created_at}`"
-
-    if not content.strip():
-        content = "*[empty message / embed-only message]*"
-
-    if len(content) > 1900:
-        content = content[:1850] + "\n*[message was too long, trimmed during restore]*"
-
-    return content
-
-
-async def restore_messages_to_channel(channel, file_name=None, max_messages=100, include_timestamps=True):
-    """Replay backed-up messages into a channel using a webhook when possible."""
-    max_messages = max(1, min(int(max_messages), 1000))
-
-    perms = channel.permissions_for(channel.guild.me)
-
-    if not perms.view_channel or not perms.send_messages:
-        return False, "I need View Channel and Send Messages permissions in that channel."
-
-    path = None
-    messages = []
-
-    if file_name:
-        path = safe_backup_file_path(channel.guild.id, file_name)
-        if path is None:
-            return False, "I could not find that backup file in this server's message backup folder."
-        messages = load_messages_from_backup_file(path, channel_id=channel.id, channel_name=channel.name)
-    else:
-        path, messages = find_latest_message_backup_for_channel(channel.guild.id, channel_id=channel.id, channel_name=channel.name)
-
-    if not path or not messages:
-        return False, "No message backup found for this channel name. Run `/getmessagebackup` to check that a backup exists, or run `/messagebackup_all` before restoring/wiping."
-
-    # If the backup is huge, restore the newest N while preserving old-to-new order.
-    selected_messages = messages[-max_messages:]
-
-    webhook = None
-    if perms.manage_webhooks:
-        webhook = await get_restore_webhook(channel)
-
-    restored = 0
-    failed = 0
-
-    for message_data in selected_messages:
-        try:
-            content = build_restored_message_content(message_data, include_timestamps=include_timestamps)
-            username = (message_data.get("author") or "Unknown user")[:80]
-
-            if webhook:
-                await webhook.send(
-                    content=content,
-                    username=username,
-                    allowed_mentions=discord.AllowedMentions.none()
-                )
-            else:
-                await channel.send(
-                    f"**{username}:**\n{content}",
-                    allowed_mentions=discord.AllowedMentions.none()
-                )
-
-            restored += 1
-            await asyncio.sleep(0.8)
-        except Exception as e:
-            failed += 1
-            print("Message restore failed:", e)
-            await asyncio.sleep(2)
-
-    mode = "webhook usernames" if webhook else "normal bot messages because Manage Webhooks is missing"
-    return True, (
-        f"Restored `{restored}` messages into {channel.mention} using {mode}.\n"
-        f"Failed: `{failed}`\n"
-        f"Source: `{os.path.basename(path)}`\n"
-        "Warning: restored messages are reposts, not the original Discord messages."
-    )
-
-
-def find_latest_all_message_backup_for_guild(guild_id):
-    """Find the newest all-channel message backup for this guild."""
-    folder = message_backup_guild_dir(guild_id)
-
-    files = [
-        os.path.join(folder, name)
-        for name in os.listdir(folder)
-        if name.endswith(".json")
-    ]
-
-    files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-
-    for path in files:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            if data.get("backup_type") == "all_text_channel_messages":
-                return path, data
-
-        except Exception as e:
-            print("All-message backup scan failed:", path, e)
-
-    return None, None
-
-
-def find_text_channel_for_saved_backup(guild, channel_data):
-    """Match saved message backup channel data to the current restored channel."""
-    saved_id = channel_data.get("channel_id")
-    saved_name = channel_data.get("channel_name")
-
-    if saved_id is not None:
-        try:
-            channel = guild.get_channel(int(saved_id))
-            if isinstance(channel, discord.TextChannel):
-                return channel
-        except:
-            pass
-
-    for channel in guild.text_channels:
-        if channel_name_matches(saved_name, channel.name):
-            return channel
-
-    return None
-
-
-async def restore_all_messages_for_guild(guild, max_messages_per_channel=DEFAULT_RESTORE_MESSAGE_LIMIT_PER_CHANNEL, include_timestamps=True):
-    """Replay the latest all-channel message backup into matching current channels."""
-    max_messages_per_channel = max(1, min(int(max_messages_per_channel), 1000))
-    path, data = find_latest_all_message_backup_for_guild(guild.id)
-
-    if not path or not data:
-        return False, "No all-channel message backup found. Run `/backup` or `/messagebackup_all` first."
-
-    restored_channels = 0
-    restored_messages = 0
-    skipped_channels = 0
-    failed_channels = 0
-
-    for channel_data in data.get("channels", []):
-        try:
-            channel = find_text_channel_for_saved_backup(guild, channel_data)
-
-            if channel is None:
-                skipped_channels += 1
-                continue
-
-            message_count = int(channel_data.get("message_count", 0))
-            if message_count <= 0:
-                skipped_channels += 1
-                continue
-
-            ok, msg = await restore_messages_to_channel(
-                channel,
-                file_name=os.path.basename(path),
-                max_messages=max_messages_per_channel,
-                include_timestamps=include_timestamps
-            )
-
-            if ok:
-                restored_channels += 1
-                restored_messages += min(message_count, max_messages_per_channel)
-            else:
-                failed_channels += 1
-                print("Channel message restore skipped:", channel.name, msg)
-
-            await asyncio.sleep(2)
-
-        except Exception as e:
-            failed_channels += 1
-            print("Channel message restore failed:", e)
-            await asyncio.sleep(3)
-
-    return True, (
-        f"Message restore finished from `{os.path.basename(path)}`. "
-        f"Replayed up to `{max_messages_per_channel}` messages per channel.\n"
-        f"Channels restored: `{restored_channels}` | Estimated messages reposted: `{restored_messages}` | "
-        f"Skipped: `{skipped_channels}` | Failed: `{failed_channels}`\n"
-        "Warning: these are reposted messages, not original Discord messages."
-    )
-
 
 def serialize_overwrites(channel):
     data = []
@@ -2176,30 +1668,25 @@ p{color:#9fb7d6}
         if parsed.path == "/api/backup":
             async def dashboard_backup_job():
                 await create_backup(guild)
-                await backup_all_text_messages(guild, DEFAULT_BACKUP_MESSAGE_LIMIT_PER_CHANNEL)
 
             asyncio.run_coroutine_threadsafe(dashboard_backup_job(), bot.loop)
-            dashboard_json(self, {"ok": True, "message": "Backup started, including recent messages"})
+            dashboard_json(self, {"ok": True, "message": "Structure backup started"})
             return
 
         if parsed.path == "/api/restore":
             async def dashboard_restore_job():
-                ok, _ = await restore_backup(guild, wipe_first=False)
-                if ok:
-                    await restore_all_messages_for_guild(guild, DEFAULT_RESTORE_MESSAGE_LIMIT_PER_CHANNEL)
+                await restore_backup(guild, wipe_first=False)
 
             asyncio.run_coroutine_threadsafe(dashboard_restore_job(), bot.loop)
-            dashboard_json(self, {"ok": True, "message": "Restore started, including message replay"})
+            dashboard_json(self, {"ok": True, "message": "Structure restore started"})
             return
 
         if parsed.path == "/api/wiperestore":
             async def dashboard_wiperestore_job():
-                ok, _ = await restore_backup(guild, wipe_first=True)
-                if ok:
-                    await restore_all_messages_for_guild(guild, DEFAULT_RESTORE_MESSAGE_LIMIT_PER_CHANNEL)
+                await restore_backup(guild, wipe_first=True)
 
             asyncio.run_coroutine_threadsafe(dashboard_wiperestore_job(), bot.loop)
-            dashboard_json(self, {"ok": True, "message": "Wipe restore started, including message replay"})
+            dashboard_json(self, {"ok": True, "message": "Wipe + structure restore started"})
             return
 
         dashboard_json(self, {"ok": False, "error": "not found"}, 404)
@@ -2531,7 +2018,6 @@ async def on_message_delete(message):
     if not message.guild:
         return
 
-    await save_live_message_backup(message, event="deleted")
 
     if message.author.bot:
         return
@@ -2553,12 +2039,6 @@ async def on_message_edit(before, after):
     if before.content == after.content:
         return
 
-    await save_live_message_backup(
-        after,
-        event="edited",
-        before_content=before.content,
-        after_content=after.content
-    )
 
     if before.author.bot:
         return
@@ -2645,7 +2125,6 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    await save_live_message_backup(message, event="created")
 
     if message.author.bot:
         return
@@ -2845,16 +2324,10 @@ Owner only: `/premium` `/broadcast`
 `/backup` or `*backup` - Save server backup: name, icon, roles, channels, and permissions. Does not save emojis or sounds.
 `/restore` or `*restore` - Restore missing structure.
 `/wiperestore` or `*wiperestore` - Fully wipe then restore.
-`/messagebackup` or `*messagebackup` - Back up messages from the current/selected channel.
-`/messagebackup_all` or `*messagebackup_all` - Back up messages from all readable text channels.
-`/messagebackup_live` or `*messagebackup_live on/off` - Toggle automatic live message backups.
-`/messagebackups` or `*messagebackups` - List saved message backup files.
 
 Server backups are saved in:
 `backups/<server_id>.json`
 
-Message backups are saved in:
-`message_backups/<server_id>/`
 """
 
         elif choice == "Welcome":
@@ -3990,41 +3463,31 @@ async def slash_anunwhitelist(interaction: discord.Interaction, member: discord.
     await interaction.response.send_message(f"Removed `{member}` from whitelist")
 
 
-@tree.command(name="backup", description="Create this server's backup, including recent messages")
+@tree.command(name="backup", description="Create this server's structure backup")
 @app_commands.checks.has_permissions(administrator=True)
-async def slash_backup(
-    interaction: discord.Interaction,
-    message_limit_per_channel: app_commands.Range[int, 1, 5000] = DEFAULT_BACKUP_MESSAGE_LIMIT_PER_CHANNEL
-):
+async def slash_backup(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     await create_backup(interaction.guild)
-    message_path, total_messages, channel_count, skipped_channels = await backup_all_text_messages(
-        interaction.guild,
-        message_limit_per_channel
-    )
 
     path = backup_path(interaction.guild.id)
     message = (
-        "Backup saved for **this server only**: server name, icon, roles, channels, permissions, "
-        f"and `{total_messages}` recent messages from `{channel_count}` channels.\n"
-        f"Message limit per channel: `{message_limit_per_channel}` | Skipped message channels: `{skipped_channels}`\n"
-        "Emojis and soundboard sounds were skipped."
+        "Structure backup saved for **this server only**: server name, icon, roles, channels, permissions.\n"
+        "Messages are not backed up. Emojis and soundboard sounds were skipped."
     )
 
     files = []
     if os.path.exists(path) and os.path.getsize(path) <= DISCORD_SAFE_FILE_LIMIT:
         files.append(discord.File(path, filename=public_backup_filename(interaction.guild)))
-    if os.path.exists(message_path) and os.path.getsize(message_path) <= DISCORD_SAFE_FILE_LIMIT:
-        files.append(discord.File(message_path, filename=public_message_backup_filename(interaction.guild, message_path)))
 
     if files:
         await interaction.followup.send(message, files=files, ephemeral=True)
     else:
         await interaction.followup.send(
-            message + "\nFiles are saved server-side but are too big to upload to Discord.",
+            message + "\nFile is saved server-side but is too big to upload to Discord.",
             ephemeral=True
         )
+
 
 
 @tree.command(name="getbackup", description="Download this server's latest backup")
@@ -4049,183 +3512,22 @@ async def slash_getbackup(interaction: discord.Interaction):
     )
 
 
-@tree.command(name="messagebackups", description="List this server's saved message backup files")
+@tree.command(name="restore", description="Restore this server from its structure backup")
 @app_commands.checks.has_permissions(administrator=True)
-async def slash_messagebackups(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    folder = message_backup_guild_dir(interaction.guild.id)
-    files = [
-        os.path.join(folder, name)
-        for name in os.listdir(folder)
-        if name.endswith(".json")
-    ]
-    files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-
-    if not files:
-        await interaction.followup.send("No message backup files found for this server.", ephemeral=True)
-        return
-
-    lines = []
-    for path in files[:15]:
-        try:
-            size_kb = os.path.getsize(path) // 1024
-            lines.append(f"`{os.path.basename(path)}` - `{size_kb} KB`")
-        except:
-            lines.append(f"`{os.path.basename(path)}`")
-
-    await interaction.followup.send(
-        "Latest message backup files for **this server only**:\n" + "\n".join(lines),
-        ephemeral=True
-    )
-
-
-@tree.command(name="getmessagebackup", description="Download this server's latest message backup")
-@app_commands.checks.has_permissions(administrator=True)
-async def slash_getmessagebackup(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    path = latest_message_backup_file_for_guild(interaction.guild.id)
-
-    if not path:
-        await interaction.followup.send("No message backup found for this server. Run `/messagebackup` or `/messagebackup_all` first.", ephemeral=True)
-        return
-
-    if os.path.getsize(path) > DISCORD_SAFE_FILE_LIMIT:
-        await interaction.followup.send("Latest message backup exists for this server, but it is too big to upload to Discord.", ephemeral=True)
-        return
-
-    await interaction.followup.send(
-        "Here is the latest message backup for **this server only**.",
-        file=discord.File(path, filename=public_message_backup_filename(interaction.guild, path)),
-        ephemeral=True
-    )
-
-
-@tree.command(name="messagebackup", description="Back up messages from a channel")
-@app_commands.checks.has_permissions(administrator=True)
-async def slash_messagebackup(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel = None,
-    limit: app_commands.Range[int, 1, 10000] = 1000
-):
-    await interaction.response.defer(ephemeral=True)
-
-    target_channel = channel or interaction.channel
-
-    if not isinstance(target_channel, (discord.TextChannel, discord.Thread)):
-        await interaction.followup.send("This only works in text channels/threads.", ephemeral=True)
-        return
-
-    path, count = await backup_channel_messages(target_channel, limit)
-    message = f"Message backup saved for **this server only**: `{count}` messages from {target_channel.mention}."
-
-    if os.path.getsize(path) <= DISCORD_SAFE_FILE_LIMIT:
-        await interaction.followup.send(message, file=discord.File(path, filename=public_message_backup_filename(interaction.guild, path)), ephemeral=True)
-    else:
-        await interaction.followup.send(message + "\nFile is too big for Discord upload, but it is saved server-side.", ephemeral=True)
-
-
-@tree.command(name="messagebackup_all", description="Back up messages from every readable text channel")
-@app_commands.checks.has_permissions(administrator=True)
-async def slash_messagebackup_all(
-    interaction: discord.Interaction,
-    limit_per_channel: app_commands.Range[int, 1, 5000] = 500
-):
-    await interaction.response.defer(ephemeral=True)
-
-    path, total, channel_count, skipped = await backup_all_text_messages(interaction.guild, limit_per_channel)
-    message = (
-        f"Message backup saved for **this server only**: `{total}` messages from `{channel_count}` channels.\n"
-        f"Skipped channels: `{skipped}`"
-    )
-
-    if os.path.getsize(path) <= DISCORD_SAFE_FILE_LIMIT:
-        await interaction.followup.send(message, file=discord.File(path, filename=public_message_backup_filename(interaction.guild, path)), ephemeral=True)
-    else:
-        await interaction.followup.send(message + "\nFile is too big for Discord upload, but it is saved server-side.", ephemeral=True)
-
-
-@tree.command(name="messagebackup_live", description="Turn automatic live message backups on or off")
-@app_commands.checks.has_permissions(administrator=True)
-async def slash_messagebackup_live(interaction: discord.Interaction, enabled: bool):
-    cfg = get_guild(interaction.guild.id)
-    cfg["message_backup_live_enabled"] = enabled
-    save_config()
-
-    state = "enabled" if enabled else "disabled"
-    await interaction.response.send_message(f"Live message backups {state} for **this server only**.", ephemeral=True)
-
-
-@tree.command(name="messagerestore", description="Replay backed-up messages into a channel")
-@app_commands.checks.has_permissions(administrator=True)
-async def slash_messagerestore(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel = None,
-    file_name: str = None,
-    max_messages: app_commands.Range[int, 1, 1000] = 100,
-    include_timestamps: bool = True
-):
-    await interaction.response.defer(ephemeral=True)
-
-    target_channel = channel or interaction.channel
-
-    if not isinstance(target_channel, discord.TextChannel):
-        await interaction.followup.send("This only works in normal text channels.", ephemeral=True)
-        return
-
-    ok, msg = await restore_messages_to_channel(
-        target_channel,
-        file_name=file_name,
-        max_messages=max_messages,
-        include_timestamps=include_timestamps
-    )
-
-    await interaction.followup.send(msg, ephemeral=True)
-
-
-@tree.command(name="restore", description="Restore server and replay backed-up messages")
-@app_commands.checks.has_permissions(administrator=True)
-async def slash_restore(
-    interaction: discord.Interaction,
-    restore_messages: bool = True,
-    max_messages_per_channel: app_commands.Range[int, 1, 1000] = DEFAULT_RESTORE_MESSAGE_LIMIT_PER_CHANNEL
-):
+async def slash_restore(interaction: discord.Interaction):
     await interaction.response.defer()
-
     ok, msg = await restore_backup(interaction.guild, wipe_first=False)
-
-    if restore_messages and ok:
-        mok, mmsg = await restore_all_messages_for_guild(
-            interaction.guild,
-            max_messages_per_channel=max_messages_per_channel,
-            include_timestamps=True
-        )
-        msg = msg + "\n\n" + mmsg
-
     await interaction.followup.send(msg)
 
 
-@tree.command(name="wiperestore", description="Wipe server structure, restore it, then replay messages")
+
+@tree.command(name="wiperestore", description="Wipe structure, then restore from backup")
 @app_commands.checks.has_permissions(administrator=True)
-async def slash_wiperestore(
-    interaction: discord.Interaction,
-    restore_messages: bool = True,
-    max_messages_per_channel: app_commands.Range[int, 1, 1000] = DEFAULT_RESTORE_MESSAGE_LIMIT_PER_CHANNEL
-):
+async def slash_wiperestore(interaction: discord.Interaction):
     await interaction.response.defer()
-
     ok, msg = await restore_backup(interaction.guild, wipe_first=True)
-
-    if restore_messages and ok:
-        mok, mmsg = await restore_all_messages_for_guild(
-            interaction.guild,
-            max_messages_per_channel=max_messages_per_channel,
-            include_timestamps=True
-        )
-        msg = msg + "\n\n" + mmsg
-
     await interaction.followup.send(msg)
+
 
 
 # ============================================================
@@ -4447,33 +3749,26 @@ async def prefix_anunwhitelist(ctx, member: discord.Member):
 
 @bot.command(name="backup")
 @commands.has_permissions(administrator=True)
-async def prefix_backup(ctx, message_limit_per_channel: int = DEFAULT_BACKUP_MESSAGE_LIMIT_PER_CHANNEL):
-    await ctx.send("Backing up server structure and messages now.")
+async def prefix_backup(ctx):
+    await ctx.send("Backing up server structure now.")
 
     await create_backup(ctx.guild)
-    message_path, total_messages, channel_count, skipped_channels = await backup_all_text_messages(
-        ctx.guild,
-        message_limit_per_channel
-    )
 
     path = backup_path(ctx.guild.id)
     message = (
-        "Backup saved for **this server only**: server name, icon, roles, channels, permissions, "
-        f"and `{total_messages}` recent messages from `{channel_count}` channels.\n"
-        f"Message limit per channel: `{message_limit_per_channel}` | Skipped message channels: `{skipped_channels}`\n"
-        "Emojis and soundboard sounds were skipped."
+        "Structure backup saved for **this server only**: server name, icon, roles, channels, permissions.\n"
+        "Messages are not backed up. Emojis and soundboard sounds were skipped."
     )
 
     files = []
     if os.path.exists(path) and os.path.getsize(path) <= DISCORD_SAFE_FILE_LIMIT:
         files.append(discord.File(path, filename=public_backup_filename(ctx.guild)))
-    if os.path.exists(message_path) and os.path.getsize(message_path) <= DISCORD_SAFE_FILE_LIMIT:
-        files.append(discord.File(message_path, filename=public_message_backup_filename(ctx.guild, message_path)))
 
     if files:
         await ctx.send(message, files=files)
     else:
-        await ctx.send(message + "\nFiles are saved server-side but are too big to upload to Discord.")
+        await ctx.send(message + "\nFile is saved server-side but is too big to upload to Discord.")
+
 
 
 @bot.command(name="getbackup")
@@ -4495,143 +3790,22 @@ async def prefix_getbackup(ctx):
     )
 
 
-@bot.command(name="messagebackups")
-@commands.has_permissions(administrator=True)
-async def prefix_messagebackups(ctx):
-    folder = message_backup_guild_dir(ctx.guild.id)
-    files = [
-        os.path.join(folder, name)
-        for name in os.listdir(folder)
-        if name.endswith(".json")
-    ]
-    files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-
-    if not files:
-        await ctx.send("No message backup files found for this server.")
-        return
-
-    lines = []
-    for path in files[:15]:
-        try:
-            size_kb = os.path.getsize(path) // 1024
-            lines.append(f"`{os.path.basename(path)}` - `{size_kb} KB`")
-        except:
-            lines.append(f"`{os.path.basename(path)}`")
-
-    await ctx.send("Latest message backup files for **this server only**:\n" + "\n".join(lines))
-
-
-@bot.command(name="getmessagebackup")
-@commands.has_permissions(administrator=True)
-async def prefix_getmessagebackup(ctx):
-    path = latest_message_backup_file_for_guild(ctx.guild.id)
-
-    if not path:
-        await ctx.send("No message backup found for this server. Run `*messagebackup` or `*messagebackup_all` first.")
-        return
-
-    if os.path.getsize(path) > DISCORD_SAFE_FILE_LIMIT:
-        await ctx.send("Latest message backup exists for this server, but it is too big to upload to Discord.")
-        return
-
-    await ctx.send(
-        "Here is the latest message backup for **this server only**.",
-        file=discord.File(path, filename=public_message_backup_filename(ctx.guild, path))
-    )
-
-
-@bot.command(name="messagebackup")
-@commands.has_permissions(administrator=True)
-async def prefix_messagebackup(ctx, limit: int = 1000):
-    path, count = await backup_channel_messages(ctx.channel, limit)
-    message = f"Message backup saved for **this server only**: `{count}` messages from {ctx.channel.mention}."
-
-    if os.path.getsize(path) <= DISCORD_SAFE_FILE_LIMIT:
-        await ctx.send(message, file=discord.File(path, filename=public_message_backup_filename(ctx.guild, path)))
-    else:
-        await ctx.send(message + "\nFile is too big for Discord upload, but it is saved server-side.")
-
-
-@bot.command(name="messagebackup_all")
-@commands.has_permissions(administrator=True)
-async def prefix_messagebackup_all(ctx, limit_per_channel: int = 500):
-    await ctx.send("Backing up messages now. This can take a while on big servers.")
-    path, total, channel_count, skipped = await backup_all_text_messages(ctx.guild, limit_per_channel)
-    message = (
-        f"Message backup saved for **this server only**: `{total}` messages from `{channel_count}` channels.\n"
-        f"Skipped channels: `{skipped}`"
-    )
-
-    if os.path.getsize(path) <= DISCORD_SAFE_FILE_LIMIT:
-        await ctx.send(message, file=discord.File(path, filename=public_message_backup_filename(ctx.guild, path)))
-    else:
-        await ctx.send(message + "\nFile is too big for Discord upload, but it is saved server-side.")
-
-
-@bot.command(name="messagebackup_live")
-@commands.has_permissions(administrator=True)
-async def prefix_messagebackup_live(ctx, state: str):
-    state = state.lower()
-
-    if state not in ["on", "off", "true", "false", "enable", "disable", "enabled", "disabled"]:
-        await ctx.send("Use: `*messagebackup_live on` or `*messagebackup_live off`")
-        return
-
-    enabled = state in ["on", "true", "enable", "enabled"]
-    cfg = get_guild(ctx.guild.id)
-    cfg["message_backup_live_enabled"] = enabled
-    save_config()
-
-    await ctx.send(f"Live message backups {'enabled' if enabled else 'disabled'} for **this server only**.")
-
-
-@bot.command(name="messagerestore")
-@commands.has_permissions(administrator=True)
-async def prefix_messagerestore(ctx, limit: int = 100):
-    await ctx.send("Restoring messages. This will repost them, not bring back the original Discord messages.")
-
-    ok, msg = await restore_messages_to_channel(
-        ctx.channel,
-        file_name=None,
-        max_messages=limit,
-        include_timestamps=True
-    )
-
-    await ctx.send(msg)
-
-
 @bot.command(name="restore")
 @commands.has_permissions(administrator=True)
-async def prefix_restore(ctx, max_messages_per_channel: int = DEFAULT_RESTORE_MESSAGE_LIMIT_PER_CHANNEL):
-    await ctx.send("Restoring server structure. Messages will be replayed after the structure restore.")
+async def prefix_restore(ctx):
+    await ctx.send("Restoring server structure from backup.")
     ok, msg = await restore_backup(ctx.guild, wipe_first=False)
-
-    if ok:
-        mok, mmsg = await restore_all_messages_for_guild(
-            ctx.guild,
-            max_messages_per_channel=max_messages_per_channel,
-            include_timestamps=True
-        )
-        msg = msg + "\n\n" + mmsg
-
     await ctx.send(msg)
+
 
 
 @bot.command(name="wiperestore")
 @commands.has_permissions(administrator=True)
-async def prefix_wiperestore(ctx, max_messages_per_channel: int = DEFAULT_RESTORE_MESSAGE_LIMIT_PER_CHANNEL):
-    await ctx.send("Wiping/restoring server structure. Messages will be replayed after channels are recreated.")
+async def prefix_wiperestore(ctx):
+    await ctx.send("Wiping then restoring server structure from backup.")
     ok, msg = await restore_backup(ctx.guild, wipe_first=True)
-
-    if ok:
-        mok, mmsg = await restore_all_messages_for_guild(
-            ctx.guild,
-            max_messages_per_channel=max_messages_per_channel,
-            include_timestamps=True
-        )
-        msg = msg + "\n\n" + mmsg
-
     await ctx.send(msg)
+
 
 
 @bot.command(name="setwelcome")

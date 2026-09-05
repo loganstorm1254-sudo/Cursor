@@ -29,6 +29,11 @@ IMPORTANT: Enable MESSAGE CONTENT INTENT or !html / @mention / reply will silent
 Owner-only:
   !off / !on                    Pause / resume generation
   !status                       Show bot status
+  !premium add|remove|list      Grant / revoke / list premium (shared file)
+
+Premium:
+  !premium / !prem              Check your premium status
+  Perk: much shorter HTML cooldown (15s vs 60s)
 """
 
 from __future__ import annotations
@@ -58,11 +63,17 @@ except ImportError:
 TOKEN = ""
 
 OWNER_ID = 1257060226029584459
-COOLDOWN_SECONDS = 60.0  # 1 minute per user
+# Optional seed IDs (ints). Prefer !premium add so grants persist.
+PREMIUM_SEED_IDS: list[int] = []
+COOLDOWN_SECONDS = 60.0  # 1 minute per free user
+PREMIUM_COOLDOWN_SECONDS = 15.0
 MAX_PROMPT_CHARS = 1500
 MAX_HTML_CHARS = 100_000
 MAX_CONTEXT_HTML_CHARS = 60_000
 DISCORD_FILE_LIMIT = 8 * 1024 * 1024
+PREMIUM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "premium_users.json")
+MENTION_RE = re.compile(r"<@!?(\d+)>")
+DIGIT_ID_RE = re.compile(r"^\d{5,25}$")
 
 # Free backends (no paid API keys / credit packs).
 # g4f first — handles long HTML. Pollinations anonymous often 402s on big prompts.
@@ -338,10 +349,11 @@ _last_provider = "none"
 
 ai_enabled = True
 cooldowns: dict[int, float] = defaultdict(float)
+premium_users: set[int] = set()
 
 
 def is_owner(user_id: int) -> bool:
-    return user_id == OWNER_ID
+    return int(user_id) == OWNER_ID
 
 
 def owner_only():
@@ -354,12 +366,93 @@ def owner_only():
     return commands.check(predicate)
 
 
+def parse_user_id(raw: str | int | None) -> int | None:
+    """Accept raw snowflake, <@id>, or <@!id>. Always return int or None."""
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    text = str(raw).strip()
+    if not text:
+        return None
+    mention = MENTION_RE.fullmatch(text) or MENTION_RE.search(text)
+    if mention:
+        text = mention.group(1)
+    text = text.strip().strip("\"'`")
+    if not DIGIT_ID_RE.fullmatch(text):
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_premium_users() -> set[int]:
+    loaded: set[int] = set()
+    for seed in PREMIUM_SEED_IDS:
+        uid = parse_user_id(seed)
+        if uid is not None:
+            loaded.add(uid)
+    if os.path.isfile(PREMIUM_FILE):
+        try:
+            with open(PREMIUM_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Warning: could not read {PREMIUM_FILE}: {exc}")
+            data = []
+        if isinstance(data, dict):
+            data = data.get("users", data.get("premium_users", []))
+        if not isinstance(data, list):
+            data = []
+        for item in data:
+            uid = parse_user_id(item)
+            if uid is not None:
+                loaded.add(uid)
+    return loaded
+
+
+def save_premium_users() -> None:
+    payload = sorted(int(uid) for uid in premium_users)
+    tmp = PREMIUM_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, PREMIUM_FILE)
+
+
+def is_premium(user_id: int) -> bool:
+    uid = int(user_id)
+    return is_owner(uid) or uid in premium_users
+
+
+def add_premium_user(user_id: int) -> bool:
+    uid = int(user_id)
+    if uid in premium_users:
+        return False
+    premium_users.add(uid)
+    save_premium_users()
+    return True
+
+
+def remove_premium_user(user_id: int) -> bool:
+    uid = int(user_id)
+    if uid not in premium_users:
+        return False
+    premium_users.discard(uid)
+    save_premium_users()
+    return True
+
+
+def cooldown_for(user_id: int) -> float:
+    return PREMIUM_COOLDOWN_SECONDS if is_premium(user_id) else COOLDOWN_SECONDS
+
+
 def check_cooldown(user_id: int) -> float | None:
     now = time.monotonic()
     ready_at = cooldowns.get(user_id, 0.0)
     if now < ready_at:
         return ready_at - now
-    cooldowns[user_id] = now + COOLDOWN_SECONDS
+    cooldowns[user_id] = now + cooldown_for(user_id)
     return None
 
 
@@ -822,6 +915,9 @@ async def handle_html(
 
 @bot.event
 async def on_ready():
+    global premium_users
+    premium_users = load_premium_users()
+    save_premium_users()
     await ensure_http()
     try:
         synced = await bot.tree.sync()
@@ -829,7 +925,7 @@ async def on_ready():
     except Exception as exc:
         print(f"Slash sync failed: {exc}")
     print(f"Logged in as {bot.user} (id={bot.user.id})")
-    print("Ready — HTML generator (free unlimited AI: Pollinations + g4f).")
+    print(f"Ready — HTML generator. Premium users: {len(premium_users)} ({PREMIUM_FILE})")
     if not intents.message_content:
         print("WARNING: message_content intent is OFF — !html / @mention / reply will NOT work.")
     else:
@@ -867,12 +963,14 @@ async def help_cmd(ctx: commands.Context):
         "**HTML Website Bot** (`bot2.py`) — I only make HTML websites.\n\n"
         "`!html <description>` / `/html` — generate a single-file website\n"
         "`!ping` — check the bot is online\n"
+        "`!premium` / `!prem` — check premium status (shorter cooldown)\n"
         "**Reply** to my message (or the `.html` file) + your changes — continue editing\n"
         f"Or mention me: `@{bot.user.display_name} a landing page for a coffee shop`\n\n"
         "If `!html` / @mention do nothing: enable **Message Content Intent** in the "
         "Developer Portal → Bot → Privileged Gateway Intents, then restart the bot.\n"
         "Sends a downloadable `.html` file only (no code dump in chat).\n"
-        "Moderation: no porn/NSFW, CSAM, gore, scams/phishing, hate, or illegal shops."
+        "Moderation: no porn/NSFW, CSAM, gore, scams/phishing, hate, or illegal shops.\n"
+        "**Owner:** `!premium add|remove <id|@user>` · `!premium list`"
     )
 
 
@@ -915,6 +1013,80 @@ async def on_cmd(ctx: commands.Context):
     await ctx.send("HTML generation is on again.")
 
 
+@bot.command(name="premium", aliases=["prem"])
+async def premium_cmd(ctx: commands.Context, action: str = "", target: str = ""):
+    """Check status, or (owner) add/remove/list. Shares premium_users.json with bot.py."""
+    action = (action or "").strip().lower()
+    target = (target or "").strip()
+
+    if action in {"", "status", "me", "check"}:
+        prem = is_premium(ctx.author.id)
+        await ctx.send(
+            f"{ctx.author.mention} premium: **{'yes' if prem else 'no'}**\n"
+            f"HTML cooldown: "
+            f"`{cooldown_for(ctx.author.id):g}s` "
+            f"(free `{COOLDOWN_SECONDS:g}s` · premium `{PREMIUM_COOLDOWN_SECONDS:g}s`)."
+        )
+        return
+
+    if action in {"add", "remove", "rm", "del", "delete", "list", "ls"}:
+        if not is_owner(ctx.author.id):
+            await ctx.send("Owner only.")
+            return
+
+    if action in {"list", "ls"}:
+        if not premium_users:
+            await ctx.send("No premium users yet. Use `!premium add <id|@user>`.")
+            return
+        lines = [f"<@{uid}> `{uid}`" for uid in sorted(premium_users)]
+        await ctx.send("**Premium users**\n" + "\n".join(lines))
+        return
+
+    if action in {"add", "remove", "rm", "del", "delete"}:
+        uid = None
+        if ctx.message.mentions:
+            uid = int(ctx.message.mentions[0].id)
+        if uid is None:
+            uid = parse_user_id(target)
+        if uid is None:
+            await ctx.send(
+                "Usage: `!premium add <user_id|@user>` or "
+                "`!premium remove <user_id|@user>`"
+            )
+            return
+        if action == "add":
+            if is_owner(uid):
+                await ctx.send("Owner is always premium.")
+                return
+            added = add_premium_user(uid)
+            live = is_premium(uid)
+            if added:
+                await ctx.send(
+                    f"Granted premium to <@{uid}> (`{uid}`). "
+                    f"Live check: **{'yes' if live else 'no'}**."
+                )
+            else:
+                await ctx.send(
+                    f"<@{uid}> (`{uid}`) already had premium. "
+                    f"Live check: **{'yes' if live else 'no'}**."
+                )
+            return
+        if is_owner(uid):
+            await ctx.send("Can't remove premium from the owner.")
+            return
+        removed = remove_premium_user(uid)
+        if removed:
+            await ctx.send(f"Removed premium from <@{uid}> (`{uid}`).")
+        else:
+            await ctx.send(f"<@{uid}> (`{uid}`) was not premium.")
+        return
+
+    await ctx.send(
+        "Usage: `!premium` · `!premium add <id|@user>` · "
+        "`!premium remove <id|@user>` · `!premium list`"
+    )
+
+
 @bot.command(name="status")
 @owner_only()
 async def status_cmd(ctx: commands.Context):
@@ -923,6 +1095,7 @@ async def status_cmd(ctx: commands.Context):
         f"Generation: `{'on' if ai_enabled else 'paused'}`\n"
         f"Last AI: `{_last_provider}`\n"
         f"Message content intent: `{'on' if intents.message_content else 'OFF'}`\n"
+        f"Premium users: `{len(premium_users)}`\n"
         f"Mode: free unlimited AI (Pollinations + g4f) · HTML only"
     )
 

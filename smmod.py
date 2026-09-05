@@ -817,8 +817,15 @@ def backup_path(guild_id):
 DISCORD_SAFE_FILE_LIMIT = 7_500_000
 
 
+def clean_filename(value):
+    value = str(value)
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in value)
+    return safe[:80] or "backup"
+
+
 def public_backup_filename(guild):
     return f"{clean_filename(guild.name)}_{guild.id}_backup.json"
+
 
 def serialize_overwrites(channel):
     data = []

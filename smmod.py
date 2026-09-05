@@ -2306,9 +2306,20 @@ def _handle_stop_signal(signum, frame):
 
 @bot.event
 async def on_ready():
-    print(f"Beacon online as {bot.user}")
+    # on_ready also fires on reconnects (common on Termux/mobile Wi-Fi).
+    first_ready = not getattr(bot, "_beacon_ready_once", False)
+    print(f"Beacon online as {bot.user}" + ("" if first_ready else " (reconnect)"))
 
-    await bot.change_presence(activity=discord.Game(name="*help"))
+    try:
+        if bot.ws is not None:
+            await bot.change_presence(activity=discord.Game(name="*help"))
+    except Exception as e:
+        # Socket often already closing during flaky phone networks — don't spam traceback.
+        print(f"Presence update skipped: {type(e).__name__}: {e}")
+
+    if not first_ready:
+        return
+    bot._beacon_ready_once = True
 
     start_dashboard()
 

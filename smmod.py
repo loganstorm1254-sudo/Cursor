@@ -8,8 +8,8 @@
 # - Saves server name + icon bytes
 # - Antinuke trigger ONLY: 5 channel creates in 10 seconds
 # - On trigger: punish, wipe server structure, restore from backup, then re-backup
-# Free: sticky, polls, reminders, basic XP
-# Premium: temprole, economy shop, autoresponder, invite tracker
+# Free: sticky, polls, reminders, basic XP, economy, ransom captcha verify
+# Premium: temprole, autoresponder, invite tracker
 # ============================================================
 
 TOKEN = ""  # paste bot token, or set DISCORD_TOKEN
@@ -54,6 +54,14 @@ import urllib.request
 import urllib.parse
 import secrets
 import sqlite3
+import io
+import string
+
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 
 
@@ -338,6 +346,9 @@ temproles = load_json(TEMPROLES_FILE, [])
 xp_cooldowns = {}
 invite_cache = {}  # guild_id -> {code: uses}
 sticky_locks = set()
+# pending captchas: (guild_id, user_id) -> {code, expires}
+pending_verifications = {}
+VERIFY_CAPTCHA_TTL = 300
 
 
 def save_config():
@@ -786,7 +797,13 @@ def get_guild(guild_id):
             "role_delete": True,
             "member_update": True,
             "voice_update": True
-        }
+        },
+        # Verification (ransom captcha)
+        "verify_enabled": False,
+        "verify_channel_id": None,
+        "verify_role_id": None,
+        "verify_message": "Click **Verify** below, then solve the ransom captcha to get access.",
+        "verify_panel_message_id": None,
     }
 
     if gid not in config:
@@ -1825,6 +1842,8 @@ async def on_ready():
         # and was spamming tracebacks that looked like the bot "stopped".
         await _safe_set_presence()
         bot._beacon_ready_once = True
+        # Persistent verify button survives bot restarts
+        bot.add_view(VerifyStartView())
     else:
         return
 
@@ -2288,6 +2307,10 @@ On trigger:
 `/userinfo` or `*userinfo` - User info.
 `/membercount` or `*membercount` - Member count.
 `/dirt` or `*dirt` - DIRT.
+
+**Verification**
+`/verify_setup` - One panel to set verify channel, verified role, and panel message.
+Posts a Verify button that shows a ransom-style captcha image.
 """
 
 
@@ -4756,6 +4779,512 @@ async def dirt_cmd(ctx):
 @tree.command(name="dirt", description="DIRT")
 async def slash_dirt(interaction: discord.Interaction):
     await interaction.response.send_message(DIRT_MESSAGE)
+
+
+# ============================================================
+# VERIFICATION (ransom captcha)
+# ============================================================
+
+VERIFY_CAPTCHA_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _load_captcha_font(size: int):
+    """Best-effort system font; falls back to Pillow default."""
+    candidates = [
+        "/system/fonts/Roboto-Regular.ttf",  # Android / Termux
+        "/system/fonts/DroidSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
+def generate_ransom_captcha(length: int = 5):
+    """
+    Build a ransom-note style captcha (cut-out magazine letters).
+    Returns (code_str, png_bytes).
+    """
+    if not PIL_AVAILABLE:
+        raise RuntimeError("Pillow is required for captchas. Run: pip install pillow")
+
+    code = "".join(random.choice(VERIFY_CAPTCHA_ALPHABET) for _ in range(length))
+
+    width, height = 420, 160
+    # stained paper background
+    bg_color = (
+        random.randint(210, 235),
+        random.randint(200, 225),
+        random.randint(180, 210),
+    )
+    image = Image.new("RGB", (width, height), bg_color)
+    draw = ImageDraw.Draw(image)
+
+    # coffee stains / blotches
+    for _ in range(random.randint(4, 8)):
+        x0 = random.randint(-20, width - 40)
+        y0 = random.randint(-20, height - 40)
+        x1 = x0 + random.randint(40, 120)
+        y1 = y0 + random.randint(30, 90)
+        stain = (
+            bg_color[0] - random.randint(10, 35),
+            bg_color[1] - random.randint(15, 40),
+            bg_color[2] - random.randint(20, 45),
+        )
+        draw.ellipse([x0, y0, x1, y1], fill=stain)
+
+    # noise speckles
+    for _ in range(400):
+        x = random.randint(0, width - 1)
+        y = random.randint(0, height - 1)
+        shade = random.randint(40, 180)
+        image.putpixel((x, y), (shade, shade, shade))
+
+    # cut-out letters
+    slot_w = width // (length + 1)
+    for i, ch in enumerate(code):
+        font_size = random.randint(42, 58)
+        font = _load_captcha_font(font_size)
+
+        # measure glyph
+        if hasattr(font, "getbbox"):
+            bbox = font.getbbox(ch)
+        else:
+            w, h = font.getsize(ch)
+            bbox = (0, 0, w, h)
+        gw = max(bbox[2] - bbox[0], 8)
+        gh = max(bbox[3] - bbox[1], 8)
+        pad = 10
+        tile_w, tile_h = gw + pad * 2, gh + pad * 2
+        tile = Image.new(
+            "RGBA",
+            (tile_w, tile_h),
+            (
+                random.randint(20, 255),
+                random.randint(20, 255),
+                random.randint(20, 255),
+                255,
+            ),
+        )
+        tdraw = ImageDraw.Draw(tile)
+        ink = (
+            random.randint(0, 60),
+            random.randint(0, 60),
+            random.randint(0, 60),
+            255,
+        )
+        # sometimes invert (light letter on dark scrap)
+        if random.random() < 0.35:
+            tile = Image.new(
+                "RGBA",
+                (tile_w, tile_h),
+                (
+                    random.randint(10, 50),
+                    random.randint(10, 50),
+                    random.randint(10, 50),
+                    255,
+                ),
+            )
+            tdraw = ImageDraw.Draw(tile)
+            ink = (
+                random.randint(200, 255),
+                random.randint(200, 255),
+                random.randint(200, 255),
+                255,
+            )
+        tdraw.text((pad - bbox[0], pad - bbox[1]), ch, font=font, fill=ink)
+
+        # ragged edge look: punch a few transparent bites
+        edge = ImageDraw.Draw(tile)
+        for _ in range(random.randint(2, 5)):
+            ex = random.randint(0, tile_w - 1)
+            ey = random.choice([0, tile_h - 1, random.randint(0, tile_h - 1)])
+            r = random.randint(2, 5)
+            edge.ellipse([ex - r, ey - r, ex + r, ey + r], fill=(0, 0, 0, 0))
+
+        angle = random.uniform(-28, 28)
+        tile = tile.rotate(angle, expand=True, resample=Image.BICUBIC)
+
+        cx = int(slot_w * (i + 0.7) + random.randint(-8, 8))
+        cy = height // 2 + random.randint(-18, 18)
+        x = max(0, min(width - tile.width, cx - tile.width // 2))
+        y = max(0, min(height - tile.height, cy - tile.height // 2))
+        image.paste(tile, (x, y), tile)
+
+    # scribble lines over top
+    for _ in range(random.randint(3, 6)):
+        draw.line(
+            [
+                (random.randint(0, width), random.randint(0, height)),
+                (random.randint(0, width), random.randint(0, height)),
+            ],
+            fill=(
+                random.randint(0, 80),
+                random.randint(0, 80),
+                random.randint(0, 80),
+            ),
+            width=random.randint(1, 2),
+        )
+
+    image = image.filter(ImageFilter.SMOOTH)
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    buf.seek(0)
+    return code, buf.read()
+
+
+def _verify_setup_embed(guild: discord.Guild) -> discord.Embed:
+    cfg = get_guild(guild.id)
+    channel = guild.get_channel(cfg["verify_channel_id"]) if cfg.get("verify_channel_id") else None
+    role = guild.get_role(cfg["verify_role_id"]) if cfg.get("verify_role_id") else None
+    msg = cfg.get("verify_message") or ""
+    preview = msg if len(msg) <= 200 else msg[:197] + "..."
+    embed = discord.Embed(
+        title="Verification Setup",
+        description=(
+            "Configure everything in this one panel.\n"
+            "1) Pick the **channel**\n"
+            "2) Pick the **verified role**\n"
+            "3) Edit the **message**\n"
+            "4) Press **Post Panel**"
+        ),
+        color=0xED4245 if not cfg.get("verify_enabled") else 0x57F287,
+    )
+    embed.add_field(
+        name="Channel",
+        value=channel.mention if channel else "*not set*",
+        inline=True,
+    )
+    embed.add_field(
+        name="Verified role",
+        value=role.mention if role else "*not set*",
+        inline=True,
+    )
+    embed.add_field(
+        name="Enabled",
+        value="Yes" if cfg.get("verify_enabled") else "No",
+        inline=True,
+    )
+    embed.add_field(name="Panel message", value=preview or "*empty*", inline=False)
+    if not PIL_AVAILABLE:
+        embed.set_footer(text="WARNING: Pillow missing — pip install pillow")
+    else:
+        embed.set_footer(text="Captcha style: ransom / cut-out magazine letters")
+    return embed
+
+
+class VerifyMessageModal(discord.ui.Modal, title="Verify Panel Message"):
+    message = discord.ui.TextInput(
+        label="Message shown above the Verify button",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=True,
+        placeholder="Click Verify, then solve the ransom captcha to unlock the server.",
+    )
+
+    def __init__(self, guild_id: int, current: str):
+        super().__init__()
+        self.guild_id = guild_id
+        if current:
+            self.message.default = current[:1000]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = get_guild(self.guild_id)
+        cfg["verify_message"] = str(self.message.value).strip()
+        save_config()
+        await interaction.response.edit_message(
+            embed=_verify_setup_embed(interaction.guild),
+            view=VerifySetupView(self.guild_id),
+        )
+
+
+class VerifyCaptchaModal(discord.ui.Modal, title="Enter Captcha"):
+    code_input = discord.ui.TextInput(
+        label="Type the letters from the image",
+        placeholder="ABC12",
+        min_length=3,
+        max_length=10,
+        required=True,
+    )
+
+    def __init__(self, guild_id: int):
+        super().__init__()
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        key = (self.guild_id, interaction.user.id)
+        pending = pending_verifications.get(key)
+        if not pending or pending.get("expires", 0) < time.time():
+            pending_verifications.pop(key, None)
+            await interaction.response.send_message(
+                "Captcha expired. Click **Verify** again.",
+                ephemeral=True,
+            )
+            return
+
+        typed = re.sub(r"\s+", "", str(self.code_input.value)).upper()
+        if typed != pending["code"]:
+            await interaction.response.send_message(
+                "Wrong code. Click **Verify** for a new captcha.",
+                ephemeral=True,
+            )
+            pending_verifications.pop(key, None)
+            return
+
+        pending_verifications.pop(key, None)
+        cfg = get_guild(self.guild_id)
+        role_id = cfg.get("verify_role_id")
+        role = interaction.guild.get_role(role_id) if role_id else None
+        if role is None:
+            await interaction.response.send_message(
+                "Verified role is not set. Ask an admin to run `/verify_setup`.",
+                ephemeral=True,
+            )
+            return
+
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            member = interaction.guild.get_member(interaction.user.id)
+
+        try:
+            await member.add_roles(role, reason="Beacon verification captcha passed")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I can't assign that role (move my role above it / give me Manage Roles).",
+                ephemeral=True,
+            )
+            return
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to assign role: `{e}`", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            f"Verified. You now have {role.mention}.",
+            ephemeral=True,
+        )
+
+
+class VerifyEnterCodeView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=180)
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="Enter Code", style=discord.ButtonStyle.danger, emoji="🔏")
+    async def enter_code(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VerifyCaptchaModal(self.guild_id))
+
+
+class VerifyStartView(discord.ui.View):
+    """Persistent public panel button."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Verify",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="beacon:verify:start",
+    )
+    async def verify_start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("Guild only.", ephemeral=True)
+            return
+
+        cfg = get_guild(interaction.guild.id)
+        if not cfg.get("verify_enabled"):
+            await interaction.response.send_message(
+                "Verification is disabled on this server.",
+                ephemeral=True,
+            )
+            return
+        if not cfg.get("verify_role_id"):
+            await interaction.response.send_message(
+                "Verified role is not configured. Ask an admin to run `/verify_setup`.",
+                ephemeral=True,
+            )
+            return
+
+        role = interaction.guild.get_role(cfg["verify_role_id"])
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if member and role and role in member.roles:
+            await interaction.response.send_message("You're already verified.", ephemeral=True)
+            return
+
+        try:
+            code, png = generate_ransom_captcha()
+        except Exception as e:
+            await interaction.response.send_message(
+                f"Captcha failed: `{e}`\nOn Termux run: `pip install pillow`",
+                ephemeral=True,
+            )
+            return
+
+        pending_verifications[(interaction.guild.id, interaction.user.id)] = {
+            "code": code,
+            "expires": time.time() + VERIFY_CAPTCHA_TTL,
+        }
+
+        file = discord.File(io.BytesIO(png), filename="captcha.png")
+        embed = discord.Embed(
+            title="Ransom Captcha",
+            description=(
+                "Type the **cut-out letters** from the image.\n"
+                f"You have **{VERIFY_CAPTCHA_TTL // 60} minutes**."
+            ),
+            color=0x2B2D31,
+        )
+        embed.set_image(url="attachment://captcha.png")
+        await interaction.response.send_message(
+            embed=embed,
+            file=file,
+            view=VerifyEnterCodeView(interaction.guild.id),
+            ephemeral=True,
+        )
+
+
+class VerifySetupChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, guild_id: int):
+        super().__init__(
+            placeholder="Select verification channel",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1,
+            row=0,
+        )
+        self.guild_id = guild_id
+
+    async def callback(self, interaction: discord.Interaction):
+        channel = self.values[0]
+        cfg = get_guild(self.guild_id)
+        cfg["verify_channel_id"] = int(channel.id)
+        save_config()
+        await interaction.response.edit_message(
+            embed=_verify_setup_embed(interaction.guild),
+            view=VerifySetupView(self.guild_id),
+        )
+
+
+class VerifySetupRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, guild_id: int):
+        super().__init__(
+            placeholder="Select verified role",
+            min_values=1,
+            max_values=1,
+            row=1,
+        )
+        self.guild_id = guild_id
+
+    async def callback(self, interaction: discord.Interaction):
+        role = self.values[0]
+        cfg = get_guild(self.guild_id)
+        cfg["verify_role_id"] = int(role.id)
+        save_config()
+        await interaction.response.edit_message(
+            embed=_verify_setup_embed(interaction.guild),
+            view=VerifySetupView(self.guild_id),
+        )
+
+
+class VerifySetupView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.add_item(VerifySetupChannelSelect(guild_id))
+        self.add_item(VerifySetupRoleSelect(guild_id))
+
+    @discord.ui.button(label="Edit Message", style=discord.ButtonStyle.primary, row=2)
+    async def edit_message(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = get_guild(self.guild_id)
+        await interaction.response.send_modal(
+            VerifyMessageModal(self.guild_id, cfg.get("verify_message") or "")
+        )
+
+    @discord.ui.button(label="Post Panel", style=discord.ButtonStyle.success, row=2)
+    async def post_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = get_guild(self.guild_id)
+        channel_id = cfg.get("verify_channel_id")
+        role_id = cfg.get("verify_role_id")
+        if not channel_id:
+            await interaction.response.send_message("Pick a verification channel first.", ephemeral=True)
+            return
+        if not role_id:
+            await interaction.response.send_message("Pick a verified role first.", ephemeral=True)
+            return
+
+        channel = interaction.guild.get_channel(channel_id)
+        if channel is None:
+            await interaction.response.send_message("Verification channel not found.", ephemeral=True)
+            return
+
+        text = (cfg.get("verify_message") or "").strip() or "Click **Verify** to continue."
+        embed = discord.Embed(
+            title="Verification",
+            description=text,
+            color=0x5865F2,
+        )
+        embed.set_footer(text="Solve the ransom captcha to get access")
+
+        try:
+            # delete old panel if we know it
+            old_id = cfg.get("verify_panel_message_id")
+            if old_id:
+                try:
+                    old = await channel.fetch_message(int(old_id))
+                    await old.delete()
+                except Exception:
+                    pass
+
+            sent = await channel.send(embed=embed, view=VerifyStartView())
+            cfg["verify_panel_message_id"] = sent.id
+            cfg["verify_enabled"] = True
+            save_config()
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I can't post in that channel. Give me Send Messages + Embed Links.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.edit_message(
+            embed=_verify_setup_embed(interaction.guild),
+            view=VerifySetupView(self.guild_id),
+        )
+        await interaction.followup.send(
+            f"Verify panel posted in {channel.mention}.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Disable", style=discord.ButtonStyle.secondary, row=2)
+    async def disable_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = get_guild(self.guild_id)
+        cfg["verify_enabled"] = False
+        save_config()
+        await interaction.response.edit_message(
+            embed=_verify_setup_embed(interaction.guild),
+            view=VerifySetupView(self.guild_id),
+        )
+
+
+@tree.command(name="verify_setup", description="One panel: set verify channel, role, and message")
+@app_commands.checks.has_permissions(administrator=True)
+async def slash_verify_setup(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Guild only.", ephemeral=True)
+        return
+    get_guild(interaction.guild.id)
+    await interaction.response.send_message(
+        embed=_verify_setup_embed(interaction.guild),
+        view=VerifySetupView(interaction.guild.id),
+        ephemeral=True,
+    )
 
 
 # ============================================================

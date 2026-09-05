@@ -2361,12 +2361,6 @@ async def on_ready():
 
 
 @bot.event
-async def on_resumed():
-    # Quiet acknowledge — discord.py resumes without calling on_ready.
-    print("Beacon gateway resumed")
-
-
-@bot.event
 async def on_guild_join(guild):
     # Prevent Discord duplicate guild join dispatches causing double messages.
     if guild.id in joined_guild_cache:

@@ -4764,103 +4764,105 @@ async def slash_dirt(interaction: discord.Interaction):
 
 
 # ============================================================
-# IMAGE GENERATION (cartoon AI images + prompt moderation)
+# IMAGE GENERATION (local cartoon AI + prompt moderation)
+# Ubuntu: pip install torch diffusers transformers accelerate safetensors pillow
 # ============================================================
 
-# Soft/hard blocked topics for generate. Keep family-friendly.
 _GENERATE_BLOCKED = [
-    # sexual / nsfw
     "nsfw", "nude", "naked", "porn", "sex", "sexual", "hentai", "xxx", "onlyfans",
     "gore", "guro", "bloodbath", "dismember", "decapitat", "torture",
-    "rape", "molest", "cp", "child porn", "underage", "loli", "shota",
-    "bestiality", "zoophil", "scat", "coproph",
-    # graphic self-harm / real violence requests
+    "rape", "molest", "child porn", "underage", "loli", "shota",
+    "bestiality", "zoophil", "scat",
     "suicide", "kill myself", "school shooting",
 ]
 
-_CARTOON_STYLE = (
-    "cute colorful cartoon illustration, disney pixar style, clean line art, "
-    "friendly characters, vibrant colors, wholesome family-friendly art, "
-    "2D cartoon animation still, soft shading, not photorealistic, not horror, "
-    "not creepy, not distorted anatomy"
+_CARTOON_POS = (
+    "modern disney pixar cartoon style, cute colorful 3d animation still, "
+    "clean character design, friendly face, big expressive eyes with pupils, "
+    "correct anatomy, wholesome family friendly, vibrant colors, high quality"
 )
+_CARTOON_NEG = (
+    "photo, photorealistic, realistic photo, horror, creepy, uncanny, gore, nsfw, "
+    "nude, deformed, mutated, extra limbs, missing limbs, bad anatomy, blurry, "
+    "low quality, text, watermark, collage, grid, multiple panels"
+)
+
+_sd_pipe = None
+_sd_lock = threading.Lock()
 
 
 def moderate_generate_prompt(prompt: str):
-    """
-    Return (ok, cleaned_prompt_or_reason).
-    Blocks obvious NSFW / gore / illegal requests before calling the image API.
-    """
-    text = (prompt or "").strip()
+    text = " ".join((prompt or "").strip().split())
     if not text:
         return False, "empty prompt"
     lowered = text.lower()
     for bad in _GENERATE_BLOCKED:
         if bad in lowered:
             return False, f"blocked topic (`{bad}`)"
-    # light cleanup
-    text = " ".join(text.split())
     if len(text) > 300:
         text = text[:300].rstrip()
     return True, text
 
 
 def stylize_generate_prompt(prompt: str) -> str:
-    """Force a cartoony, non-creepy look onto every generation."""
-    p = prompt.strip()
-    # if user already asked for photo/real, still push cartoon hard
-    return f"{p}, {_CARTOON_STYLE}"
+    return f"{prompt.strip()}, {_CARTOON_POS}"
 
 
-def generate_ai_image(prompt: str, width: int = 768, height: int = 768):
+def _get_sd_pipeline():
+    """Lazy-load local SD-Turbo once (CPU ok on Ubuntu)."""
+    global _sd_pipe
+    if _sd_pipe is not None:
+        return _sd_pipe
+    with _sd_lock:
+        if _sd_pipe is not None:
+            return _sd_pipe
+        try:
+            import torch
+            from diffusers import AutoPipelineForText2Image
+        except Exception as e:
+            raise RuntimeError(
+                "Image deps missing. On Ubuntu run: "
+                "pip install torch diffusers transformers accelerate safetensors pillow"
+            ) from e
+
+        print("Loading local cartoon image model (first time can take a minute)...")
+        pipe = AutoPipelineForText2Image.from_pretrained(
+            "stabilityai/sd-turbo",
+            torch_dtype=torch.float32,
+        )
+        pipe = pipe.to("cpu")
+        pipe.set_progress_bar_config(disable=True)
+        _sd_pipe = pipe
+        print("Cartoon image model ready.")
+        return _sd_pipe
+
+
+def generate_ai_image(prompt: str, width: int = 512, height: int = 512):
     """
-    Generate a real cartoon-style image from a text prompt.
-    Uses Pollinations over HTTP (no API key). Returns (bytes, ext).
+    Generate a cartoon-style image locally with SD-Turbo.
+    Returns (png_bytes, 'png').
     """
     ok, cleaned = moderate_generate_prompt(prompt)
     if not ok:
         raise ValueError(cleaned)
 
     styled = stylize_generate_prompt(cleaned)
-    # fresh seed each call so retries aren't stuck on a cursed render
-    seed = secrets.randbelow(1_000_000_000)
+    pipe = _get_sd_pipeline()
 
-    query = urllib.parse.urlencode(
-        {
-            "width": str(width),
-            "height": str(height),
-            "seed": str(seed),
-            "nologo": "true",
-            "enhance": "true",
-            "safe": "true",
-            "model": "flux",
-        }
-    )
-    path_q = urllib.parse.quote(styled, safe="")
-    url = f"https://image.pollinations.ai/prompt/{path_q}?{query}"
+    # SD-Turbo: few steps, guidance_scale 0
+    image = pipe(
+        prompt=styled,
+        negative_prompt=_CARTOON_NEG,
+        num_inference_steps=6,
+        guidance_scale=0.0,
+        width=width,
+        height=height,
+        generator=__import__("torch").Generator("cpu").manual_seed(secrets.randbelow(2**31 - 1)),
+    ).images[0]
 
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "BeaconDiscordBot/1.0",
-            "Accept": "image/*,*/*",
-        },
-        method="GET",
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = resp.read()
-        content_type = (resp.headers.get("Content-Type") or "").lower()
-
-    if not data or len(data) < 100:
-        raise RuntimeError("image provider returned empty data")
-
-    if data[:3] == b"\xff\xd8\xff":
-        return data, "jpg"
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return data, "png"
-    if "png" in content_type:
-        return data, "png"
-    return data, "jpg"
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue(), "png"
 
 
 async def do_generate(prompt: str, send):
@@ -4869,7 +4871,7 @@ async def do_generate(prompt: str, send):
         await send(
             "Usage: `*generate <prompt>` or `/generate prompt:`\n"
             "Example: `*generate astronaut cat`\n"
-            "Style is always cartoon / Pixar-like. Keep prompts family-friendly."
+            "Always cartoon / Pixar style. Family-friendly only."
         )
         return
 
@@ -4877,14 +4879,14 @@ async def do_generate(prompt: str, send):
     if not ok:
         await send(
             "That prompt was blocked by moderation.\n"
-            "Keep it family-friendly — no NSFW, gore, or illegal stuff."
+            "No NSFW, gore, or illegal stuff."
         )
         return
 
-    await send(f"Generating cartoon image for: **{cleaned}** …")
+    await send(f"Generating cartoon image for: **{cleaned}** … (first run may be slow)")
 
     try:
-        image_bytes, ext = await asyncio.to_thread(generate_ai_image, cleaned, 768, 768)
+        image_bytes, ext = await asyncio.to_thread(generate_ai_image, cleaned, 512, 512)
     except ValueError as e:
         await send(f"Blocked by moderation: `{e}`")
         return
@@ -4900,7 +4902,7 @@ async def do_generate(prompt: str, send):
         color=0x5865F2,
     )
     embed.set_image(url=f"attachment://{filename}")
-    embed.set_footer(text="AI cartoon generation • moderated")
+    embed.set_footer(text="Local cartoon AI • moderated")
     await send(embed=embed, file=file)
 
 

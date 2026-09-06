@@ -8,7 +8,7 @@
 # - Saves server name + icon bytes
 # - Antinuke trigger ONLY: 5 channel creates in 10 seconds
 # - On trigger: punish, wipe server structure, restore from backup, then re-backup
-# Free: sticky, polls, reminders, basic XP, economy, procedural image gen
+# Free: sticky, polls, reminders, basic XP, economy, AI image generation
 # Premium: temprole, autoresponder, invite tracker
 # ============================================================
 
@@ -2291,7 +2291,7 @@ On trigger:
 `/userinfo` or `*userinfo` - User info.
 `/membercount` or `*membercount` - Member count.
 `/dirt` or `*dirt` - DIRT.
-`/generate` or `*generate <prompt>` - Make an image from scratch (procedural, no AI API).
+`/generate` or `*generate <prompt>` - Generate a real AI image (example: astronaut cat).
 
 """
 
@@ -4764,199 +4764,86 @@ async def slash_dirt(interaction: discord.Interaction):
 
 
 # ============================================================
-# IMAGE GENERATION (pure Python procedural PNG — no Pillow / no AI API)
+# IMAGE GENERATION (real AI images — Pollinations HTTP, no API key)
 # ============================================================
 
-def _png_chunk(tag: bytes, data: bytes) -> bytes:
-    return (
-        struct.pack(">I", len(data))
-        + tag
-        + data
-        + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-    )
-
-
-def encode_png_rgb(width: int, height: int, rgb_bytes: bytes) -> bytes:
-    """Encode raw RGB bytes into a PNG using only the Python standard library."""
-    if len(rgb_bytes) != width * height * 3:
-        raise ValueError("rgb_bytes size mismatch")
-
-    rows = bytearray()
-    stride = width * 3
-    for y in range(height):
-        rows.append(0)  # filter: None
-        start = y * stride
-        rows.extend(rgb_bytes[start : start + stride])
-
-    return b"".join(
-        [
-            b"\x89PNG\r\n\x1a\n",
-            _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)),
-            _png_chunk(b"IDAT", zlib.compress(bytes(rows), 9)),
-            _png_chunk(b"IEND", b""),
-        ]
-    )
-
-
-def _prompt_seed(prompt: str) -> int:
-    digest = hashlib.sha256(prompt.strip().lower().encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big")
-
-
-def _clamp_byte(v: float) -> int:
-    return max(0, min(255, int(v)))
-
-
-def _mix(a, b, t: float):
-    return tuple(a[i] + (b[i] - a[i]) * t for i in range(3))
-
-
-def _palette_from_prompt(prompt: str, rng: random.Random):
-    """Pick colors from prompt keywords; fall back to seeded random art palette."""
-    p = prompt.lower()
-    presets = [
-        (("sunset", "dusk", "orange", "warm"), [(20, 16, 48), (255, 94, 58), (255, 195, 113), (255, 236, 179)]),
-        (("ocean", "sea", "water", "blue", "wave"), [(2, 20, 46), (8, 105, 140), (46, 196, 182), (231, 246, 255)]),
-        (("forest", "green", "nature", "jungle"), [(8, 28, 18), (34, 89, 34), (95, 168, 74), (210, 232, 170)]),
-        (("fire", "lava", "magma", "flame"), [(18, 4, 4), (140, 20, 10), (255, 90, 20), (255, 220, 120)]),
-        (("night", "space", "galaxy", "star", "cosmo"), [(4, 6, 24), (28, 20, 72), (90, 60, 180), (240, 240, 255)]),
-        (("neon", "cyber", "synth"), [(8, 0, 24), (255, 0, 170), (0, 255, 240), (255, 240, 80)]),
-        (("snow", "ice", "winter", "cold"), [(20, 30, 48), (120, 170, 210), (220, 235, 245), (255, 255, 255)]),
-        (("candy", "pink", "cute"), [(40, 10, 40), (255, 105, 180), (255, 182, 210), (255, 245, 250)]),
-        (("gold", "desert", "sand"), [(40, 24, 8), (180, 120, 40), (232, 196, 104), (255, 240, 200)]),
-        (("void", "dark", "black"), [(0, 0, 0), (20, 20, 28), (70, 70, 90), (180, 180, 200)]),
-    ]
-    for keys, colors in presets:
-        if any(k in p for k in keys):
-            return colors
-    # seeded abstract palette
-    base = [rng.randint(0, 255) for _ in range(3)]
-    return [
-        tuple(max(0, c - 80) for c in base),
-        tuple(_clamp_byte(c + rng.randint(-40, 60)) for c in base),
-        tuple(_clamp_byte(c + rng.randint(40, 120)) for c in base),
-        tuple(_clamp_byte(200 + rng.randint(0, 55)) for _ in range(3)),
-    ]
-
-
-def generate_image_from_prompt(prompt: str, width: int = 512, height: int = 512) -> bytes:
+def generate_ai_image(prompt: str, width: int = 768, height: int = 768):
     """
-    From-scratch procedural image generator.
-    Same prompt => same seed => reproducible art. No external AI / no Pillow.
+    Generate a real image from a text prompt.
+    Uses Pollinations AI over HTTP (no API key). Returns (bytes, ext).
     """
-    prompt = (prompt or "abstract colors").strip()[:200]
-    rng = random.Random(_prompt_seed(prompt))
-    palette = _palette_from_prompt(prompt, rng)
-    c0, c1, c2, c3 = palette
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise ValueError("empty prompt")
+    if len(prompt) > 400:
+        prompt = prompt[:400]
 
-    # style knobs from prompt / seed
-    p = prompt.lower()
-    swirl = 1.2 + rng.random() * 2.5
-    if any(k in p for k in ("wave", "ocean", "sea")):
-        swirl = 3.2
-    if any(k in p for k in ("galaxy", "space", "spiral")):
-        swirl = 4.0
-    grid = any(k in p for k in ("neon", "cyber", "city", "grid"))
-    stars = any(k in p for k in ("space", "night", "star", "galaxy", "sky"))
-    blobs = 5 + rng.randint(0, 6)
+    seed = int(hashlib.sha256(prompt.lower().encode("utf-8")).hexdigest()[:8], 16) % 1_000_000_000
+    query = urllib.parse.urlencode(
+        {
+            "width": str(width),
+            "height": str(height),
+            "seed": str(seed),
+            "nologo": "true",
+            "enhance": "true",
+        }
+    )
+    path_q = urllib.parse.quote(prompt, safe="")
+    url = f"https://image.pollinations.ai/prompt/{path_q}?{query}"
 
-    # precompute blob centers
-    centers = [
-        (
-            rng.random(),
-            rng.random(),
-            0.12 + rng.random() * 0.35,
-            rng.choice([c1, c2, c3]),
-        )
-        for _ in range(blobs)
-    ]
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "BeaconDiscordBot/1.0",
+            "Accept": "image/*,*/*",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = resp.read()
+        content_type = (resp.headers.get("Content-Type") or "").lower()
 
-    pixels = bytearray(width * height * 3)
-    cx, cy = 0.5, 0.5
-    idx = 0
-    for y in range(height):
-        v = y / (height - 1)
-        for x in range(width):
-            u = x / (width - 1)
-            dx, dy = u - cx, v - cy
-            dist = math.sqrt(dx * dx + dy * dy)
-            angle = math.atan2(dy, dx)
+    if not data or len(data) < 100:
+        raise RuntimeError("image provider returned empty data")
 
-            # swirling field
-            field = math.sin((u * 6.0 + math.cos(v * swirl * 4.0)) * swirl + angle * 2.0)
-            field += math.cos((v * 7.0 - math.sin(u * swirl * 3.0)) * (swirl * 0.8))
-            t = (field + 2.0) / 4.0
-            t = max(0.0, min(1.0, t))
-
-            # radial gradient mix
-            radial = max(0.0, min(1.0, dist * 1.4))
-            base = _mix(c0, c1, t)
-            col = _mix(base, c2, radial * 0.65)
-
-            # soft blobs
-            for bx, by, br, bc in centers:
-                ddx, ddy = u - bx, v - by
-                d = math.sqrt(ddx * ddx + ddy * ddy)
-                if d < br:
-                    w = (1.0 - d / br) ** 2
-                    col = _mix(col, bc, w * 0.75)
-
-            # optional neon grid
-            if grid:
-                g = 0.0
-                if abs((x % 32) - 16) < 1 or abs((y % 32) - 16) < 1:
-                    g = 0.55
-                col = _mix(col, c3, g)
-
-            # film grain
-            grain = rng.randint(-12, 12)
-            r = _clamp_byte(col[0] + grain)
-            g = _clamp_byte(col[1] + grain)
-            b = _clamp_byte(col[2] + grain)
-
-            pixels[idx] = r
-            pixels[idx + 1] = g
-            pixels[idx + 2] = b
-            idx += 3
-
-    # star layer (deterministic from seed)
-    if stars:
-        star_rng = random.Random(_prompt_seed(prompt + ":stars"))
-        for _ in range(180):
-            sx = star_rng.randint(0, width - 1)
-            sy = star_rng.randint(0, height - 1)
-            bright = star_rng.randint(180, 255)
-            i = (sy * width + sx) * 3
-            pixels[i] = bright
-            pixels[i + 1] = bright
-            pixels[i + 2] = min(255, bright + 20)
-
-    return encode_png_rgb(width, height, bytes(pixels))
+    if data[:3] == b"\xff\xd8\xff":
+        return data, "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return data, "png"
+    if "png" in content_type:
+        return data, "png"
+    return data, "jpg"
 
 
 async def do_generate(prompt: str, send):
     prompt = (prompt or "").strip()
     if not prompt:
-        await send("Usage: `*generate <prompt>` or `/generate prompt:`")
+        await send(
+            "Usage: `*generate <prompt>` or `/generate prompt:`\n"
+            "Example: `*generate astronaut cat`"
+        )
         return
-    if len(prompt) > 200:
-        await send("Prompt too long (max 200 characters).")
+    if len(prompt) > 400:
+        await send("Prompt too long (max 400 characters).")
         return
 
+    await send(f"Generating image for: **{prompt}** …")
+
     try:
-        png = await asyncio.to_thread(generate_image_from_prompt, prompt, 512, 512)
+        image_bytes, ext = await asyncio.to_thread(generate_ai_image, prompt, 768, 768)
     except Exception as e:
         await send(f"Image generation failed: `{e}`")
         return
 
-    file = discord.File(io.BytesIO(png), filename="beacon_generate.png")
+    filename = f"beacon_generate.{ext}"
+    file = discord.File(io.BytesIO(image_bytes), filename=filename)
     embed = discord.Embed(
         title="Beacon Image Generator",
         description=f"**Prompt:** {prompt}",
         color=0x5865F2,
     )
-    embed.set_image(url="attachment://beacon_generate.png")
-    embed.set_footer(text="From-scratch procedural PNG • same prompt = same image")
+    embed.set_image(url=f"attachment://{filename}")
+    embed.set_footer(text="AI image generation")
     await send(embed=embed, file=file)
 
 
@@ -4965,11 +4852,37 @@ async def prefix_generate(ctx, *, prompt: str = None):
     await do_generate(prompt, ctx.send)
 
 
-@tree.command(name="generate", description="Generate an image from scratch from a text prompt")
-@app_commands.describe(prompt="What to generate (sunset ocean, neon city, galaxy...)")
+@tree.command(name="generate", description="Generate a real AI image from a text prompt")
+@app_commands.describe(prompt="What to generate, e.g. astronaut cat in space")
 async def slash_generate(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
-    await do_generate(prompt, interaction.followup.send)
+
+    async def _send(**kwargs):
+        return await interaction.followup.send(**kwargs)
+
+    # adapt do_generate for followup (no edit path needed much)
+    prompt = (prompt or "").strip()
+    if not prompt:
+        await interaction.followup.send("Give a prompt, e.g. `astronaut cat`")
+        return
+    if len(prompt) > 400:
+        await interaction.followup.send("Prompt too long (max 400 characters).")
+        return
+    try:
+        image_bytes, ext = await asyncio.to_thread(generate_ai_image, prompt, 768, 768)
+    except Exception as e:
+        await interaction.followup.send(f"Image generation failed: `{e}`")
+        return
+    filename = f"beacon_generate.{ext}"
+    file = discord.File(io.BytesIO(image_bytes), filename=filename)
+    embed = discord.Embed(
+        title="Beacon Image Generator",
+        description=f"**Prompt:** {prompt}",
+        color=0x5865F2,
+    )
+    embed.set_image(url=f"attachment://{filename}")
+    embed.set_footer(text="AI image generation")
+    await interaction.followup.send(embed=embed, file=file)
 
 
 # ============================================================

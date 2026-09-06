@@ -9,7 +9,7 @@ function normalizeAgent(url) {
   return url.trim().replace(/\/+$/, "");
 }
 
-function wsUrl(httpBase, path) {
+function toWs(httpBase, path) {
   const u = new URL(httpBase);
   u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
   u.pathname = path;
@@ -18,17 +18,32 @@ function wsUrl(httpBase, path) {
   return u.toString();
 }
 
+function connectErrorMessage(err, agentUrl) {
+  const raw = (err && err.message) || "Could not reach agent";
+  const pageHttps = typeof window !== "undefined" && window.location.protocol === "https:";
+  let agentHttp = false;
+  try {
+    agentHttp = new URL(agentUrl).protocol === "http:";
+  } catch {
+    /* ignore */
+  }
+  if (pageHttps && agentHttp) {
+    return "Browser blocked login: HTTPS site cannot talk to HTTP agent. Open http://YOUR_IP:7788 in the browser, or put HTTPS on the agent.";
+  }
+  if (/failed to fetch|networkerror|load failed/i.test(raw)) {
+    return "Could not reach agent. On the VPS run: systemctl status beacon-remote";
+  }
+  return raw;
+}
+
 export default function Home() {
   const [mode, setMode] = useState("connect");
   const [agent, setAgent] = useState("");
   const [pin, setPin] = useState("");
-  const [currentPin, setCurrentPin] = useState("");
-  const [pin2, setPin2] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [msgKind, setMsgKind] = useState("");
   const [token, setToken] = useState("");
-  const [pinAlreadySet, setPinAlreadySet] = useState(false);
 
   const hostRef = useRef(null);
   const wsRef = useRef(null);
@@ -53,7 +68,7 @@ export default function Home() {
     term.open(el);
     fit.fit();
 
-    const url = `${wsUrl(normalizeAgent(agent), "/ws/term")}?token=${encodeURIComponent(token)}`;
+    const url = `${toWs(normalizeAgent(agent), "/ws/term")}?token=${encodeURIComponent(token)}`;
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -117,18 +132,6 @@ export default function Home() {
     };
   }, [mode, token, agent]);
 
-  async function probePin() {
-    const base = normalizeAgent(agent);
-    if (!base) return;
-    try {
-      const res = await fetch(`${base}/health`);
-      const data = await res.json();
-      setPinAlreadySet(Boolean(data.pin_set));
-    } catch {
-      /* ignore — connect will show error */
-    }
-  }
-
   async function connect() {
     setBusy(true);
     setMsg("");
@@ -156,48 +159,7 @@ export default function Home() {
       setPin("");
       setMode("term");
     } catch (e) {
-      setMsg((e && e.message) || "Could not reach agent");
-      setMsgKind("err");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function setServerPin() {
-    setBusy(true);
-    setMsg("");
-    setMsgKind("");
-    try {
-      const base = normalizeAgent(agent);
-      if (!base || !pin || pin !== pin2) {
-        setMsg(pin !== pin2 ? "PINs do not match" : "Agent URL and PIN required");
-        setMsgKind("err");
-        return;
-      }
-      const body = { new_pin: pin };
-      if (pinAlreadySet) {
-        body.current_pin = currentPin;
-      }
-      const res = await fetch(`${base}/api/pin-set`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setMsg(data.error || "Could not set PIN");
-        setMsgKind("err");
-        return;
-      }
-      setMsg("PIN set on server. Nothing was stored in this website.");
-      setMsgKind("ok");
-      setPin("");
-      setPin2("");
-      setCurrentPin("");
-      setPinAlreadySet(true);
-      setMode("connect");
-    } catch (e) {
-      setMsg((e && e.message) || "Could not reach agent");
+      setMsg(connectErrorMessage(e, normalizeAgent(agent)));
       setMsgKind("err");
     } finally {
       setBusy(false);
@@ -243,96 +205,33 @@ export default function Home() {
           placeholder="http://YOUR_VPS_IP:7788"
           value={agent}
           onChange={(e) => setAgent(e.target.value)}
-          onBlur={probePin}
           autoComplete="off"
           spellCheck={false}
         />
 
-        {mode === "connect" ? (
-          <>
-            <label className="label" htmlFor="pin">
-              PIN
-            </label>
-            <input
-              id="pin"
-              className="field"
-              type="password"
-              placeholder="Server PIN"
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              autoComplete="off"
-              onKeyDown={(e) => e.key === "Enter" && connect()}
-            />
-            <div className="row">
-              <button type="button" className="btn" disabled={busy} onClick={connect}>
-                Open terminal
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={() => {
-                  probePin();
-                  setMode("setpin");
-                }}
-              >
-                Set PIN
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            {pinAlreadySet && (
-              <>
-                <label className="label" htmlFor="pin-current">
-                  Current PIN
-                </label>
-                <input
-                  id="pin-current"
-                  className="field"
-                  type="password"
-                  value={currentPin}
-                  onChange={(e) => setCurrentPin(e.target.value)}
-                  autoComplete="off"
-                />
-              </>
-            )}
-            <label className="label" htmlFor="pin-new">
-              New PIN
-            </label>
-            <input
-              id="pin-new"
-              className="field"
-              type="password"
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              autoComplete="new-password"
-            />
-            <label className="label" htmlFor="pin-confirm">
-              Confirm PIN
-            </label>
-            <input
-              id="pin-confirm"
-              className="field"
-              type="password"
-              value={pin2}
-              onChange={(e) => setPin2(e.target.value)}
-              autoComplete="new-password"
-            />
-            <div className="row">
-              <button type="button" className="btn" disabled={busy} onClick={setServerPin}>
-                Save PIN on server
-              </button>
-              <button type="button" className="btn ghost" onClick={() => setMode("connect")}>
-                Back
-              </button>
-            </div>
-          </>
-        )}
+        <label className="label" htmlFor="pin">
+          PIN
+        </label>
+        <input
+          id="pin"
+          className="field"
+          type="password"
+          placeholder="Server PIN"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          autoComplete="off"
+          onKeyDown={(e) => e.key === "Enter" && connect()}
+        />
+        <div className="row">
+          <button type="button" className="btn" disabled={busy} onClick={connect}>
+            Open terminal
+          </button>
+        </div>
 
         <p className={`msg ${msgKind}`}>{msg}</p>
         <p className="hint">
-          PIN is sent once to your agent, hashed on the server, and cleared from this page. Nothing is
-          written to localStorage or cookies.
+          Set the PIN on the VPS with <code>sudo beacon-remote pin-set</code>. PIN is sent once for
+          login, then cleared from this page. Nothing is stored in localStorage or cookies.
         </p>
       </div>
     </main>

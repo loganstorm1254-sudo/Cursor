@@ -197,62 +197,6 @@ async def handle_auth(request: web.Request) -> web.Response:
     )
 
 
-async def handle_pin_set(request: web.Request) -> web.Response:
-    """
-    Set / change PIN on the server.
-    - If no PIN exists yet: body { "new_pin": "...." }
-    - If PIN exists: body { "current_pin": "...", "new_pin": "...." }
-    Website must NOT store either value.
-    """
-    ip = request.remote or "unknown"
-    if rate_limited(ip):
-        return web.json_response(
-            {"ok": False, "error": "too many attempts — wait 5 minutes"},
-            status=429,
-            headers=cors_headers(request),
-        )
-
-    try:
-        data = await request.json()
-    except Exception:
-        return web.json_response(
-            {"ok": False, "error": "invalid json"},
-            status=400,
-            headers=cors_headers(request),
-        )
-
-    new_pin = str(data.get("new_pin") or data.get("pin") or "").strip()
-    if len(new_pin) < 4:
-        return web.json_response(
-            {"ok": False, "error": "new PIN must be at least 4 characters"},
-            status=400,
-            headers=cors_headers(request),
-        )
-
-    stored = load_pin_hash()
-    if stored is None:
-        save_pin_hash(new_pin)
-        return web.json_response(
-            {"ok": True, "message": "PIN set. It is stored only on the server."},
-            headers=cors_headers(request),
-        )
-
-    current = str(data.get("current_pin", ""))
-    if not verify_pin(current, stored):
-        record_fail(ip)
-        return web.json_response(
-            {"ok": False, "error": "wrong current PIN"},
-            status=401,
-            headers=cors_headers(request),
-        )
-
-    save_pin_hash(new_pin)
-    return web.json_response(
-        {"ok": True, "message": "PIN updated. Old PIN no longer works."},
-        headers=cors_headers(request),
-    )
-
-
 async def _pty_reader(master_fd: int, ws: web.WebSocketResponse):
     loop = asyncio.get_running_loop()
     try:
@@ -348,7 +292,6 @@ def build_app(secret: bytes) -> web.Application:
     app.router.add_route("OPTIONS", "/{path:.*}", handle_options)
     app.router.add_get("/health", handle_health)
     app.router.add_post("/api/auth", handle_auth)
-    app.router.add_post("/api/pin-set", handle_pin_set)
     app.router.add_get("/ws/term", handle_term_ws)
     return app
 
@@ -374,7 +317,6 @@ def cmd_serve(args: argparse.Namespace) -> None:
     print(f"PIN set: {has_pin}")
     if not has_pin:
         print("WARNING: no PIN yet. Run: beacon-remote pin-set")
-        print("Or open the website Set PIN page (first-time only).")
     web.run_app(app, host=host, port=port, print=None)
 
 

@@ -13,14 +13,6 @@ curl -fsSL https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/r
 sudo beacon-remote pin-set
 ```
 
-From a local checkout instead:
-
-```bash
-cd remote-shell
-sudo bash install.sh
-sudo beacon-remote pin-set
-```
-
 Check it:
 
 ```bash
@@ -33,26 +25,22 @@ Firewall: `sudo ufw allow 7788/tcp`
 
 ## 2) Deploy website to Vercel
 
-```bash
-cd remote-shell/web
-npm install
-npx vercel
-```
-
-Or in the Vercel dashboard: **Import** this GitHub repo and set **Root Directory** to `remote-shell/web`.
+Upload `remote-shell/beacon-remote-web.zip`, or set Root Directory to `remote-shell/web`.
 
 ## 3) Use it
 
-1. Open the Vercel site
+1. Open the site
 2. Agent URL: `http://YOUR.VPS.IP:7788`
-3. **Set PIN** once (or use `beacon-remote pin-set` on the server)
-4. Enter PIN → **Open terminal**
+3. Enter the PIN you set with `beacon-remote pin-set`
+4. Open terminal
 
-PIN is sent only for that request, then cleared from the page. Nothing is written to localStorage.
+**Important:** a HTTPS Vercel site cannot talk to a plain `http://IP:7788` agent (browser blocks it). Either:
+- put HTTPS in front of the agent (Caddy/Nginx), or
+- open an HTTP page that can reach the agent
 
 ## Security
 
 - Treat the PIN like a root password
-- Prefer HTTPS reverse proxy (Caddy/Nginx) in front of 7788
+- Prefer HTTPS reverse proxy in front of 7788
 - Auth is rate-limited on the agent
-- First-time Set PIN from the site only works when no PIN exists yet; changing later needs the current PIN
+- Change PIN only on the server: `sudo beacon-remote pin-set`

@@ -4823,19 +4823,24 @@ def _get_sd_pipeline():
         except Exception as e:
             import sys
             raise RuntimeError(
-                "Image deps not importable in THIS python.\n"
+                "Image packages not found in the Python that runs Beacon.\n"
                 f"Bot python: `{sys.executable}`\n"
                 f"Import error: `{type(e).__name__}: {e}`\n"
-                "Fix with the SAME python:\n"
+                "Install into THAT python with:\n"
                 f"`{sys.executable} -m pip install torch diffusers transformers "
                 "accelerate safetensors pillow --break-system-packages`"
             ) from e
 
         print("Loading local cartoon image model (first time can take a minute)...")
-        pipe = AutoPipelineForText2Image.from_pretrained(
-            "stabilityai/sd-turbo",
-            torch_dtype=torch.float32,
-        )
+        try:
+            pipe = AutoPipelineForText2Image.from_pretrained(
+                "stabilityai/sd-turbo",
+                torch_dtype=torch.float32,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Image packages imported, but model failed to load: `{type(e).__name__}: {e}`"
+            ) from e
         pipe = pipe.to("cpu")
         pipe.set_progress_bar_config(disable=True)
         _sd_pipe = pipe

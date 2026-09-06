@@ -27,6 +27,11 @@ Owner-only (user id 1257060226029584459):
   !status                     Show bot status
   !aichannel on|off           Enable/disable AI in this channel
   !resetmemory [user]         Reset memory for a user, or everyone if no user
+  !premium add|remove|list    Grant / revoke / list premium (also !prem)
+
+Premium (free users vs premium):
+  !premium / !prem            Check your premium status
+  Perks: shorter cooldowns, longer memory, premium personas, larger images
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ import asyncio
 import io
 import json
 import os
+import re
 import time
 import urllib.parse
 import uuid
@@ -58,13 +64,23 @@ except ImportError:
 TOKEN = ""
 
 OWNER_ID = 1257060226029584459
+# Optional seed IDs (ints). Merged into premium_users.json on startup.
+# Prefer !premium add <id> so grants persist without editing this file.
+PREMIUM_SEED_IDS: list[int] = []
 MEMORY_TURNS = 8
+PREMIUM_MEMORY_TURNS = 16
 COOLDOWN_SECONDS = 4.0
+PREMIUM_COOLDOWN_SECONDS = 1.0
 IMAGE_COOLDOWN_SECONDS = 8.0
+PREMIUM_IMAGE_COOLDOWN_SECONDS = 3.0
 MAX_PROMPT_CHARS = 2000
+PREMIUM_MAX_PROMPT_CHARS = 4000
 MAX_REPLY_CHARS = 1900
 AI_RETRIES = 2
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+PREMIUM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "premium_users.json")
+MENTION_RE = re.compile(r"<@!?(\d+)>")
+DIGIT_ID_RE = re.compile(r"^\d{5,25}$")
 
 # Free Florence-2 Gradio space for real image recognition (no API key)
 FLORENCE_HOST = "https://gokaygokay-florence-2.hf.space"
@@ -93,6 +109,19 @@ PERSONAS = {
     ),
 }
 
+# Premium-only personas
+PREMIUM_PERSONAS = {
+    "poet": (
+        "You are a lyrical Discord assistant. Answer helpfully, but with vivid "
+        "imagery and a poetic touch. Keep it readable in chat — not a full poem every time."
+    ),
+    "roast": (
+        "You are a playful roast comic in Discord. Tease lightly and answer the question. "
+        "Stay fun, never cruel or hateful. Keep replies short."
+    ),
+}
+ALL_PERSONAS = {**PERSONAS, **PREMIUM_PERSONAS}
+
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 
 intents = discord.Intents.default()
@@ -105,14 +134,15 @@ http: aiohttp.ClientSession | None = None
 # Runtime state
 ai_enabled = True
 disabled_channels: set[int] = set()
-memory: dict[int, deque] = defaultdict(lambda: deque(maxlen=MEMORY_TURNS * 2))
+memory: dict[int, deque] = {}
 personas: dict[int, str] = defaultdict(lambda: "default")
 cooldowns: dict[int, float] = {}
 image_cooldowns: dict[int, float] = {}
+premium_users: set[int] = set()
 
 
 def is_owner(user_id: int) -> bool:
-    return user_id == OWNER_ID
+    return int(user_id) == OWNER_ID
 
 
 def owner_only():
@@ -123,6 +153,120 @@ def owner_only():
         return True
 
     return commands.check(predicate)
+
+
+def parse_user_id(raw: str | int | None) -> int | None:
+    """Accept raw snowflake, <@id>, or <@!id>. Always return int or None."""
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    text = str(raw).strip()
+    if not text:
+        return None
+    mention = MENTION_RE.fullmatch(text) or MENTION_RE.search(text)
+    if mention:
+        text = mention.group(1)
+    text = text.strip().strip("\"'`")
+    if not DIGIT_ID_RE.fullmatch(text):
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_premium_users() -> set[int]:
+    """Load premium IDs from disk. Coerce every entry to int (fixes str/int bug)."""
+    loaded: set[int] = set()
+    for seed in PREMIUM_SEED_IDS:
+        uid = parse_user_id(seed)
+        if uid is not None:
+            loaded.add(uid)
+    if os.path.isfile(PREMIUM_FILE):
+        try:
+            with open(PREMIUM_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Warning: could not read {PREMIUM_FILE}: {exc}")
+            data = []
+        if isinstance(data, dict):
+            data = data.get("users", data.get("premium_users", []))
+        if not isinstance(data, list):
+            data = []
+        for item in data:
+            uid = parse_user_id(item)
+            if uid is not None:
+                loaded.add(uid)
+    return loaded
+
+
+def save_premium_users() -> None:
+    # Persist as ints in a plain JSON list — reload always coerces to int.
+    payload = sorted(int(uid) for uid in premium_users)
+    tmp = PREMIUM_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, PREMIUM_FILE)
+
+
+def is_premium(user_id: int) -> bool:
+    uid = int(user_id)
+    return is_owner(uid) or uid in premium_users
+
+
+def add_premium_user(user_id: int) -> bool:
+    """Add a premium user and save immediately. Returns True if newly added."""
+    uid = int(user_id)
+    if uid in premium_users:
+        return False
+    premium_users.add(uid)
+    save_premium_users()
+    # Upgrade in-memory chat buffer length right away
+    ensure_memory(uid)
+    return True
+
+
+def remove_premium_user(user_id: int) -> bool:
+    uid = int(user_id)
+    if uid not in premium_users:
+        return False
+    premium_users.discard(uid)
+    save_premium_users()
+    ensure_memory(uid)
+    return True
+
+
+def memory_turns_for(user_id: int) -> int:
+    return PREMIUM_MEMORY_TURNS if is_premium(user_id) else MEMORY_TURNS
+
+
+def ensure_memory(user_id: int) -> deque:
+    """Per-user memory with the right maxlen for free vs premium."""
+    uid = int(user_id)
+    want = memory_turns_for(uid) * 2
+    existing = memory.get(uid)
+    if existing is None or existing.maxlen != want:
+        old = list(existing) if existing is not None else []
+        memory[uid] = deque(old[-want:], maxlen=want)
+    return memory[uid]
+
+
+def cooldown_for(user_id: int) -> float:
+    return PREMIUM_COOLDOWN_SECONDS if is_premium(user_id) else COOLDOWN_SECONDS
+
+
+def image_cooldown_for(user_id: int) -> float:
+    return (
+        PREMIUM_IMAGE_COOLDOWN_SECONDS
+        if is_premium(user_id)
+        else IMAGE_COOLDOWN_SECONDS
+    )
+
+
+def prompt_limit_for(user_id: int) -> int:
+    return PREMIUM_MAX_PROMPT_CHARS if is_premium(user_id) else MAX_PROMPT_CHARS
 
 
 def is_image_attachment(att: discord.Attachment) -> bool:
@@ -387,15 +531,17 @@ async def generate_image(prompt: str, width: int = 1024, height: int = 1024) -> 
 
 def build_messages(user_id: int, prompt: str) -> list[dict]:
     persona = personas[user_id]
-    system = PERSONAS.get(persona, PERSONAS["default"])
+    if persona in PREMIUM_PERSONAS and not is_premium(user_id):
+        persona = "default"
+    system = ALL_PERSONAS.get(persona, ALL_PERSONAS["default"])
     messages: list[dict] = [{"role": "system", "content": system}]
-    messages.extend(list(memory[user_id]))
+    messages.extend(list(ensure_memory(user_id)))
     messages.append({"role": "user", "content": prompt})
     return messages
 
 
 async def ask_ai(user_id: int, prompt: str) -> str:
-    prompt = prompt[:MAX_PROMPT_CHARS]
+    prompt = prompt[: prompt_limit_for(user_id)]
     messages = build_messages(user_id, prompt)
     last_error = None
     for attempt in range(AI_RETRIES):
@@ -407,8 +553,9 @@ async def ask_ai(user_id: int, prompt: str) -> str:
             text = (response.choices[0].message.content or "").strip()
             if not text:
                 raise RuntimeError("empty AI response")
-            memory[user_id].append({"role": "user", "content": prompt})
-            memory[user_id].append({"role": "assistant", "content": text})
+            hist = ensure_memory(user_id)
+            hist.append({"role": "user", "content": prompt})
+            hist.append({"role": "assistant", "content": text})
             return text
         except Exception as exc:
             last_error = exc
@@ -483,7 +630,9 @@ async def handle_ai_request(
 
     # Image attached → proper recognition path
     if images:
-        wait = check_cooldown(image_cooldowns, user.id, IMAGE_COOLDOWN_SECONDS)
+        wait = check_cooldown(
+            image_cooldowns, user.id, image_cooldown_for(user.id)
+        )
         if wait is not None:
             msg = f"Slow down — wait {wait:.1f}s."
             if interaction:
@@ -515,7 +664,7 @@ async def handle_ai_request(
             await send_chunks(channel, reply, reply_to=source_message)
         return
 
-    wait = check_cooldown(cooldowns, user.id, COOLDOWN_SECONDS)
+    wait = check_cooldown(cooldowns, user.id, cooldown_for(user.id))
     if wait is not None:
         msg = f"Slow down — wait {wait:.1f}s."
         if interaction:
@@ -570,7 +719,9 @@ async def handle_imagine(
             await channel.send(blocked)
         return
 
-    wait = check_cooldown(image_cooldowns, user.id, IMAGE_COOLDOWN_SECONDS)
+    wait = check_cooldown(
+        image_cooldowns, user.id, image_cooldown_for(user.id)
+    )
     if wait is not None:
         msg = f"Slow down — wait {wait:.1f}s."
         if interaction:
@@ -592,12 +743,14 @@ async def handle_imagine(
             await channel.send(tip)
         return
 
+    # Premium gets a larger canvas
+    size = 1280 if is_premium(user.id) else 1024
     try:
         if interaction is None and hasattr(channel, "typing"):
             async with channel.typing():
-                data, filename = await generate_image(prompt)
+                data, filename = await generate_image(prompt, width=size, height=size)
         else:
-            data, filename = await generate_image(prompt)
+            data, filename = await generate_image(prompt, width=size, height=size)
         file = discord.File(io.BytesIO(data), filename=filename)
         content = f"**Imagine:** {prompt[:200]}"
         if interaction:
@@ -636,7 +789,9 @@ async def handle_see(
             await channel.send(blocked)
         return
 
-    wait = check_cooldown(image_cooldowns, user.id, IMAGE_COOLDOWN_SECONDS)
+    wait = check_cooldown(
+        image_cooldowns, user.id, image_cooldown_for(user.id)
+    )
     if wait is not None:
         msg = f"Slow down — wait {wait:.1f}s."
         if interaction:
@@ -684,6 +839,10 @@ async def handle_see(
 
 @bot.event
 async def on_ready():
+    global premium_users
+    premium_users = load_premium_users()
+    # Persist seed + file merge so IDs you add are never string-typed on disk
+    save_premium_users()
     await ensure_http()
     try:
         synced = await bot.tree.sync()
@@ -691,7 +850,8 @@ async def on_ready():
     except Exception as exc:
         print(f"Slash sync failed: {exc}")
     print(f"Logged in as {bot.user} (id={bot.user.id})")
-    print("Ready. Image gen + recognition enabled (no AI API keys).")
+    print(f"Ready. Premium users loaded: {len(premium_users)} ({PREMIUM_FILE})")
+    print("Image gen + recognition enabled (no AI API keys).")
 
 
 @bot.event
@@ -709,6 +869,8 @@ async def help_cmd(ctx: commands.Context):
         "`!see [question]` / `/see` — image recognition\n"
         "`!imagine <prompt>` / `/imagine` — generate an image\n"
         "`!persona default|funny|serious|coder` — set your style\n"
+        "`!persona poet|roast` — premium personas\n"
+        "`!premium` / `!prem` — check your premium status\n"
         "`!clear` — clear your chat memory\n"
         "`!help` — show this message\n"
         f"Or mention me: `@{bot.user.display_name} <prompt>`\n\n"
@@ -716,7 +878,8 @@ async def help_cmd(ctx: commands.Context):
         "`!off` / `!on` — pause / resume AI\n"
         "`!status` — bot status\n"
         "`!aichannel on|off` — AI in this channel\n"
-        "`!resetmemory [@user]` — wipe memory"
+        "`!resetmemory [@user]` — wipe memory\n"
+        "`!premium add|remove <id|@user>` / `!premium list` — manage premium"
     )
 
 
@@ -808,8 +971,19 @@ async def imagine_slash(interaction: discord.Interaction, prompt: str):
 @bot.command(name="persona")
 async def persona_cmd(ctx: commands.Context, name: str = ""):
     name = name.strip().lower()
-    if name not in PERSONAS:
-        await ctx.send(f"Choose one of: `{', '.join(PERSONAS)}`")
+    free = ", ".join(PERSONAS)
+    prem = ", ".join(PREMIUM_PERSONAS)
+    if name not in ALL_PERSONAS:
+        await ctx.send(
+            f"Choose one of: `{free}`\n"
+            f"Premium: `{prem}`"
+        )
+        return
+    if name in PREMIUM_PERSONAS and not is_premium(ctx.author.id):
+        await ctx.send(
+            f"**{name}** is premium-only. Ask the owner to run "
+            f"`!premium add {ctx.author.id}` (or check `!premium`)."
+        )
         return
     personas[ctx.author.id] = name
     await ctx.send(f"Persona set to **{name}**.")
@@ -819,6 +993,89 @@ async def persona_cmd(ctx: commands.Context, name: str = ""):
 async def clear_cmd(ctx: commands.Context):
     memory.pop(ctx.author.id, None)
     await ctx.send("Your chat memory was cleared.")
+
+
+@bot.command(name="premium", aliases=["prem"])
+async def premium_cmd(ctx: commands.Context, action: str = "", target: str = ""):
+    """Check status, or (owner) add/remove/list premium users.
+
+    Adding accepts a raw snowflake OR an @mention. Grants apply immediately
+    and are saved to premium_users.json (ints only — no str/int mismatch).
+    """
+    action = (action or "").strip().lower()
+    target = (target or "").strip()
+
+    if action in {"", "status", "me", "check"}:
+        prem = is_premium(ctx.author.id)
+        await ctx.send(
+            f"{ctx.author.mention} premium: **{'yes' if prem else 'no'}**\n"
+            f"Perks when premium: `{PREMIUM_COOLDOWN_SECONDS:g}s` AI cooldown, "
+            f"`{PREMIUM_IMAGE_COOLDOWN_SECONDS:g}s` image cooldown, "
+            f"`{PREMIUM_MEMORY_TURNS}` memory turns, "
+            f"`{PREMIUM_MAX_PROMPT_CHARS}` char prompts, "
+            f"1280px imagine, personas `{', '.join(PREMIUM_PERSONAS)}`."
+        )
+        return
+
+    if action in {"add", "remove", "rm", "del", "delete", "list", "ls"}:
+        if not is_owner(ctx.author.id):
+            await ctx.send("Owner only.")
+            return
+
+    if action == "list" or action == "ls":
+        if not premium_users:
+            await ctx.send("No premium users yet. Use `!premium add <id|@user>`.")
+            return
+        lines = [f"<@{uid}> `{uid}`" for uid in sorted(premium_users)]
+        await ctx.send("**Premium users**\n" + "\n".join(lines))
+        return
+
+    if action in {"add", "remove", "rm", "del", "delete"}:
+        uid = None
+        if ctx.message.mentions:
+            uid = int(ctx.message.mentions[0].id)
+        if uid is None:
+            uid = parse_user_id(target)
+        if uid is None:
+            await ctx.send(
+                "Usage: `!premium add <user_id|@user>` or "
+                "`!premium remove <user_id|@user>`\n"
+                "Tip: enable Developer Mode → right-click user → Copy User ID."
+            )
+            return
+        if action == "add":
+            if is_owner(uid):
+                await ctx.send("Owner is always premium.")
+                return
+            added = add_premium_user(uid)
+            # Prove the live check works with the same int path users hit
+            live = is_premium(uid)
+            if added:
+                await ctx.send(
+                    f"Granted premium to <@{uid}> (`{uid}`). "
+                    f"Live check: **{'yes' if live else 'no'}**."
+                )
+            else:
+                await ctx.send(
+                    f"<@{uid}> (`{uid}`) already had premium. "
+                    f"Live check: **{'yes' if live else 'no'}**."
+                )
+            return
+
+        if is_owner(uid):
+            await ctx.send("Can't remove premium from the owner.")
+            return
+        removed = remove_premium_user(uid)
+        if removed:
+            await ctx.send(f"Removed premium from <@{uid}> (`{uid}`).")
+        else:
+            await ctx.send(f"<@{uid}> (`{uid}`) was not premium.")
+        return
+
+    await ctx.send(
+        "Usage: `!premium` · `!premium add <id|@user>` · "
+        "`!premium remove <id|@user>` · `!premium list`"
+    )
 
 
 @bot.command(name="off", aliases=["shutdown"])
@@ -850,7 +1107,9 @@ async def status_cmd(ctx: commands.Context):
         f"AI global: `{'on' if ai_enabled else 'paused'}`\n"
         f"This channel: `{channel_state}`\n"
         f"Tracked memories: `{len(memory)}`\n"
-        f"Disabled channels: `{len(disabled_channels)}`"
+        f"Disabled channels: `{len(disabled_channels)}`\n"
+        f"Premium users: `{len(premium_users)}`\n"
+        f"Premium file: `{PREMIUM_FILE}`"
     )
 
 

@@ -4817,12 +4817,18 @@ def _get_sd_pipeline():
         if _sd_pipe is not None:
             return _sd_pipe
         try:
+            import sys
             import torch
             from diffusers import AutoPipelineForText2Image
         except Exception as e:
+            import sys
             raise RuntimeError(
-                "Image deps missing. On Ubuntu run: "
-                "pip install torch diffusers transformers accelerate safetensors pillow"
+                "Image deps not importable in THIS python.\n"
+                f"Bot python: `{sys.executable}`\n"
+                f"Import error: `{type(e).__name__}: {e}`\n"
+                "Fix with the SAME python:\n"
+                f"`{sys.executable} -m pip install torch diffusers transformers "
+                "accelerate safetensors pillow --break-system-packages`"
             ) from e
 
         print("Loading local cartoon image model (first time can take a minute)...")

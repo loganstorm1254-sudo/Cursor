@@ -2291,7 +2291,7 @@ On trigger:
 `/userinfo` or `*userinfo` - User info.
 `/membercount` or `*membercount` - Member count.
 `/dirt` or `*dirt` - DIRT.
-`/generate` or `*generate <prompt>` - Generate a real AI image (example: astronaut cat).
+`/generate` or `*generate <prompt>` - Cartoon AI image (moderated). Example: astronaut cat.
 
 """
 
@@ -4764,21 +4764,67 @@ async def slash_dirt(interaction: discord.Interaction):
 
 
 # ============================================================
-# IMAGE GENERATION (real AI images — Pollinations HTTP, no API key)
+# IMAGE GENERATION (cartoon AI images + prompt moderation)
 # ============================================================
+
+# Soft/hard blocked topics for generate. Keep family-friendly.
+_GENERATE_BLOCKED = [
+    # sexual / nsfw
+    "nsfw", "nude", "naked", "porn", "sex", "sexual", "hentai", "xxx", "onlyfans",
+    "gore", "guro", "bloodbath", "dismember", "decapitat", "torture",
+    "rape", "molest", "cp", "child porn", "underage", "loli", "shota",
+    "bestiality", "zoophil", "scat", "coproph",
+    # graphic self-harm / real violence requests
+    "suicide", "kill myself", "school shooting",
+]
+
+_CARTOON_STYLE = (
+    "cute colorful cartoon illustration, disney pixar style, clean line art, "
+    "friendly characters, vibrant colors, wholesome family-friendly art, "
+    "2D cartoon animation still, soft shading, not photorealistic, not horror, "
+    "not creepy, not distorted anatomy"
+)
+
+
+def moderate_generate_prompt(prompt: str):
+    """
+    Return (ok, cleaned_prompt_or_reason).
+    Blocks obvious NSFW / gore / illegal requests before calling the image API.
+    """
+    text = (prompt or "").strip()
+    if not text:
+        return False, "empty prompt"
+    lowered = text.lower()
+    for bad in _GENERATE_BLOCKED:
+        if bad in lowered:
+            return False, f"blocked topic (`{bad}`)"
+    # light cleanup
+    text = " ".join(text.split())
+    if len(text) > 300:
+        text = text[:300].rstrip()
+    return True, text
+
+
+def stylize_generate_prompt(prompt: str) -> str:
+    """Force a cartoony, non-creepy look onto every generation."""
+    p = prompt.strip()
+    # if user already asked for photo/real, still push cartoon hard
+    return f"{p}, {_CARTOON_STYLE}"
+
 
 def generate_ai_image(prompt: str, width: int = 768, height: int = 768):
     """
-    Generate a real image from a text prompt.
-    Uses Pollinations AI over HTTP (no API key). Returns (bytes, ext).
+    Generate a real cartoon-style image from a text prompt.
+    Uses Pollinations over HTTP (no API key). Returns (bytes, ext).
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        raise ValueError("empty prompt")
-    if len(prompt) > 400:
-        prompt = prompt[:400]
+    ok, cleaned = moderate_generate_prompt(prompt)
+    if not ok:
+        raise ValueError(cleaned)
 
-    seed = int(hashlib.sha256(prompt.lower().encode("utf-8")).hexdigest()[:8], 16) % 1_000_000_000
+    styled = stylize_generate_prompt(cleaned)
+    # fresh seed each call so retries aren't stuck on a cursed render
+    seed = secrets.randbelow(1_000_000_000)
+
     query = urllib.parse.urlencode(
         {
             "width": str(width),
@@ -4786,9 +4832,11 @@ def generate_ai_image(prompt: str, width: int = 768, height: int = 768):
             "seed": str(seed),
             "nologo": "true",
             "enhance": "true",
+            "safe": "true",
+            "model": "flux",
         }
     )
-    path_q = urllib.parse.quote(prompt, safe="")
+    path_q = urllib.parse.quote(styled, safe="")
     url = f"https://image.pollinations.ai/prompt/{path_q}?{query}"
 
     req = urllib.request.Request(
@@ -4820,17 +4868,26 @@ async def do_generate(prompt: str, send):
     if not prompt:
         await send(
             "Usage: `*generate <prompt>` or `/generate prompt:`\n"
-            "Example: `*generate astronaut cat`"
+            "Example: `*generate astronaut cat`\n"
+            "Style is always cartoon / Pixar-like. Keep prompts family-friendly."
         )
         return
-    if len(prompt) > 400:
-        await send("Prompt too long (max 400 characters).")
+
+    ok, cleaned = moderate_generate_prompt(prompt)
+    if not ok:
+        await send(
+            "That prompt was blocked by moderation.\n"
+            "Keep it family-friendly — no NSFW, gore, or illegal stuff."
+        )
         return
 
-    await send(f"Generating image for: **{prompt}** …")
+    await send(f"Generating cartoon image for: **{cleaned}** …")
 
     try:
-        image_bytes, ext = await asyncio.to_thread(generate_ai_image, prompt, 768, 768)
+        image_bytes, ext = await asyncio.to_thread(generate_ai_image, cleaned, 768, 768)
+    except ValueError as e:
+        await send(f"Blocked by moderation: `{e}`")
+        return
     except Exception as e:
         await send(f"Image generation failed: `{e}`")
         return
@@ -4839,11 +4896,11 @@ async def do_generate(prompt: str, send):
     file = discord.File(io.BytesIO(image_bytes), filename=filename)
     embed = discord.Embed(
         title="Beacon Image Generator",
-        description=f"**Prompt:** {prompt}",
+        description=f"**Prompt:** {cleaned}\n**Style:** cartoon / Pixar-like",
         color=0x5865F2,
     )
     embed.set_image(url=f"attachment://{filename}")
-    embed.set_footer(text="AI image generation")
+    embed.set_footer(text="AI cartoon generation • moderated")
     await send(embed=embed, file=file)
 
 
@@ -4852,37 +4909,11 @@ async def prefix_generate(ctx, *, prompt: str = None):
     await do_generate(prompt, ctx.send)
 
 
-@tree.command(name="generate", description="Generate a real AI image from a text prompt")
+@tree.command(name="generate", description="Generate a cartoon AI image from a text prompt")
 @app_commands.describe(prompt="What to generate, e.g. astronaut cat in space")
 async def slash_generate(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
-
-    async def _send(**kwargs):
-        return await interaction.followup.send(**kwargs)
-
-    # adapt do_generate for followup (no edit path needed much)
-    prompt = (prompt or "").strip()
-    if not prompt:
-        await interaction.followup.send("Give a prompt, e.g. `astronaut cat`")
-        return
-    if len(prompt) > 400:
-        await interaction.followup.send("Prompt too long (max 400 characters).")
-        return
-    try:
-        image_bytes, ext = await asyncio.to_thread(generate_ai_image, prompt, 768, 768)
-    except Exception as e:
-        await interaction.followup.send(f"Image generation failed: `{e}`")
-        return
-    filename = f"beacon_generate.{ext}"
-    file = discord.File(io.BytesIO(image_bytes), filename=filename)
-    embed = discord.Embed(
-        title="Beacon Image Generator",
-        description=f"**Prompt:** {prompt}",
-        color=0x5865F2,
-    )
-    embed.set_image(url=f"attachment://{filename}")
-    embed.set_footer(text="AI image generation")
-    await interaction.followup.send(embed=embed, file=file)
+    await do_generate(prompt, interaction.followup.send)
 
 
 # ============================================================

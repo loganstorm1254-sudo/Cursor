@@ -8,7 +8,7 @@
 # - Saves server name + icon bytes
 # - Antinuke trigger ONLY: 5 channel creates in 10 seconds
 # - On trigger: punish, wipe server structure, restore from backup, then re-backup
-# Free: sticky, polls, reminders, basic XP, economy, AI image generation
+# Free: sticky, polls, reminders, basic XP, economy, AI image generation, emoji steal
 # Premium: temprole, autoresponder, invite tracker
 # ============================================================
 
@@ -2292,6 +2292,7 @@ On trigger:
 `/membercount` or `*membercount` - Member count.
 `/dirt` or `*dirt` - DIRT.
 `/generate` or `*generate <prompt>` - Cartoon AI image (moderated). Example: astronaut cat.
+`/emojisteal` or `*emojisteal <emoji>` - Download a custom emoji from this server as PNG.
 
 """
 
@@ -4927,6 +4928,115 @@ async def prefix_generate(ctx, *, prompt: str = None):
 async def slash_generate(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
     await do_generate(prompt, interaction.followup.send)
+
+
+# ============================================================
+# EMOJI STEAL (PNG download)
+# ============================================================
+
+
+def resolve_custom_emoji(raw: str, guild: discord.Guild | None):
+    """Parse a custom emoji from paste, id, or :name: in this guild."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+
+    try:
+        pe = discord.PartialEmoji.from_str(text)
+        if pe and pe.id:
+            return pe
+    except Exception:
+        pass
+
+    # <:name:id> / <a:name:id> via regex
+    m = re.fullmatch(r"<(a?):([A-Za-z0-9_]+):(\d+)>", text)
+    if m:
+        return discord.PartialEmoji(name=m.group(2), id=int(m.group(3)), animated=bool(m.group(1)))
+
+    if text.isdigit() and guild:
+        eid = int(text)
+        for e in guild.emojis:
+            if e.id == eid:
+                return e
+
+    if guild:
+        name = text.strip(":")
+        for e in guild.emojis:
+            if e.name.lower() == name.lower():
+                return e
+    return None
+
+
+def fetch_emoji_png_bytes(emoji_id: int) -> bytes:
+    """Download emoji as PNG from Discord CDN (static frame for animated too)."""
+    url = f"https://cdn.discordapp.com/emojis/{int(emoji_id)}.png?size=256&quality=lossless"
+    req = urllib.request.Request(url, headers={"User-Agent": "BeaconBot/1.0"})
+    with urllib.request.urlopen(req, timeout=20) as res:
+        data = res.read()
+    if not data:
+        raise RuntimeError("empty emoji download")
+    return data
+
+
+async def do_emojisteal(raw_emoji: str, guild: discord.Guild | None, send):
+    if guild is None:
+        return await send("Use `/emojisteal` in a server that has the emoji.")
+
+    emoji = resolve_custom_emoji(raw_emoji, guild)
+    if emoji is None or not getattr(emoji, "id", None):
+        return await send(
+            "Pick a **custom** server emoji (not a default Unicode one).\n"
+            "Example: `/emojisteal` then select from the list, or `*emojisteal :name:`"
+        )
+
+    try:
+        png = await asyncio.to_thread(fetch_emoji_png_bytes, int(emoji.id))
+    except Exception as e:
+        return await send(f"Could not download that emoji: `{e}`")
+
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(emoji.name or "emoji")).strip("_") or "emoji"
+    filename = f"{safe_name}_{emoji.id}.png"
+    file = discord.File(io.BytesIO(png), filename=filename)
+
+    embed = discord.Embed(
+        title="Emoji steal",
+        description=f"**:{emoji.name}:** → PNG download",
+        color=0x5865F2,
+    )
+    if getattr(emoji, "animated", False):
+        embed.set_footer(text="Animated emoji exported as a static PNG frame")
+    embed.set_image(url=f"attachment://{filename}")
+    await send(embed=embed, file=file)
+
+
+@bot.command(name="emojisteal", aliases=["stealemoji", "emoji", "steal"])
+async def prefix_emojisteal(ctx, emoji: str = None):
+    """Download a custom emoji from this server as PNG."""
+    await do_emojisteal(emoji, ctx.guild, ctx.send)
+
+
+@tree.command(name="emojisteal", description="Download a custom emoji from this server as PNG")
+@app_commands.describe(emoji="Pick a custom emoji from this server (or paste one)")
+async def slash_emojisteal(interaction: discord.Interaction, emoji: str):
+    await interaction.response.defer()
+    await do_emojisteal(emoji, interaction.guild, interaction.followup.send)
+
+
+@slash_emojisteal.autocomplete("emoji")
+async def emojisteal_autocomplete(interaction: discord.Interaction, current: str):
+    if not interaction.guild:
+        return []
+    cur = (current or "").lower().strip().strip(":")
+    choices = []
+    for e in interaction.guild.emojis:
+        label = f":{e.name}:"
+        if e.animated:
+            label += " (animated)"
+        if not cur or cur in e.name.lower() or cur in str(e.id):
+            choices.append(app_commands.Choice(name=label[:100], value=str(e)))
+        if len(choices) >= 25:
+            break
+    return choices
 
 
 # ============================================================

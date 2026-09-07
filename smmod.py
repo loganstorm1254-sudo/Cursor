@@ -238,16 +238,14 @@ def user_app_install_url() -> str:
 
 async def sync_slash_commands(
     force_print: bool = True,
-    clear_guild_dupes: bool = False,
-    push_to_guilds: bool = True,
+    clear_guild_dupes: bool = True,
+    push_to_guilds: bool = False,
 ):
-    """Publish slash commands.
+    """Publish slash commands globally.
 
-    - Always syncs globals (needed for User Install / long-term).
-    - By default also pushes the same set to every guild so commands show up
-      immediately (global-only can take Discord up to ~1 hour to appear).
-    - `clear_guild_dupes=True` wipes guild copies (use after globals have
-      propagated if you see each command twice).
+    Default: global sync + clear per-guild copies.
+    Guild copies caused 'Application command emojisteal not found' when an old
+    bot process was connected (Discord still had the guild command, local tree didn't).
     """
     for cmd in tree.get_commands():
         if getattr(cmd, "name", None) == "emojisteal":
@@ -267,26 +265,27 @@ async def sync_slash_commands(
     except Exception as e:
         print(f"Context menu flag update skipped: {e}")
 
+    # Always publish globals first (includes /emojisteal)
+    local_names = {c.name for c in tree.get_commands()}
+    if force_print:
+        print(f"Local tree has emojisteal: {'emojisteal' in local_names} ({len(local_names)} cmds)")
+
     synced = await tree.sync()
     if force_print:
         names = {c.name for c in synced}
         print(f"Synced {len(synced)} global slash/app commands.")
         print(f"  emojisteal registered: {'emojisteal' in names}")
         print(f"  User App install link: {user_app_install_url()}")
-        for c in synced:
-            if c.name in ("emojisteal", "Steal emojis"):
-                print(
-                    f"  • {c.name}: integration_types={getattr(c, 'integration_types', None)} "
-                    f"contexts={getattr(c, 'contexts', None)}"
-                )
 
+    # Wipe guild-scoped copies so Discord never routes a ghost /emojisteal
+    # to a process that doesn't have the handler.
     if clear_guild_dupes:
         for guild in list(bot.guilds):
             try:
                 tree.clear_commands(guild=guild)
                 await tree.sync(guild=guild)
                 if force_print:
-                    print(f"Cleared guild command copies for {guild.name} ({guild.id})")
+                    print(f"Cleared guild commands for {guild.name} ({guild.id})")
             except Exception as ge:
                 print(f"Guild command clear failed for {guild.id}: {ge}")
     elif push_to_guilds:
@@ -1932,8 +1931,8 @@ async def on_ready():
     start_dashboard()
 
     try:
-        # Push to guilds so /emojisteal appears immediately (globals can lag in the client).
-        await sync_slash_commands(force_print=True, clear_guild_dupes=False, push_to_guilds=True)
+        # Global only + clear guild ghosts (avoids CommandNotFound from stale guild cmds)
+        await sync_slash_commands(force_print=True, clear_guild_dupes=True, push_to_guilds=False)
     except Exception as e:
         print(f"Slash sync failed: {e}")
 
@@ -5241,21 +5240,22 @@ async def emojisteal_autocomplete(interaction: discord.Interaction, current: str
 
 
 @bot.command(name="resync")
-async def prefix_resync(ctx, mode: str = "push"):
-    """Owner: `*resync` (global+guilds, instant) or `*resync clear` (global only, no dupes)."""
+async def prefix_resync(ctx, mode: str = "clear"):
+    """Owner: `*resync` clears guild ghosts + publishes globals. `*resync push` for instant guild copy."""
     if not is_bot_owner(ctx.author.id):
         return await ctx.send("❌ Only the bot owner can use this.")
     mode_l = (mode or "").lower().strip()
-    clear = mode_l in ("clear", "dupes", "all")
-    if clear:
-        await ctx.send("Syncing globals and clearing guild copies (commands may take a bit to refresh)…")
-    else:
-        await ctx.send("Syncing globals and pushing to all servers (instant)…")
+    push = mode_l in ("push", "guilds", "instant")
+    clear = not push
+    await ctx.send(
+        "Syncing globals"
+        + (" and pushing to servers…" if push else " and clearing guild copies…")
+    )
     try:
         synced = await sync_slash_commands(
             force_print=True,
             clear_guild_dupes=clear,
-            push_to_guilds=not clear,
+            push_to_guilds=push,
         )
     except Exception as e:
         return await ctx.send(f"Sync failed: `{e}`")
@@ -5263,9 +5263,9 @@ async def prefix_resync(ctx, mode: str = "push"):
     has = "emojisteal" in names
     await ctx.send(
         f"Synced **{len(synced)}** global commands. "
-        f"`/emojisteal` registered: **{'yes' if has else 'NO'}**."
-        + (" Guild copies cleared." if clear else " Pushed to all servers.")
-        + f"\n**User App (other servers):** {user_app_install_url()}"
+        f"`/emojisteal` registered: **{'yes' if has else 'NO'}**.\n"
+        f"**User App (other servers):** {user_app_install_url()}\n"
+        f"Also works as `*emojisteal name`"
     )
 
 

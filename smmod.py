@@ -5187,6 +5187,33 @@ def find_custom_emojis(text: str):
     return out
 
 
+def find_custom_emojis_in_message(message: discord.Message):
+    """Custom emojis in content, embeds, and reactions (CDN-stealable anywhere)."""
+    chunks = [message.content or ""]
+    for emb in message.embeds:
+        if emb.title:
+            chunks.append(emb.title)
+        if emb.description:
+            chunks.append(emb.description)
+        if emb.footer and emb.footer.text:
+            chunks.append(emb.footer.text)
+        if emb.author and emb.author.name:
+            chunks.append(emb.author.name)
+        for field in emb.fields:
+            chunks.append(field.name or "")
+            chunks.append(field.value or "")
+    found = find_custom_emojis("\n".join(chunks))
+    seen = {int(e.id) for e in found}
+    for reaction in message.reactions:
+        emoji = reaction.emoji
+        if isinstance(emoji, (discord.Emoji, discord.PartialEmoji)) and getattr(emoji, "id", None):
+            eid = int(emoji.id)
+            if eid not in seen:
+                seen.add(eid)
+                found.append(emoji)
+    return found
+
+
 def fetch_emoji_png_bytes(emoji_id: int) -> bytes:
     """Download emoji as PNG from Discord CDN (static frame for animated too)."""
     url = f"https://cdn.discordapp.com/emojis/{int(emoji_id)}.png?size=256&quality=lossless"
@@ -5337,18 +5364,15 @@ async def prefix_resync(ctx, mode: str = "clear"):
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def context_steal_emojis(interaction: discord.Interaction, message: discord.Message):
-    """Right-click a message → Apps → Steal emojis."""
+    """Right-click a MESSAGE → Apps → Steal emojis (works in any server as User App)."""
     await interaction.response.defer(ephemeral=True)
-    found = find_custom_emojis(message.content or "")
-    for reaction in message.reactions:
-        emoji = reaction.emoji
-        if isinstance(emoji, (discord.Emoji, discord.PartialEmoji)) and getattr(emoji, "id", None):
-            if all(int(e.id) != int(emoji.id) for e in found):
-                found.append(emoji)
+    found = find_custom_emojis_in_message(message)
 
     if not found:
         return await interaction.followup.send(
-            "No custom emojis found in that message. Try `/emojisteal emoji:name`.",
+            "No custom emojis in that **message**.\n"
+            "Right-click the **message** (not the emoji picker) → Apps → Steal emojis.\n"
+            "Or `/emojisteal` and **paste** the emoji into `emoji:`.",
             ephemeral=True,
         )
 
@@ -5395,8 +5419,10 @@ async def on_app_command_error(interaction: discord.Interaction, error):
     try:
         if isinstance(error, app_commands.CommandNotFound):
             msg = (
-                f"Slash command `{error.name}` is out of sync on this bot process. "
-                f"Restart Beacon on the latest `smmod.py`, or run `*resync clear` as owner."
+                f"`{error.name}` is registered on Discord but this Beacon process "
+                f"doesn't have the handler (old `smmod.py` on the VPS).\n"
+                f"Replace VPS `smmod.py` with the latest ready file and "
+                f"`pm2 restart beacon`."
             )
         else:
             msg = f"Error: `{error}`"

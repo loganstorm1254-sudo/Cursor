@@ -5021,11 +5021,27 @@ async def slash_generate(interaction: discord.Interaction, prompt: str):
 CUSTOM_EMOJI_RE = re.compile(r"<(a?):([A-Za-z0-9_]+):(\d+)>")
 
 
-def resolve_custom_emoji(raw: str, guild: discord.Guild | None = None):
-    """Parse a custom emoji from paste, id, or :name: (name only if bot shares a guild)."""
-    text = (raw or "").strip()
+def resolve_custom_emoji(raw, guild: discord.Guild | None = None):
+    """Parse a custom emoji from PartialEmoji, paste, id, or :name:."""
+    if raw is None:
+        return None
+
+    if isinstance(raw, (discord.Emoji, discord.PartialEmoji)):
+        return raw if getattr(raw, "id", None) else None
+
+    text = str(raw).strip()
     if not text:
         return None
+
+    # Prefer our regex — PartialEmoji.from_str requires 13+ digit ids and treats
+    # non-matches as unicode (id=None), which broke string autocomplete values.
+    m = CUSTOM_EMOJI_RE.fullmatch(text) or CUSTOM_EMOJI_RE.search(text)
+    if m:
+        return discord.PartialEmoji(
+            name=m.group(2),
+            id=int(m.group(3)),
+            animated=bool(m.group(1)),
+        )
 
     try:
         pe = discord.PartialEmoji.from_str(text)
@@ -5034,17 +5050,24 @@ def resolve_custom_emoji(raw: str, guild: discord.Guild | None = None):
     except Exception:
         pass
 
-    m = CUSTOM_EMOJI_RE.fullmatch(text) or CUSTOM_EMOJI_RE.search(text)
-    if m:
-        return discord.PartialEmoji(name=m.group(2), id=int(m.group(3)), animated=bool(m.group(1)))
-
     if text.isdigit():
-        return discord.PartialEmoji(name="emoji", id=int(text), animated=False)
+        eid = int(text)
+        if guild:
+            found = discord.utils.get(guild.emojis, id=eid)
+            if found:
+                return found
+        return discord.PartialEmoji(name="emoji", id=eid, animated=False)
 
-    if guild:
-        name = text.strip(":")
-        for e in guild.emojis:
-            if e.name.lower() == name.lower() or str(e.id) == text:
+    name = text.strip().strip(":")
+    if not name:
+        return None
+    search_guilds = []
+    if guild is not None:
+        search_guilds.append(guild)
+    search_guilds.extend(g for g in bot.guilds if g is not guild)
+    for g in search_guilds:
+        for e in g.emojis:
+            if e.name.lower() == name.lower():
                 return e
     return None
 
@@ -5074,6 +5097,8 @@ def fetch_emoji_png_bytes(emoji_id: int) -> bytes:
 
 
 async def send_emoji_png(emoji, send):
+    if emoji is None or not getattr(emoji, "id", None):
+        return await send("Pick a **custom** server emoji (not a default Unicode one).")
     try:
         png = await asyncio.to_thread(fetch_emoji_png_bytes, int(emoji.id))
     except Exception as e:
@@ -5094,19 +5119,18 @@ async def send_emoji_png(emoji, send):
     await send(embed=embed, file=file)
 
 
-async def do_emojisteal(raw_emoji: str, guild: discord.Guild | None, send):
+async def do_emojisteal(raw_emoji, guild: discord.Guild | None, send):
     emoji = resolve_custom_emoji(raw_emoji, guild)
     if emoji is None or not getattr(emoji, "id", None):
         return await send(
-            "Pick a **custom** emoji from this server with `/emojisteal` (dropdown), "
-            "or paste one like `<:name:123>`."
+            "Could not read that emoji. Use `/emojisteal` and **pick from the dropdown**, "
+            "or pass a custom emoji in the `emoji` option."
         )
     await send_emoji_png(emoji, send)
 
 
 class EmojiStealSelect(discord.ui.Select):
     def __init__(self, emojis: list):
-        # Discord select menus max out at 25 options
         ordered = sorted(emojis, key=lambda e: (e.name or "").lower())[:25]
         options = []
         for e in ordered:
@@ -5130,15 +5154,18 @@ class EmojiStealSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        emoji = self._by_id.get(self.values[0])
+        eid = self.values[0]
+        emoji = self._by_id.get(eid)
+        if emoji is None and interaction.guild:
+            emoji = discord.utils.get(interaction.guild.emojis, id=int(eid))
         if emoji is None:
-            return await interaction.followup.send("Emoji not found.", ephemeral=True)
+            emoji = discord.PartialEmoji(name="emoji", id=int(eid), animated=False)
         await send_emoji_png(emoji, interaction.followup.send)
 
 
 class EmojiStealView(discord.ui.View):
     def __init__(self, emojis: list):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.add_item(EmojiStealSelect(emojis))
 
 
@@ -5150,9 +5177,7 @@ async def prefix_emojisteal(ctx, *, emoji: str = None):
     if not ctx.guild or not ctx.guild.emojis:
         return await ctx.send("This server has no custom emojis to pick from. Paste one instead.")
     emojis = list(ctx.guild.emojis)
-    note = ""
-    if len(emojis) > 25:
-        note = f" Showing first 25 of {len(emojis)} (A–Z). Or use `/emojisteal` and type to search."
+    note = f" Showing first 25 of {len(emojis)} (A–Z)." if len(emojis) > 25 else ""
     await ctx.send(
         f"Select an emoji to download as PNG:{note}",
         view=EmojiStealView(emojis),
@@ -5166,48 +5191,41 @@ async def prefix_emojisteal(ctx, *, emoji: str = None):
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(
-    emoji="Type to search this server's emojis — or leave empty to open a picker"
+    emoji="Pick a custom emoji (leave empty to open a server dropdown)"
 )
-async def slash_emojisteal(interaction: discord.Interaction, emoji: str = None):
+async def slash_emojisteal(
+    interaction: discord.Interaction,
+    emoji: discord.PartialEmoji = None,
+):
     await interaction.response.defer(ephemeral=True)
 
-    if emoji:
-        return await do_emojisteal(emoji, interaction.guild, interaction.followup.send)
+    if emoji is not None:
+        if not getattr(emoji, "id", None):
+            return await interaction.followup.send(
+                "That is a default Unicode emoji. Pick a **custom** server emoji instead.",
+                ephemeral=True,
+            )
+        return await send_emoji_png(emoji, interaction.followup.send)
 
     guild = interaction.guild
     if guild is None or not guild.emojis:
         return await interaction.followup.send(
-            "Use `/emojisteal` in a server that has custom emojis "
-            "(Beacon must be able to see that server), or pass `emoji:` and paste one.",
+            "No custom emojis found here. Run this in a server where Beacon can see "
+            "the emoji list, or pass one in the `emoji` option.",
             ephemeral=True,
         )
 
     emojis = list(guild.emojis)
-    note = ""
-    if len(emojis) > 25:
-        note = f" Showing first 25 of {len(emojis)} (A–Z). Type in `emoji:` to search the rest."
+    note = (
+        f" Showing first 25 of {len(emojis)} (A–Z). Or pass `emoji:` to pick any."
+        if len(emojis) > 25
+        else ""
+    )
     await interaction.followup.send(
         f"Select an emoji to download as PNG:{note}",
         view=EmojiStealView(emojis),
         ephemeral=True,
     )
-
-
-@slash_emojisteal.autocomplete("emoji")
-async def emojisteal_autocomplete(interaction: discord.Interaction, current: str):
-    if not interaction.guild or not interaction.guild.emojis:
-        return []
-    cur = (current or "").lower().strip().strip(":")
-    choices = []
-    for e in interaction.guild.emojis:
-        if not cur or cur in e.name.lower() or cur in str(e.id):
-            label = f":{e.name}:"
-            if e.animated:
-                label += " (animated)"
-            choices.append(app_commands.Choice(name=label[:100], value=str(e)))
-        if len(choices) >= 25:
-            break
-    return choices
 
 
 @bot.command(name="resync")

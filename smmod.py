@@ -5191,33 +5191,25 @@ async def prefix_emojisteal(ctx, *, emoji: str = None):
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(
-    emoji="Pick a custom emoji (leave empty to open a server dropdown)"
+    emoji="Type to search this server's emojis — or leave empty for the dropdown"
 )
-async def slash_emojisteal(
-    interaction: discord.Interaction,
-    emoji: discord.PartialEmoji = None,
-):
+async def slash_emojisteal(interaction: discord.Interaction, emoji: str = None):
     await interaction.response.defer(ephemeral=True)
 
-    if emoji is not None:
-        if not getattr(emoji, "id", None):
-            return await interaction.followup.send(
-                "That is a default Unicode emoji. Pick a **custom** server emoji instead.",
-                ephemeral=True,
-            )
-        return await send_emoji_png(emoji, interaction.followup.send)
+    if emoji:
+        return await do_emojisteal(emoji, interaction.guild, interaction.followup.send)
 
     guild = interaction.guild
     if guild is None or not guild.emojis:
         return await interaction.followup.send(
             "No custom emojis found here. Run this in a server where Beacon can see "
-            "the emoji list, or pass one in the `emoji` option.",
+            "the emoji list, or paste `<:name:id>` in the `emoji` option.",
             ephemeral=True,
         )
 
     emojis = list(guild.emojis)
     note = (
-        f" Showing first 25 of {len(emojis)} (A–Z). Or pass `emoji:` to pick any."
+        f" Showing first 25 of {len(emojis)} (A–Z). Or type in `emoji:` to search."
         if len(emojis) > 25
         else ""
     )
@@ -5226,6 +5218,28 @@ async def slash_emojisteal(
         view=EmojiStealView(emojis),
         ephemeral=True,
     )
+
+
+@slash_emojisteal.autocomplete("emoji")
+async def emojisteal_autocomplete(interaction: discord.Interaction, current: str):
+    if not interaction.guild or not interaction.guild.emojis:
+        return []
+    cur = (current or "").lower().strip().strip(":")
+    # If they pasted a full <:name:id>, offer that id directly
+    m = CUSTOM_EMOJI_RE.search(current or "")
+    if m:
+        return [app_commands.Choice(name=f":{m.group(2)}:", value=m.group(3))]
+    choices = []
+    for e in interaction.guild.emojis:
+        if not cur or cur in e.name.lower() or cur in str(e.id):
+            label = f":{e.name}:"
+            if e.animated:
+                label += " (animated)"
+            # Value MUST be the snowflake only — <:name:id> choice values break in Discord
+            choices.append(app_commands.Choice(name=label[:100], value=str(e.id)))
+        if len(choices) >= 25:
+            break
+    return choices
 
 
 @bot.command(name="resync")

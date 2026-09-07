@@ -5180,6 +5180,25 @@ async def emojisteal_autocomplete(interaction: discord.Interaction, current: str
     return choices
 
 
+@bot.command(name="resync")
+async def prefix_resync(ctx, mode: str = "global"):
+    """Owner: re-publish slash commands. `*resync` or `*resync clear` (also wipe guild dupes)."""
+    if not is_bot_owner(ctx.author.id):
+        return await ctx.send("❌ Only the bot owner can use this.")
+    clear = (mode or "").lower().strip() in ("clear", "dupes", "all")
+    await ctx.send(f"Syncing slash commands{' + clearing guild duplicates' if clear else ''}…")
+    try:
+        synced = await sync_slash_commands(force_print=True, clear_guild_dupes=clear)
+    except Exception as e:
+        return await ctx.send(f"Sync failed: `{e}`")
+    names = sorted(c.name for c in synced)
+    has = "emojisteal" in names
+    await ctx.send(
+        f"Synced **{len(synced)}** global commands. "
+        f"`/emojisteal` registered: **{'yes' if has else 'NO'}**."
+    )
+
+
 @tree.context_menu(name="Steal emojis")
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -5240,10 +5259,17 @@ async def on_command_error(ctx, error):
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
     try:
-        if interaction.response.is_done():
-            await interaction.followup.send(f"Error: `{error}`", ephemeral=True)
+        if isinstance(error, app_commands.CommandNotFound):
+            msg = (
+                f"Slash command `{error.name}` is out of sync on this bot process. "
+                f"Restart Beacon on the latest `smmod.py`, or run `*resync clear` as owner."
+            )
         else:
-            await interaction.response.send_message(f"Error: `{error}`", ephemeral=True)
+            msg = f"Error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
     except Exception:
         pass
 

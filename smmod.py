@@ -1932,7 +1932,7 @@ async def on_ready():
 
     try:
         # Global only + clear guild ghosts (avoids CommandNotFound from stale guild cmds)
-        await sync_slash_commands(force_print=True, clear_guild_dupes=True, push_to_guilds=False)
+        await sync_slash_commands(force_print=True, clear_guild_dupes=False, push_to_guilds=True)
     except Exception as e:
         print(f"Slash sync failed: {e}")
 

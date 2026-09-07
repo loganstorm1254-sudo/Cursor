@@ -1834,8 +1834,17 @@ async def on_ready():
     start_dashboard()
 
     try:
+        # Global sync can take Discord up to ~1 hour to show everywhere.
         synced = await tree.sync()
-        print(f"Synced {len(synced)} slash commands.")
+        print(f"Synced {len(synced)} global slash commands.")
+        # Per-guild sync so new commands like /emojisteal appear immediately.
+        for guild in bot.guilds:
+            try:
+                tree.copy_global_to(guild=guild)
+                g_synced = await tree.sync(guild=guild)
+                print(f"Synced {len(g_synced)} slash commands to {guild.name} ({guild.id})")
+            except Exception as ge:
+                print(f"Guild slash sync failed for {guild.id}: {ge}")
     except Exception as e:
         print(f"Slash sync failed: {e}")
 

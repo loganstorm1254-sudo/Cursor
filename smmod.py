@@ -226,8 +226,12 @@ bot = commands.Bot(
 tree = bot.tree
 
 
-async def sync_slash_commands(force_print: bool = True):
-    """Global sync only. Clears old per-guild copies that caused duplicate slash commands."""
+async def sync_slash_commands(force_print: bool = True, clear_guild_dupes: bool = True):
+    """Sync global slash commands. Optionally wipe per-guild copies (duplicates).
+
+    Important: publish globals FIRST so Discord never only has a stale guild copy of
+    a command the local tree cannot resolve (that caused CommandNotFound on /emojisteal).
+    """
     for cmd in tree.get_commands():
         if getattr(cmd, "name", None) == "emojisteal":
             cmd.allowed_installs = app_commands.AppInstallationType(guild=True, user=True)
@@ -246,19 +250,23 @@ async def sync_slash_commands(force_print: bool = True):
     except Exception as e:
         print(f"Context menu flag update skipped: {e}")
 
-    # Remove guild-scoped duplicates from earlier syncs
-    for guild in list(bot.guilds):
-        try:
-            tree.clear_commands(guild=guild)
-            await tree.sync(guild=guild)
-            if force_print:
-                print(f"Cleared duplicate guild commands for {guild.name} ({guild.id})")
-        except Exception as ge:
-            print(f"Guild command clear failed for {guild.id}: {ge}")
-
+    # Publish globals before touching guilds
     synced = await tree.sync()
     if force_print:
-        print(f"Synced {len(synced)} global slash/app commands (no guild duplicates).")
+        names = {c.name for c in synced}
+        print(f"Synced {len(synced)} global slash/app commands.")
+        print(f"  emojisteal registered: {'emojisteal' in names}")
+
+    if clear_guild_dupes:
+        for guild in list(bot.guilds):
+            try:
+                tree.clear_commands(guild=guild)
+                await tree.sync(guild=guild)
+                if force_print:
+                    print(f"Cleared duplicate guild commands for {guild.name} ({guild.id})")
+            except Exception as ge:
+                print(f"Guild command clear failed for {guild.id}: {ge}")
+
     return synced
 
 

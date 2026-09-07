@@ -2390,7 +2390,7 @@ On trigger:
 `/membercount` or `*membercount` - Member count.
 `/dirt` or `*dirt` - DIRT.
 `/generate` or `*generate <prompt>` - Cartoon AI image (moderated). Example: astronaut cat.
-`/emojisteal emoji::name:` or `*emojisteal :name:` - Find a custom emoji by name (any server Beacon is in) and download PNG. Or paste `<:name:id>`. Right-click message → Apps → Steal emojis.
+`/emojisteal` — **paste** a custom emoji (User App works in any server). Or type a name if Beacon is in that server. Right-click message → Apps → Steal emojis.
 
 """
 
@@ -5030,9 +5030,9 @@ async def slash_generate(interaction: discord.Interaction, prompt: str):
 
 # ============================================================
 # EMOJI STEAL (PNG download)
-# Type :name: — Beacon looks it up across every server it's in.
-# Or paste <:name:id>. Works as a User App in servers Beacon isn't in
-# if you paste the emoji (Discord includes the id).
+# User App: paste a custom emoji into the option (works in ANY server).
+# CDN download only needs the emoji id — Beacon does not need to be in that server.
+# Typing :name: also works when Beacon can see that server's emoji list.
 # ============================================================
 
 CUSTOM_EMOJI_RE = re.compile(r"<(a?):([A-Za-z0-9_]+):(\d+)>")
@@ -5047,40 +5047,63 @@ def iter_search_guilds(prefer: discord.Guild | None = None):
             yield g
 
 
-def find_emoji_by_name(name: str, prefer: discord.Guild | None = None):
-    """Exact name match first, then unique partial match across Beacon guilds."""
+def find_emoji_by_name_in_lists(name: str, emoji_lists):
     needle = (name or "").strip().strip(":").lower()
     if not needle:
         return None
-    exact = []
-    partial = []
-    for g in iter_search_guilds(prefer):
-        for e in g.emojis:
-            n = (e.name or "").lower()
+    exact, partial = [], []
+    for emojis in emoji_lists:
+        for e in emojis:
+            n = (getattr(e, "name", None) or "").lower()
             if n == needle:
                 exact.append(e)
             elif needle in n:
                 partial.append(e)
     if exact:
         return exact[0]
-    if len(partial) == 1:
-        return partial[0]
     if partial:
-        # prefer shortest name (closest match)
-        partial.sort(key=lambda e: len(e.name or ""))
+        partial.sort(key=lambda e: len(getattr(e, "name", "") or ""))
         return partial[0]
     return None
 
 
-def resolve_custom_emoji(raw, guild: discord.Guild | None = None):
-    """Parse pasted custom emoji, snowflake id, or :name: across Beacon guilds."""
-    if raw is None:
-        return None
+def find_emoji_by_name(name: str, prefer: discord.Guild | None = None):
+    """Search Beacon-joined guilds by name."""
+    lists = [g.emojis for g in iter_search_guilds(prefer)]
+    return find_emoji_by_name_in_lists(name, lists)
 
-    if isinstance(raw, (discord.Emoji, discord.PartialEmoji)):
-        return raw if getattr(raw, "id", None) else None
 
-    text = str(raw).strip()
+def partial_from_api_emoji(data: dict):
+    return discord.PartialEmoji(
+        name=data.get("name") or "emoji",
+        id=int(data["id"]),
+        animated=bool(data.get("animated")),
+    )
+
+
+async def fetch_emojis_for_guild_id(guild_id: int | None):
+    """Best-effort emoji list for a guild. Works if Beacon is in it; else []."""
+    if not guild_id:
+        return []
+    g = bot.get_guild(int(guild_id))
+    if g is not None:
+        if g.emojis:
+            return list(g.emojis)
+        try:
+            return list(await g.fetch_emojis())
+        except Exception:
+            return list(g.emojis)
+    # Not in guild — Discord will usually 403; try anyway.
+    try:
+        raw = await bot.http.get_all_custom_emojis(int(guild_id))
+        return [partial_from_api_emoji(e) for e in raw]
+    except Exception:
+        return []
+
+
+def parse_emoji_with_id(text: str):
+    """Parse any form that includes a snowflake — works for User Apps anywhere."""
+    text = (text or "").strip()
     if not text:
         return None
 
@@ -5099,15 +5122,6 @@ def resolve_custom_emoji(raw, guild: discord.Guild | None = None):
     except Exception:
         pass
 
-    if text.isdigit():
-        eid = int(text)
-        for g in iter_search_guilds(guild):
-            found = discord.utils.get(g.emojis, id=eid)
-            if found:
-                return found
-        return discord.PartialEmoji(name="emoji", id=eid, animated=False)
-
-    # :name: / name / name:id without brackets
     bare = re.fullmatch(r"(a?):([A-Za-z0-9_]+):(\d{13,20})", text)
     if bare:
         return discord.PartialEmoji(
@@ -5116,15 +5130,48 @@ def resolve_custom_emoji(raw, guild: discord.Guild | None = None):
             animated=bool(bare.group(1)),
         )
 
-    nm = EMOJI_NAME_RE.fullmatch(text)
-    if nm:
-        return find_emoji_by_name(nm.group(1), guild)
-
-    # last resort: strip junk and try name search
-    cleaned = re.sub(r"[^A-Za-z0-9_]", "", text)
-    if cleaned:
-        return find_emoji_by_name(cleaned, guild)
+    if text.isdigit() and len(text) >= 13:
+        return discord.PartialEmoji(name="emoji", id=int(text), animated=False)
     return None
+
+
+async def resolve_custom_emoji(raw, guild: discord.Guild | None = None, guild_id: int | None = None):
+    """Resolve pasted <:name:id> (any server) or :name: when we can list that guild."""
+    if raw is None:
+        return None
+
+    if isinstance(raw, (discord.Emoji, discord.PartialEmoji)):
+        return raw if getattr(raw, "id", None) else None
+
+    text = str(raw).strip()
+    if not text:
+        return None
+
+    # 1) Anything with an id → CDN steal works with zero guild access (User App)
+    with_id = parse_emoji_with_id(text)
+    if with_id is not None:
+        return with_id
+
+    # 2) :name: / name — need an emoji list for this server (or Beacon's servers)
+    nm = EMOJI_NAME_RE.fullmatch(text)
+    name = nm.group(1) if nm else re.sub(r"[^A-Za-z0-9_]", "", text)
+    if not name:
+        return None
+
+    gid = guild_id or (guild.id if guild is not None else None)
+    local_lists = []
+    fetched = await fetch_emojis_for_guild_id(gid)
+    if fetched:
+        local_lists.append(fetched)
+    if guild is not None and guild.emojis and guild.emojis not in local_lists:
+        local_lists.append(list(guild.emojis))
+
+    found = find_emoji_by_name_in_lists(name, local_lists)
+    if found is not None:
+        return found
+
+    # Fallback: any server Beacon is already in
+    return find_emoji_by_name(name, guild)
 
 
 def find_custom_emojis(text: str):
@@ -5174,35 +5221,47 @@ async def send_emoji_png(emoji, send):
     await send(embed=embed, file=file)
 
 
-async def do_emojisteal(raw_emoji, guild: discord.Guild | None, send):
-    emoji = resolve_custom_emoji(raw_emoji, guild)
+async def do_emojisteal(raw_emoji, guild: discord.Guild | None, send, guild_id: int | None = None):
+    emoji = await resolve_custom_emoji(raw_emoji, guild, guild_id=guild_id)
     if emoji is None or not getattr(emoji, "id", None):
         return await send(
-            f"Couldn't find `:{(raw_emoji or '').strip().strip(':')}:` in any server Beacon is in.\n"
-            "Try `/emojisteal emoji:name` (no need for `:`), paste `<:name:id>`, "
-            "or right-click a message → **Apps → Steal emojis**."
+            "Couldn't read that.\n"
+            "**User App (any server):** paste the custom emoji into `emoji:` "
+            "(open the emoji picker and tap it — Discord fills `<:name:id>`).\n"
+            "Or right-click a message → **Apps → Steal emojis**.\n"
+            "Typing just `:name:` only works if Beacon is in that server."
         )
     await send_emoji_png(emoji, send)
 
 
 @bot.command(name="emojisteal", aliases=["stealemoji", "steal"])
 async def prefix_emojisteal(ctx, *, emoji: str = None):
-    """Download a custom emoji as PNG. Usage: *emojisteal :name:"""
+    """Download a custom emoji as PNG. Paste <:name:id> or type the name."""
     if not emoji:
-        return await ctx.send("Usage: `*emojisteal :name:` or paste a custom emoji.")
-    await do_emojisteal(emoji, ctx.guild, ctx.send)
+        return await ctx.send(
+            "Usage: `*emojisteal` then **paste** a custom emoji, or type `name`.\n"
+            "Paste works in any server. Name lookup needs Beacon in that server."
+        )
+    await do_emojisteal(emoji, ctx.guild, ctx.send, guild_id=ctx.guild.id if ctx.guild else None)
 
 
 @tree.command(
     name="emojisteal",
-    description="Steal a custom emoji as PNG — type the name like pepe or :pepe:",
+    description="Steal a custom emoji as PNG — paste it (works in any server as User App)",
 )
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.describe(emoji="Emoji name (:name:) or paste <:name:id>")
+@app_commands.describe(
+    emoji="PASTE a custom emoji here (emoji picker → tap). Or type a name if Beacon is in the server."
+)
 async def slash_emojisteal(interaction: discord.Interaction, emoji: str):
     await interaction.response.defer(ephemeral=True)
-    await do_emojisteal(emoji, interaction.guild, interaction.followup.send)
+    await do_emojisteal(
+        emoji,
+        interaction.guild,
+        interaction.followup.send,
+        guild_id=interaction.guild_id,
+    )
 
 
 @slash_emojisteal.autocomplete("emoji")
@@ -5212,30 +5271,35 @@ async def emojisteal_autocomplete(interaction: discord.Interaction, current: str
     if m:
         return [app_commands.Choice(name=f":{m.group(2)}:", value=m.group(3))]
 
-    # Search every server Beacon is in so :name: works from anywhere
+    # Prefer THIS server's emojis (where you ran the app command)
+    emojis = await fetch_emojis_for_guild_id(interaction.guild_id)
+    # If we can't see this server, fall back to Beacon-joined servers
+    if not emojis:
+        emojis = []
+        seen = set()
+        for g in bot.guilds:
+            for e in g.emojis:
+                if e.id in seen:
+                    continue
+                seen.add(e.id)
+                emojis.append(e)
+
     choices = []
     seen_ids = set()
-    prefer = interaction.guild
-    for g in iter_search_guilds(prefer):
-        for e in g.emojis:
-            if e.id in seen_ids:
-                continue
-            if cur and cur not in e.name.lower() and cur not in str(e.id):
-                continue
-            seen_ids.add(e.id)
-            label = f":{e.name}:"
-            if e.animated:
-                label += " (a)"
-            # keep under 100; mention server when helpful
-            desc = (g.name or "")[:100]
-            choices.append(
-                app_commands.Choice(
-                    name=label[:100],
-                    value=str(e.id),
-                )
-            )
-            if len(choices) >= 25:
-                return choices
+    for e in emojis:
+        eid = int(e.id)
+        if eid in seen_ids:
+            continue
+        name = (getattr(e, "name", None) or "").lower()
+        if cur and cur not in name and cur not in str(eid):
+            continue
+        seen_ids.add(eid)
+        label = f":{getattr(e, 'name', 'emoji')}:"
+        if getattr(e, "animated", False):
+            label += " (a)"
+        choices.append(app_commands.Choice(name=label[:100], value=str(eid)))
+        if len(choices) >= 25:
+            break
     return choices
 
 

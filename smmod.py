@@ -226,11 +226,18 @@ bot = commands.Bot(
 tree = bot.tree
 
 
-async def sync_slash_commands(force_print: bool = True, clear_guild_dupes: bool = True):
-    """Sync global slash commands. Optionally wipe per-guild copies (duplicates).
+async def sync_slash_commands(
+    force_print: bool = True,
+    clear_guild_dupes: bool = False,
+    push_to_guilds: bool = True,
+):
+    """Publish slash commands.
 
-    Important: publish globals FIRST so Discord never only has a stale guild copy of
-    a command the local tree cannot resolve (that caused CommandNotFound on /emojisteal).
+    - Always syncs globals (needed for User Install / long-term).
+    - By default also pushes the same set to every guild so commands show up
+      immediately (global-only can take Discord up to ~1 hour to appear).
+    - `clear_guild_dupes=True` wipes guild copies (use after globals have
+      propagated if you see each command twice).
     """
     for cmd in tree.get_commands():
         if getattr(cmd, "name", None) == "emojisteal":
@@ -250,7 +257,6 @@ async def sync_slash_commands(force_print: bool = True, clear_guild_dupes: bool 
     except Exception as e:
         print(f"Context menu flag update skipped: {e}")
 
-    # Publish globals before touching guilds
     synced = await tree.sync()
     if force_print:
         names = {c.name for c in synced}
@@ -263,11 +269,33 @@ async def sync_slash_commands(force_print: bool = True, clear_guild_dupes: bool 
                 tree.clear_commands(guild=guild)
                 await tree.sync(guild=guild)
                 if force_print:
-                    print(f"Cleared duplicate guild commands for {guild.name} ({guild.id})")
+                    print(f"Cleared guild command copies for {guild.name} ({guild.id})")
             except Exception as ge:
                 print(f"Guild command clear failed for {guild.id}: {ge}")
+    elif push_to_guilds:
+        for guild in list(bot.guilds):
+            try:
+                tree.copy_global_to(guild=guild)
+                g_synced = await tree.sync(guild=guild)
+                if force_print:
+                    print(f"Pushed {len(g_synced)} commands to {guild.name} ({guild.id})")
+            except Exception as ge:
+                print(f"Guild slash push failed for {guild.id}: {ge}")
 
     return synced
+
+
+async def sync_guild_commands(guild: discord.Guild, force_print: bool = False):
+    """Push current slash commands to one guild (instant visibility)."""
+    try:
+        tree.copy_global_to(guild=guild)
+        synced = await tree.sync(guild=guild)
+        if force_print:
+            print(f"Pushed {len(synced)} commands to {guild.name} ({guild.id})")
+        return synced
+    except Exception as e:
+        print(f"Guild slash push failed for {getattr(guild, 'id', guild)}: {e}")
+        return []
 
 
 
@@ -1887,7 +1915,8 @@ async def on_ready():
     start_dashboard()
 
     try:
-        await sync_slash_commands(force_print=True)
+        # Push to guilds so /emojisteal appears immediately (globals can lag in the client).
+        await sync_slash_commands(force_print=True, clear_guild_dupes=False, push_to_guilds=True)
     except Exception as e:
         print(f"Slash sync failed: {e}")
 
@@ -1918,6 +1947,7 @@ async def on_guild_join(guild):
     joined_guild_cache.add(guild.id)
 
     get_guild(guild.id)
+    await sync_guild_commands(guild, force_print=True)
 
     # DM the server owner once only.
     try:
@@ -5181,14 +5211,22 @@ async def emojisteal_autocomplete(interaction: discord.Interaction, current: str
 
 
 @bot.command(name="resync")
-async def prefix_resync(ctx, mode: str = "global"):
-    """Owner: re-publish slash commands. `*resync` or `*resync clear` (also wipe guild dupes)."""
+async def prefix_resync(ctx, mode: str = "push"):
+    """Owner: `*resync` (global+guilds, instant) or `*resync clear` (global only, no dupes)."""
     if not is_bot_owner(ctx.author.id):
         return await ctx.send("❌ Only the bot owner can use this.")
-    clear = (mode or "").lower().strip() in ("clear", "dupes", "all")
-    await ctx.send(f"Syncing slash commands{' + clearing guild duplicates' if clear else ''}…")
+    mode_l = (mode or "").lower().strip()
+    clear = mode_l in ("clear", "dupes", "all")
+    if clear:
+        await ctx.send("Syncing globals and clearing guild copies (commands may take a bit to refresh)…")
+    else:
+        await ctx.send("Syncing globals and pushing to all servers (instant)…")
     try:
-        synced = await sync_slash_commands(force_print=True, clear_guild_dupes=clear)
+        synced = await sync_slash_commands(
+            force_print=True,
+            clear_guild_dupes=clear,
+            push_to_guilds=not clear,
+        )
     except Exception as e:
         return await ctx.send(f"Sync failed: `{e}`")
     names = sorted(c.name for c in synced)
@@ -5196,6 +5234,7 @@ async def prefix_resync(ctx, mode: str = "global"):
     await ctx.send(
         f"Synced **{len(synced)}** global commands. "
         f"`/emojisteal` registered: **{'yes' if has else 'NO'}**."
+        + (" Guild copies cleared." if clear else " Pushed to all servers.")
     )
 
 

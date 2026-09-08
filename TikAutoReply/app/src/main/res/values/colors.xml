@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_top">#E8F7F8</color>
+    <color name="bg_bottom">#F7F3EE</color>
+    <color name="surface">#F5FFFFFF</color>
+    <color name="ink">#12141A</color>
+    <color name="ink_soft">#5B616E</color>
+    <color name="brand">#0A0A0B</color>
+    <color name="cyan">#00C2CB</color>
+    <color name="cyan_deep">#0891A0</color>
+    <color name="coral">#FF3B5C</color>
+    <color name="line">#1A12141A</color>
+    <color name="ok">#1F8A5B</color>
+    <color name="warn">#B45309</color>
+    <color name="ic_launcher_background">#0A0A0B</color>
+</resources>

@@ -23,6 +23,20 @@ Project: [`NovaAI/`](NovaAI/) · Ready APK: [`releases/NovaAI.apk`](releases/Nov
 1. Download [`releases/NovaAI-Windows.zip`](releases/NovaAI-Windows.zip) and unzip.
 2. Double-click **`NovaAI.exe`** (browser opens the chat).
 3. Unlock with `sk-nova-m00ny4xe`. First run downloads the model (~11 MB).
+## TikAuto — TikTok DM auto-reply (Android, on-device)
+
+Link your TikTok username, allow notification access, set a default reply (plus optional keyword rules). When someone messages you and TikTok shows a notification with **Reply**, TikAuto sends your text automatically — all local on the phone.
+
+Project: [`TikAutoReply/`](TikAutoReply/) · Ready APK: [`releases/TikAuto.apk`](releases/TikAuto.apk)
+
+### Quick start
+
+1. Install `releases/TikAuto.apk`.
+2. Enter your TikTok `@username` → **Save & link**.
+3. **Allow notification access** → enable **TikAuto**.
+4. Set your default reply → turn **Auto-reply** ON → save.
+5. Optional: add keyword rules (e.g. contains `price` → send a price reply).
+
 ## Notify apps (Android, Bluetooth)
 
 Two apps that send phone notifications over **Bluetooth** — no Wi‑Fi, data, hotspot, or IPs.

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TikAuto</string>
+    <string name="listener_label">TikAuto TikTok replies</string>
+    <string name="brand">TikAuto</string>
+    <string name="tagline">Local auto-replies for your TikTok DMs</string>
+    <string name="link_title">Link your TikTok</string>
+    <string name="username_hint">TikTok username</string>
+    <string name="save_link">Save &amp; link</string>
+    <string name="open_tiktok">Open TikTok</string>
+    <string name="grant_access">Allow notification access</string>
+    <string name="access_on">Notification access: ON</string>
+    <string name="access_off">Notification access: OFF — required</string>
+    <string name="auto_reply">Auto-reply</string>
+    <string name="default_reply_hint">Default reply text</string>
+    <string name="default_reply_sample">Thanks for the message — I\'ll get back soon!</string>
+    <string name="keyword_title">Keyword replies</string>
+    <string name="keyword_hint">If message contains…</string>
+    <string name="reply_hint">…reply with</string>
+    <string name="add_rule">Add rule</string>
+    <string name="cooldown_label">Cooldown (seconds per chat)</string>
+    <string name="log_title">Activity</string>
+    <string name="clear_log">Clear</string>
+    <string name="empty_log">Waiting for TikTok messages…</string>
+    <string name="linked_as">Linked as @%1$s</string>
+    <string name="not_linked">Not linked yet</string>
+    <string name="running">Listening on this device</string>
+    <string name="paused">Auto-reply paused</string>
+    <string name="need_username">Enter your TikTok username</string>
+    <string name="need_reply">Write a default reply first</string>
+    <string name="need_keyword">Add a keyword and a reply</string>
+    <string name="how_it_works">Runs only on this phone. When TikTok posts a message notification with a Reply action, TikAuto sends your text back automatically.</string>
+</resources>

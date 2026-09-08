@@ -2,6 +2,7 @@
 
 | File | What it is |
 |------|------------|
+| [`TikAuto.apk`](TikAuto.apk) | **TikAuto** — local TikTok DM auto-reply (notification access + your reply text) |
 | [`Seekara.apk`](Seekara.apk) | The **Seekara** app — browse [seekara.pt](https://www.seekara.pt/) (needs internet) |
 | [`NotifyReceiver.apk`](NotifyReceiver.apk) | Notify: phone that should **get** notifications (Bluetooth only) |
 | [`NotifySender.apk`](NotifySender.apk) | Notify: phone that should **send** notifications (Bluetooth only) |
@@ -16,6 +17,13 @@
 2. Allow **Install unknown apps** if asked → **Install**.
 
 ## Use
+
+### TikAuto (TikTok auto-reply)
+
+1. Install `TikAuto.apk` → open **TikAuto**.
+2. Type your TikTok username → **Save & link** → enable **notification access** for TikAuto.
+3. Write the reply you want sent → turn **Auto-reply** ON.
+4. Keep TikTok message notifications enabled. Activity log shows each attempt (`sent`, `cooldown`, `no-reply-action`, …).
 
 ### Notify apps
 

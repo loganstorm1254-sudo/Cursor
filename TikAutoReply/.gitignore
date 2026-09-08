@@ -1,0 +1,6 @@
+tikauto.keystore
+local.properties
+*.apk
+/.gradle/
+/build/
+/app/build/

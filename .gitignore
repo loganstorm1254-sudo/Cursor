@@ -17,6 +17,8 @@ captures/
 *.aab
 *.ap_
 *.dex
+*.keystore
+*.jks
 .DS_Store
 
 .android-sdk/
@@ -36,3 +38,4 @@ NovaAI/training/hf_extra.txt
 # Windows desktop build scratch / unpacked bundle (ship the .zip only)
 NovaAI/desktop/_build/
 releases/NovaAI-Windows/
+*.idsig

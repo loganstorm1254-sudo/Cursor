@@ -8,7 +8,7 @@
 # - Saves server name + icon bytes
 # - Antinuke trigger ONLY: 5 channel creates in 10 seconds
 # - On trigger: punish, wipe server structure, restore from backup, then re-backup
-# Free: sticky, polls, reminders, basic XP, economy, AI image generation, emoji steal
+# Free: sticky, polls, reminders, basic XP, economy, AI image generation, emoji steal, Oval /code
 # Premium: temprole, autoresponder, invite tracker
 # ============================================================
 
@@ -24,6 +24,12 @@ DISCORD_CLIENT_ID = "1470483724909936823"
 DISCORD_CLIENT_SECRET = ""  # paste OAuth client secret
 DISCORD_REDIRECT_URI = "https://dashboard.locker-rover.dev/callback"
 DISCORD_API = "https://discord.com/api/v10"
+
+# Oval Coder — /code and *code (find bugs + fix)
+# Paste key here, or set OVAL_API_KEY. Never commit the real key.
+OVAL_API_KEY = ""
+OVAL_API_BASE = "https://oval.drpug.shop/v1"
+OVAL_MODEL = "oval coder"
 
 # Offline / power-loss announce target
 POWER_ALERT_GUILD_ID = 1511411841421807839
@@ -51,6 +57,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, urlencode
 from http.cookies import SimpleCookie
 import urllib.request
+import urllib.error
 import urllib.parse
 import secrets
 import sqlite3
@@ -2411,6 +2418,7 @@ On trigger:
 `/membercount` or `*membercount` - Member count.
 `/dirt` or `*dirt` - DIRT.
 `/generate` or `*generate <prompt>` - Cartoon AI image (moderated). Example: astronaut cat.
+`/code` or `*code <paste your code>` - Oval Coder finds errors and returns a fixed version.
 `/emojisteal` — **paste** a custom emoji (User App works in any server). Or type a name if Beacon is in that server. Right-click message → Apps → Steal emojis.
 
 """
@@ -5047,6 +5055,197 @@ async def prefix_generate(ctx, *, prompt: str = None):
 async def slash_generate(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
     await do_generate(prompt, interaction.followup.send)
+
+
+# ============================================================
+# OVAL CODER — /code and *code
+# POST {OVAL_API_BASE}/chat/completions  model: "oval coder"
+# ============================================================
+
+OVAL_SYSTEM_PROMPT = (
+    "You are Oval Coder, Beacon's code review assistant. "
+    "The user will paste source code. "
+    "1) Point out every error, bug, and clear smell (be specific: line/what/why). "
+    "2) Provide a corrected full version of the code in a fenced code block. "
+    "3) Keep the explanation concise. If the code looks fine, say so and still "
+    "suggest one small improvement if useful."
+)
+
+
+def get_oval_api_key() -> str:
+    return (OVAL_API_KEY or os.environ.get("OVAL_API_KEY", "")).strip()
+
+
+def extract_code_payload(raw: str) -> str:
+    """Prefer fenced code blocks when present; otherwise use the raw text."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    fences = re.findall(r"```(?:[\w+-]*)\n(.*?)```", text, flags=re.DOTALL)
+    if fences:
+        return "\n\n".join(block.strip("\n") for block in fences).strip()
+    return text
+
+
+def oval_chat_completions(user_content: str, *, timeout: int = 90) -> str:
+    """Sync Oval chat call (run via asyncio.to_thread)."""
+    key = get_oval_api_key()
+    if not key:
+        raise RuntimeError(
+            "Oval API key missing. Set `OVAL_API_KEY` in smmod.py or the environment."
+        )
+
+    url = OVAL_API_BASE.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": OVAL_MODEL,
+        "messages": [
+            {"role": "system", "content": OVAL_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 2500,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Cloudflare on oval.drpug.shop rejects empty/bot UAs (1010).
+            "User-Agent": "Mozilla/5.0 (compatible; BeaconBot/1.0; +https://discord.com)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Oval HTTP {e.code}: {err_body}") from e
+    except Exception as e:
+        raise RuntimeError(f"Oval request failed: {type(e).__name__}: {e}") from e
+
+    try:
+        content = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Unexpected Oval response shape: {body!r}"[:500]) from e
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("Oval returned an empty reply.")
+    return content.strip()
+
+
+def chunk_discord_text(text: str, limit: int = 3900):
+    """Split long Oval replies for Discord embed descriptions."""
+    text = text or ""
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        cut = text.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    return chunks
+
+
+async def do_code_review(code: str, send, *, language: str = None):
+    code = extract_code_payload(code)
+    if not code:
+        return await send(
+            "Usage: `/code code:...` or `*code <paste your code>`\n"
+            "Oval will point out errors and return a fixed version.\n"
+            "Tip: wrap code in \\`\\`\\` fences, or reply to a message with `*code`."
+        )
+    if len(code) > 12000:
+        return await send("That snippet is too long (max ~12k characters). Trim it and try again.")
+
+    lang_note = f"Language hint: {language}\n\n" if language else ""
+    user_msg = (
+        f"{lang_note}"
+        "Review this code. List errors, then give a fixed full version.\n\n"
+        f"```{language or ''}\n{code}\n```"
+    )
+
+    try:
+        reply = await asyncio.to_thread(oval_chat_completions, user_msg)
+    except Exception as e:
+        return await send(f"❌ Oval error: `{e}`")
+
+    chunks = chunk_discord_text(reply, 3900)
+    first = discord.Embed(
+        title="🛠️ Oval Coder",
+        description=chunks[0],
+        color=0x5865F2,
+    )
+    first.set_footer(text=f"model: {OVAL_MODEL}")
+    await send(embed=first)
+
+    for i, part in enumerate(chunks[1:], start=2):
+        embed = discord.Embed(
+            title=f"🛠️ Oval Coder (cont. {i})",
+            description=part,
+            color=0x5865F2,
+        )
+        await send(embed=embed)
+
+
+@bot.command(name="code", aliases=["oval", "fixcode", "reviewcode"])
+async def prefix_code(ctx, *, code: str = None):
+    # Allow: *code <snippet>  OR  reply to a message with *code
+    payload = code
+    if not (payload or "").strip() and ctx.message.reference:
+        try:
+            ref = ctx.message.reference.resolved
+            if ref is None and ctx.message.reference.message_id:
+                ref = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            if ref is not None:
+                payload = ref.content
+                for att in getattr(ref, "attachments", []) or []:
+                    if att.size and att.size <= 200_000 and (
+                        (att.filename or "").endswith(
+                            (".py", ".js", ".ts", ".java", ".c", ".cpp", ".cs", ".go", ".rs", ".rb", ".php", ".txt", ".json")
+                        )
+                        or (att.content_type or "").startswith("text/")
+                    ):
+                        payload = (await att.read()).decode("utf-8", errors="replace")
+                        break
+        except Exception:
+            pass
+    # Also accept a text attachment on the invoke message itself.
+    if not (payload or "").strip():
+        for att in ctx.message.attachments:
+            if att.size and att.size <= 200_000 and (
+                (att.filename or "").endswith(
+                    (".py", ".js", ".ts", ".java", ".c", ".cpp", ".cs", ".go", ".rs", ".rb", ".php", ".txt", ".json")
+                )
+                or (att.content_type or "").startswith("text/")
+            ):
+                try:
+                    payload = (await att.read()).decode("utf-8", errors="replace")
+                    break
+                except Exception:
+                    pass
+    await do_code_review(payload, ctx.send)
+
+
+@tree.command(name="code", description="Ask Oval Coder to find errors and fix your code")
+@app_commands.describe(
+    code="Paste the code to review and fix",
+    language="Optional language hint (python, js, …)",
+)
+async def slash_code(
+    interaction: discord.Interaction,
+    code: str,
+    language: str = None,
+):
+    await interaction.response.defer()
+    await do_code_review(code, interaction.followup.send, language=language)
 
 
 # ============================================================

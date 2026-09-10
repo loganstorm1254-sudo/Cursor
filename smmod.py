@@ -5214,36 +5214,45 @@ def find_custom_emojis_in_message(message: discord.Message):
     return found
 
 
-def fetch_emoji_png_bytes(emoji_id: int) -> bytes:
-    """Download emoji as PNG from Discord CDN (static frame for animated too)."""
-    url = f"https://cdn.discordapp.com/emojis/{int(emoji_id)}.png?size=256&quality=lossless"
+def fetch_emoji_bytes(emoji_id: int, animated: bool = False) -> tuple[bytes, str]:
+    """Download emoji from Discord CDN. Animated → GIF, otherwise PNG."""
+    ext = "gif" if animated else "png"
+    url = f"https://cdn.discordapp.com/emojis/{int(emoji_id)}.{ext}?size=256&quality=lossless"
     req = urllib.request.Request(url, headers={"User-Agent": "BeaconBot/1.0"})
-    with urllib.request.urlopen(req, timeout=20) as res:
-        data = res.read()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            data = res.read()
+    except Exception:
+        # Fallback: some animated ids still serve png only
+        if animated:
+            return fetch_emoji_bytes(emoji_id, animated=False)
+        raise
     if not data:
         raise RuntimeError("empty emoji download")
-    return data
+    return data, ext
 
 
-async def send_emoji_png(emoji, send):
+async def send_stolen_emoji(emoji, send):
     if emoji is None or not getattr(emoji, "id", None):
         return await send("Need a **custom** emoji (not a default Unicode one).")
+    animated = bool(getattr(emoji, "animated", False))
     try:
-        png = await asyncio.to_thread(fetch_emoji_png_bytes, int(emoji.id))
+        data, ext = await asyncio.to_thread(fetch_emoji_bytes, int(emoji.id), animated)
     except Exception as e:
         return await send(f"Could not download that emoji: `{e}`")
 
     safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(emoji.name or "emoji")).strip("_") or "emoji"
-    filename = f"{safe_name}_{emoji.id}.png"
-    file = discord.File(io.BytesIO(png), filename=filename)
+    filename = f"{safe_name}_{emoji.id}.{ext}"
+    file = discord.File(io.BytesIO(data), filename=filename)
 
+    kind = "GIF" if ext == "gif" else "PNG"
     embed = discord.Embed(
         title="Emoji steal",
-        description=f"**:{emoji.name}:** → PNG download",
+        description=f"**:{emoji.name}:** → {kind} download",
         color=0x5865F2,
     )
-    if getattr(emoji, "animated", False):
-        embed.set_footer(text="Animated emoji exported as a static PNG frame")
+    if ext == "gif":
+        embed.set_footer(text="Animated emoji exported as GIF")
     embed.set_image(url=f"attachment://{filename}")
     await send(embed=embed, file=file)
 
@@ -5258,7 +5267,7 @@ async def do_emojisteal(raw_emoji, guild: discord.Guild | None, send, guild_id: 
             "Or right-click a message → **Apps → Steal emojis**.\n"
             "Typing just `:name:` only works if Beacon is in that server."
         )
-    await send_emoji_png(emoji, send)
+    await send_stolen_emoji(emoji, send)
 
 
 @bot.command(name="emojisteal", aliases=["stealemoji", "steal"])
@@ -5379,8 +5388,11 @@ async def context_steal_emojis(interaction: discord.Interaction, message: discor
     files = []
     lines = []
     for emoji in found[:10]:
+        animated = bool(getattr(emoji, "animated", False))
         try:
-            png = await asyncio.to_thread(fetch_emoji_png_bytes, int(emoji.id))
+            data, ext = await asyncio.to_thread(
+                fetch_emoji_bytes, int(emoji.id), animated
+            )
         except Exception as e:
             lines.append(f":{getattr(emoji, 'name', 'emoji')}: failed (`{e}`)")
             continue
@@ -5389,9 +5401,10 @@ async def context_steal_emojis(interaction: discord.Interaction, message: discor
             "_",
             str(getattr(emoji, "name", None) or "emoji"),
         ).strip("_") or "emoji"
-        filename = f"{safe_name}_{emoji.id}.png"
-        files.append(discord.File(io.BytesIO(png), filename=filename))
-        lines.append(f"**:{getattr(emoji, 'name', 'emoji')}:** → `{filename}`")
+        filename = f"{safe_name}_{emoji.id}.{ext}"
+        files.append(discord.File(io.BytesIO(data), filename=filename))
+        kind = "GIF" if ext == "gif" else "PNG"
+        lines.append(f"**:{getattr(emoji, 'name', 'emoji')}:** → `{filename}` ({kind})")
 
     if not files:
         return await interaction.followup.send("Could not download those emojis.", ephemeral=True)

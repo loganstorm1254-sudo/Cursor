@@ -8,9 +8,8 @@
 # - Saves server name + icon bytes
 # - Antinuke trigger ONLY: 5 channel creates in 10 seconds
 # - On trigger: punish, wipe server structure, restore from backup, then re-backup
-# Free: sticky, polls, reminders, basic XP, economy, AI image generation, emoji steal, songs
+# Free: sticky, polls, reminders, basic XP, economy, AI image generation, emoji steal
 # Premium: temprole, autoresponder, invite tracker
-# Songs: /play YouTube URL or search (needs yt-dlp + ffmpeg)
 # ============================================================
 
 TOKEN = ""  # paste bot token, or set DISCORD_TOKEN
@@ -60,11 +59,6 @@ import math
 import struct
 import zlib
 import io
-
-try:
-    import yt_dlp
-except ImportError:
-    yt_dlp = None
 
 # Always read/write premium next to this script (not the shell's cwd).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -2331,13 +2325,41 @@ async def on_message(message):
 
 
 # ============================================================
-# HELP UI — category buttons (max 5 per row)
+# HELP UI
 # ============================================================
 
-HELP_SECTIONS = {
-    "Moderation": (
-        "🛡️",
-        """
+class HelpDropdown(discord.ui.Select):
+    def __init__(self):
+        options = [
+    discord.SelectOption(label="Moderation", emoji="🛡️"),
+    discord.SelectOption(label="Antinuke", emoji="🚨"),
+    discord.SelectOption(label="Channel Management", emoji="🔒"),
+    discord.SelectOption(label="Utility", emoji="⚙️"),
+    discord.SelectOption(label="Free Features", emoji="✨"),
+    discord.SelectOption(label="Premium Features", emoji="💎"),
+    discord.SelectOption(label="Backups", emoji="💾"),
+    discord.SelectOption(label="Welcome", emoji="👋"),
+    discord.SelectOption(label="Logs", emoji="📋"),
+    discord.SelectOption(label="Custom Commands", emoji="🧩")
+]
+
+        super().__init__(
+            placeholder="Choose a section...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        choice = self.values[0]
+
+        embed = discord.Embed(
+            title=f"Beacon Help - {choice}",
+            color=0x5865F2
+        )
+
+        if choice == "Moderation":
+            embed.description = """
 `/ban` or `*ban` - Ban a user.
 `/kick` or `*kick` - Kick a user.
 `/mute` or `*mute` - Mute a user.
@@ -2348,11 +2370,10 @@ HELP_SECTIONS = {
 `/warnings` or `*warnings` - View warnings.
 `/clearwarnings` or `*clearwarnings` - Clear warnings.
 `/purge` or `*purge` - Delete messages.
-""",
-    ),
-    "Antinuke": (
-        "🚨",
-        """
+"""
+
+        elif choice == "Antinuke":
+            embed.description = """
 `/antinuke` or `*antinuke` - View status.
 `/antinuke_on` or `*antinuke_on` - Enable antinuke and create backup.
 `/antinuke_off` or `*antinuke_off` - Disable antinuke.
@@ -2369,22 +2390,20 @@ On trigger:
 - restore from backup
 - restore name/icon slowly
 - re-backup
-""",
-    ),
-    "Channels": (
-        "🔒",
-        """
+"""
+
+        elif choice == "Channel Management":
+            embed.description = """
 `/lock` or `*lock` - Lock current channel.
 `/unlock` or `*unlock` - Unlock current channel.
 `/hide` or `*hide` - Hide current channel.
 `/show` or `*show` - Show current channel.
 `/lockdown` or `*lockdown` - Lock all text channels.
 `/unlockdown` or `*unlockdown` - Unlock all text channels.
-""",
-    ),
-    "Utility": (
-        "⚙️",
-        """
+"""
+
+        elif choice == "Utility":
+            embed.description = """
 `/help` or `*help` - Show help menu.
 `/ping` or `*ping` - Bot latency.
 `/serverinfo` or `*serverinfo` - Server info.
@@ -2393,11 +2412,12 @@ On trigger:
 `/dirt` or `*dirt` - DIRT.
 `/generate` or `*generate <prompt>` - Cartoon AI image (moderated). Example: astronaut cat.
 `/emojisteal` — **paste** a custom emoji (User App works in any server). Or type a name if Beacon is in that server. Right-click message → Apps → Steal emojis.
-""",
-    ),
-    "Free": (
-        "✨",
-        """
+
+"""
+
+
+        elif choice == "Free Features":
+            embed.description = """
 `/sticky` or `*sticky <text>` - Keep a sticky message at the bottom of this channel.
 `/unsticky` or `*unsticky` - Remove the sticky.
 `/poll` or `*poll Question | Option A | Option B | ...` - Create a button poll.
@@ -2410,11 +2430,10 @@ On trigger:
 `/shop` `/buy` or `*shop` `*buy <item>`
 `/shopadd` `/shoprole` `/shopremove` — manage shop (Manage Server)
 `/givemoney` or `*givemoney @user amount` — Seekara staff only
-""",
-    ),
-    "Premium": (
-        "💎",
-        """
+"""
+
+        elif choice == "Premium Features":
+            embed.description = """
 **Requires Beacon Premium** (you or the server owner).
 
 `/temprole` or `*temprole @user @Role 7d` - Temporary role grant (auto-removes).
@@ -2430,22 +2449,21 @@ Fake invites = joined accounts younger than 7 days.
 `/staff` or `*staff add|remove|list` — owner only
 Staff can use: `/givemoney`
 Owner only: `/premium` `/broadcast`
-""",
-    ),
-    "Backups": (
-        "💾",
-        """
+"""
+
+        elif choice == "Backups":
+            embed.description = """
 `/backup` or `*backup` - Save server backup: name, icon, roles, channels, and permissions. Does not save emojis or sounds.
 `/restore` or `*restore` - Restore missing structure.
 `/wiperestore` or `*wiperestore` - Fully wipe then restore.
 
 Server backups are saved in:
 `backups/<server_id>.json`
-""",
-    ),
-    "Welcome": (
-        "👋",
-        """
+
+"""
+
+        elif choice == "Welcome":
+            embed.description = """
 `/setwelcome` or `*setwelcome #channel` - Set the welcome channel and enable it.
 `/welcomemessage` or `*welcomemessage <msg>` - Set a custom welcome message.
 `/welcometoggle` or `*welcometoggle` - Enable/disable the welcome system.
@@ -2454,11 +2472,10 @@ Server backups are saved in:
 `/welcomeinfo` or `*welcomeinfo` - View current settings.
 
 **Placeholders:** `{mention}` `{user}` `{username}` `{server}` `{count}` `{id}`
-""",
-    ),
-    "Logs": (
-        "📋",
-        """
+"""
+
+        elif choice == "Logs":
+            embed.description = """
 `/setlog` or `*setlog #channel` - Set the log channel and enable logging.
 `/logtoggle` or `*logtoggle` - Enable/disable logging.
 `/logevent` or `*logevent <event>` - Toggle a specific event on/off.
@@ -2467,103 +2484,59 @@ Server backups are saved in:
 **Events:** `member_join` `member_leave` `member_ban` `member_unban`
 `message_delete` `message_edit` `channel_create` `channel_delete`
 `role_create` `role_delete` `member_update` `voice_update`
-""",
-    ),
-    "Custom": (
-        "🧩",
-        """
+"""
+
+        elif choice == "Custom Commands":
+            embed.description = """
 **Beacon Premium Feature**
 
 Create custom prefix commands that work only in your server.
 
-`/addcommand` or `*addcommand <name> <response>`
-`/editcommand` or `*editcommand <name> <new response>`
-`/deletecommand` or `*deletecommand <name>`
-`/listcommands` or `*listcommands`
+### Admin Commands
 
-Example: `*addcommand rules Read the rules!` → users type `*rules`
+`/addcommand` or `*addcommand <name> <response>`
+Create a custom command.
+
+`/editcommand` or `*editcommand <name> <new response>`
+Edit an existing command.
+
+`/deletecommand` or `*deletecommand <name>`
+Delete a custom command.
+
+`/listcommands` or `*listcommands`
+View every custom command.
+
+### Using Commands
+
+`*addcommand rules Read the rules!`
+
+Users can then type:
+
+`*rules`
+
+### Limits
 
 • Maximum **10** custom commands per server.
 • Custom commands are **prefix only**.
 • Beacon Premium feature.
-""",
-    ),
-    "Songs": (
-        "🎵",
-        """
-Play YouTube songs in voice (needs `yt-dlp` + `ffmpeg` on the host).
+"""
 
-`/play` or `*play <YouTube URL or search>` - Play or queue a song.
-`/skip` or `*skip` - Skip the current song.
-`/stop` or `*stop` - Stop and clear the queue.
-`/pause` or `*pause` - Pause.
-`/resume` or `*resume` - Resume.
-`/queue` or `*queue` - Show the queue.
-`/np` or `*np` - Now playing.
-
-Now-playing messages include **Skip / Pause / Resume / Stop / Queue** buttons.
-Join a voice channel first, then `*play never gonna give you up`.
-""",
-    ),
-}
-
-
-class HelpSectionButton(discord.ui.Button):
-    def __init__(self, section: str, emoji: str, row: int):
-        super().__init__(
-            label=section,
-            emoji=emoji,
-            style=discord.ButtonStyle.secondary,
-            row=row,
-            custom_id=f"beacon_help:{section}",
-        )
-        self.section = section
-
-    async def callback(self, interaction: discord.Interaction):
-        emoji, body = HELP_SECTIONS[self.section]
-        embed = discord.Embed(
-            title=f"Beacon Help — {emoji} {self.section}",
-            description=body.strip(),
-            color=0x5865F2,
-        )
-        await interaction.response.edit_message(embed=embed, view=self.view)
-
-
-class HelpHomeButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(
-            label="Home",
-            emoji="🏠",
-            style=discord.ButtonStyle.primary,
-            row=2,
-            custom_id="beacon_help:home",
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="Beacon Help",
-            description="Tap a category button below.",
-            color=0x5865F2,
-        )
         await interaction.response.edit_message(embed=embed, view=self.view)
 
 
 class HelpView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=180)
-        for i, (section, (emoji, _)) in enumerate(HELP_SECTIONS.items()):
-            # 5 buttons per row; Songs lands on row 2 with Home
-            row = 0 if i < 5 else (1 if i < 10 else 2)
-            self.add_item(HelpSectionButton(section, emoji, row=row))
-        self.add_item(HelpHomeButton())
+        super().__init__(timeout=120)
+        self.add_item(HelpDropdown())
 
 
 async def send_help(send_func):
     embed = discord.Embed(
         title="Beacon Help",
-        description="Tap a category button below.",
-        color=0x5865F2,
+        description="Select a category below.",
+        color=0x5865F2
     )
+
     await send_func(embed=embed, view=HelpView())
 
 
@@ -5463,510 +5436,6 @@ async def context_steal_emojis(interaction: discord.Interaction, message: discor
         color=0x5865F2,
     )
     await interaction.followup.send(embed=embed, files=files, ephemeral=True)
-
-
-# ============================================================
-# SONGS — YouTube URL or search (yt-dlp + ffmpeg)
-# pip install yt-dlp --break-system-packages
-# ============================================================
-
-YDL_OPTS = {
-    "format": "bestaudio/best",
-    "quiet": True,
-    "no_warnings": True,
-    "default_search": "ytsearch",
-    "noplaylist": True,
-    "skip_download": True,
-}
-
-FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
-FFMPEG_OPTIONS = "-vn"
-
-
-class GuildMusicPlayer:
-    def __init__(self, guild_id: int):
-        self.guild_id = guild_id
-        self.queue: list = []
-        self.current = None
-        self.text_channel_id = None
-        self.manual_stop = False
-
-    def clear(self):
-        self.queue.clear()
-        self.current = None
-
-
-music_players = {}
-
-
-def get_music_player(guild_id: int) -> GuildMusicPlayer:
-    if guild_id not in music_players:
-        music_players[guild_id] = GuildMusicPlayer(guild_id)
-    return music_players[guild_id]
-
-
-def get_guild_voice(guild):
-    if guild is None:
-        return None
-    return guild.voice_client
-
-
-def _looks_like_url(text: str) -> bool:
-    t = (text or "").strip().lower()
-    return (
-        t.startswith("http://")
-        or t.startswith("https://")
-        or "youtube.com/" in t
-        or "youtu.be/" in t
-    )
-
-
-async def youtube_resolve(query: str) -> dict:
-    """Resolve a YouTube URL or search query to track metadata."""
-    if yt_dlp is None:
-        raise RuntimeError(
-            "yt-dlp is not installed. Run: pip install yt-dlp --break-system-packages"
-        )
-
-    query = (query or "").strip()
-    if not query:
-        raise ValueError("empty query")
-
-    search = query if _looks_like_url(query) else f"ytsearch1:{query}"
-
-    def _extract():
-        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-            info = ydl.extract_info(search, download=False)
-            if info is None:
-                raise RuntimeError("No results.")
-            if "entries" in info:
-                entries = [e for e in info["entries"] if e]
-                if not entries:
-                    raise RuntimeError("No YouTube results for that search.")
-                info = entries[0]
-            webpage = info.get("webpage_url") or info.get("original_url") or query
-            if not info.get("url") and webpage:
-                info2 = ydl.extract_info(webpage, download=False)
-                if info2:
-                    info = info2
-                    webpage = info.get("webpage_url") or webpage
-            if not info.get("url"):
-                raise RuntimeError("Couldn't get an audio stream URL.")
-            return {
-                "title": info.get("title") or "Unknown",
-                "webpage_url": webpage,
-                "duration": info.get("duration"),
-                "thumbnail": info.get("thumbnail"),
-                "uploader": info.get("uploader") or info.get("channel") or "",
-            }
-
-    return await asyncio.to_thread(_extract)
-
-
-async def youtube_refresh_stream(webpage_url: str) -> str:
-    """YouTube stream links expire — refresh before each play."""
-
-    def _extract():
-        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-            info = ydl.extract_info(webpage_url, download=False)
-            if info is None:
-                raise RuntimeError("Failed to refresh stream.")
-            if "entries" in info:
-                info = next((e for e in info["entries"] if e), None)
-            if not info or not info.get("url"):
-                raise RuntimeError("Failed to refresh stream URL.")
-            return info["url"]
-
-    return await asyncio.to_thread(_extract)
-
-
-def format_track_duration(seconds):
-    if seconds is None:
-        return "?:??"
-    try:
-        seconds = int(seconds)
-    except Exception:
-        return "?:??"
-    m, s = divmod(max(0, seconds), 60)
-    h, m = divmod(m, 60)
-    if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
-
-
-async def ensure_voice_for_music(guild, author):
-    if guild is None:
-        raise RuntimeError("Music only works in a server.")
-    if not isinstance(author, discord.Member):
-        raise RuntimeError("Couldn't resolve your voice channel.")
-    vc = get_guild_voice(guild)
-    if vc and vc.is_connected():
-        if author.voice and author.voice.channel and vc.channel.id != author.voice.channel.id:
-            await vc.move_to(author.voice.channel)
-        return vc
-    if author.voice is None or author.voice.channel is None:
-        raise RuntimeError("Join a voice channel first.")
-    return await author.voice.channel.connect()
-
-
-def now_playing_embed(track: dict) -> discord.Embed:
-    embed = discord.Embed(
-        title="🎵 Now playing",
-        description=f"**[{track['title']}]({track['webpage_url']})**",
-        color=0xED4245,
-    )
-    if track.get("thumbnail"):
-        embed.set_thumbnail(url=track["thumbnail"])
-    embed.add_field(
-        name="Duration",
-        value=format_track_duration(track.get("duration")),
-        inline=True,
-    )
-    if track.get("requester"):
-        embed.add_field(
-            name="Requested by",
-            value=f"<@{track['requester']}>",
-            inline=True,
-        )
-    return embed
-
-
-class MusicControlsView(discord.ui.View):
-    """Skip / Pause / Resume / Stop / Queue buttons on now-playing messages."""
-
-    def __init__(self, guild_id: int):
-        super().__init__(timeout=600)
-        self.guild_id = guild_id
-
-    async def _reply(self, interaction: discord.Interaction, content=None, embed=None):
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(content=content, embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(
-                    content=content, embed=embed, ephemeral=True
-                )
-        except Exception:
-            pass
-
-    @discord.ui.button(label="Skip", style=discord.ButtonStyle.primary, emoji="⏭️")
-    async def skip_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async def send(content=None, embed=None):
-            await self._reply(interaction, content=content, embed=embed)
-
-        await do_music_skip(interaction.guild, send)
-
-    @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary, emoji="⏸️")
-    async def pause_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async def send(content=None, embed=None):
-            await self._reply(interaction, content=content, embed=embed)
-
-        await do_music_pause(interaction.guild, send)
-
-    @discord.ui.button(label="Resume", style=discord.ButtonStyle.secondary, emoji="▶️")
-    async def resume_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async def send(content=None, embed=None):
-            await self._reply(interaction, content=content, embed=embed)
-
-        await do_music_resume(interaction.guild, send)
-
-    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, emoji="⏹️")
-    async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async def send(content=None, embed=None):
-            await self._reply(interaction, content=content, embed=embed)
-
-        await do_music_stop(interaction.guild, send)
-
-    @discord.ui.button(label="Queue", style=discord.ButtonStyle.success, emoji="🎶")
-    async def queue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async def send(content=None, embed=None):
-            await self._reply(interaction, content=content, embed=embed)
-
-        await do_music_queue(interaction.guild, send)
-
-
-async def music_play_current(guild_id: int):
-    guild = bot.get_guild(guild_id)
-    if guild is None:
-        return
-    player = get_music_player(guild_id)
-    vc = get_guild_voice(guild)
-    if vc is None or not vc.is_connected():
-        player.clear()
-        return
-
-    if not player.queue:
-        player.current = None
-        return
-
-    player.manual_stop = False
-    track = player.queue.pop(0)
-    player.current = track
-
-    try:
-        stream = await youtube_refresh_stream(track["webpage_url"])
-    except Exception as e:
-        ch = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
-        if ch:
-            try:
-                await ch.send(f"❌ Couldn't play **{track.get('title', 'track')}**: `{e}`")
-            except Exception:
-                pass
-        await music_play_current(guild_id)
-        return
-
-    def _after(error):
-        async def _continue():
-            if error:
-                print(f"Music play error guild={guild_id}: {error}")
-            p = get_music_player(guild_id)
-            if p.manual_stop:
-                p.manual_stop = False
-                return
-            await music_play_current(guild_id)
-
-        try:
-            asyncio.run_coroutine_threadsafe(_continue(), bot.loop)
-        except Exception as exc:
-            print("music after schedule failed:", exc)
-
-    try:
-        if vc.is_playing() or vc.is_paused():
-            player.manual_stop = True
-            vc.stop()
-            await asyncio.sleep(0.15)
-            player.manual_stop = False
-
-        source = discord.FFmpegPCMAudio(
-            stream,
-            before_options=FFMPEG_BEFORE,
-            options=FFMPEG_OPTIONS,
-        )
-        vc.play(source, after=_after)
-    except Exception as e:
-        ch = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
-        if ch:
-            try:
-                await ch.send(f"❌ FFmpeg play failed: `{e}`")
-            except Exception:
-                pass
-        await music_play_current(guild_id)
-        return
-
-    ch = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
-    if ch:
-        try:
-            await ch.send(embed=now_playing_embed(track), view=MusicControlsView(guild_id))
-        except Exception:
-            pass
-
-
-async def do_music_play(guild, author, channel, query, send):
-    if yt_dlp is None:
-        return await send(
-            "Music needs yt-dlp. Run: `pip install yt-dlp --break-system-packages`"
-        )
-    query = (query or "").strip()
-    if not query:
-        return await send("Usage: `*play <YouTube URL or search>` / `/play query:`")
-
-    try:
-        await ensure_voice_for_music(guild, author)
-    except Exception as e:
-        return await send(f"❌ {e}")
-
-    await send(f"🔎 Looking up: `{query[:100]}`…")
-    try:
-        info = await youtube_resolve(query)
-    except Exception as e:
-        return await send(f"❌ Search/URL failed: `{e}`")
-
-    player = get_music_player(guild.id)
-    player.text_channel_id = channel.id if channel else player.text_channel_id
-    track = {
-        "title": info["title"],
-        "webpage_url": info["webpage_url"],
-        "duration": info.get("duration"),
-        "thumbnail": info.get("thumbnail"),
-        "uploader": info.get("uploader"),
-        "requester": author.id,
-    }
-    player.queue.append(track)
-
-    vc = get_guild_voice(guild)
-    idle = (
-        vc
-        and vc.is_connected()
-        and not vc.is_playing()
-        and not vc.is_paused()
-        and player.current is None
-    )
-    if idle:
-        await music_play_current(guild.id)
-        return
-
-    pos = len(player.queue)
-    await send(
-        f"✅ Queued **{track['title']}** "
-        f"(`{format_track_duration(track.get('duration'))}`) — position **{pos}**"
-    )
-
-
-async def do_music_skip(guild, send):
-    vc = get_guild_voice(guild) if guild else None
-    if guild is None or not vc or not vc.is_connected():
-        return await send("Nothing is playing.")
-    player = get_music_player(guild.id)
-    if not player.current and not vc.is_playing() and not vc.is_paused():
-        return await send("Nothing is playing.")
-    title = player.current.get("title") if player.current else "track"
-    player.manual_stop = False
-    vc.stop()
-    await send(f"⏭️ Skipped **{title}**.")
-
-
-async def do_music_stop(guild, send):
-    if guild is None:
-        return await send("Not in a server.")
-    player = get_music_player(guild.id)
-    player.clear()
-    player.manual_stop = True
-    vc = get_guild_voice(guild)
-    if vc and (vc.is_playing() or vc.is_paused()):
-        vc.stop()
-    await send("⏹️ Stopped and cleared the queue.")
-
-
-async def do_music_pause(guild, send):
-    vc = get_guild_voice(guild) if guild else None
-    if not vc or not vc.is_playing():
-        return await send("Nothing is playing.")
-    vc.pause()
-    await send("⏸️ Paused.")
-
-
-async def do_music_resume(guild, send):
-    vc = get_guild_voice(guild) if guild else None
-    if not vc or not vc.is_paused():
-        return await send("Nothing is paused.")
-    vc.resume()
-    await send("▶️ Resumed.")
-
-
-async def do_music_queue(guild, send):
-    if guild is None:
-        return await send("Not in a server.")
-    player = get_music_player(guild.id)
-    lines = []
-    if player.current:
-        lines.append(
-            f"**Now:** [{player.current['title']}]({player.current['webpage_url']})"
-        )
-    if not player.queue and not player.current:
-        return await send("Queue is empty. `*play <url or search>`")
-    for i, t in enumerate(player.queue[:15], 1):
-        lines.append(
-            f"**{i}.** {t['title']} (`{format_track_duration(t.get('duration'))}`)"
-        )
-    if len(player.queue) > 15:
-        lines.append(f"…and {len(player.queue) - 15} more")
-    embed = discord.Embed(
-        title="🎶 Queue", description="\n".join(lines), color=0x5865F2
-    )
-    await send(embed=embed)
-
-
-async def do_music_np(guild, send):
-    if guild is None:
-        return await send("Not in a server.")
-    player = get_music_player(guild.id)
-    if not player.current:
-        return await send("Nothing is playing.")
-    await send(embed=now_playing_embed(player.current), view=MusicControlsView(guild.id))
-
-
-@bot.command(name="play", aliases=["p", "yt", "song", "songs"])
-async def play_cmd(ctx, *, query: str = None):
-    await do_music_play(ctx.guild, ctx.author, ctx.channel, query, ctx.send)
-
-
-@tree.command(name="play", description="Play a YouTube URL or search on YouTube")
-@app_commands.describe(query="YouTube URL or search terms")
-async def slash_play(interaction: discord.Interaction, query: str):
-    await interaction.response.defer()
-    await do_music_play(
-        interaction.guild,
-        interaction.user,
-        interaction.channel,
-        query,
-        _slash_send(interaction),
-    )
-
-
-@bot.command(name="skip", aliases=["next"])
-async def skip_cmd(ctx):
-    await do_music_skip(ctx.guild, ctx.send)
-
-
-@tree.command(name="skip", description="Skip the current song")
-async def slash_skip(interaction: discord.Interaction):
-    await interaction.response.defer()
-    await do_music_skip(interaction.guild, _slash_send(interaction))
-
-
-@bot.command(name="stop")
-async def stop_cmd(ctx):
-    await do_music_stop(ctx.guild, ctx.send)
-
-
-@tree.command(name="stop", description="Stop music and clear the queue")
-async def slash_stop(interaction: discord.Interaction):
-    await interaction.response.defer()
-    await do_music_stop(interaction.guild, _slash_send(interaction))
-
-
-@bot.command(name="pause")
-async def pause_cmd(ctx):
-    await do_music_pause(ctx.guild, ctx.send)
-
-
-@tree.command(name="pause", description="Pause the current song")
-async def slash_pause(interaction: discord.Interaction):
-    await interaction.response.defer()
-    await do_music_pause(interaction.guild, _slash_send(interaction))
-
-
-@bot.command(name="resume", aliases=["unpause"])
-async def resume_cmd(ctx):
-    await do_music_resume(ctx.guild, ctx.send)
-
-
-@tree.command(name="resume", description="Resume paused music")
-async def slash_resume(interaction: discord.Interaction):
-    await interaction.response.defer()
-    await do_music_resume(interaction.guild, _slash_send(interaction))
-
-
-@bot.command(name="queue", aliases=["q"])
-async def queue_cmd(ctx):
-    await do_music_queue(ctx.guild, ctx.send)
-
-
-@tree.command(name="queue", description="Show the music queue")
-async def slash_queue(interaction: discord.Interaction):
-    await interaction.response.defer()
-    await do_music_queue(interaction.guild, _slash_send(interaction))
-
-
-@bot.command(name="np", aliases=["nowplaying", "now"])
-async def np_cmd(ctx):
-    await do_music_np(ctx.guild, ctx.send)
-
-
-@tree.command(name="np", description="Show the song currently playing")
-async def slash_np(interaction: discord.Interaction):
-    await interaction.response.defer()
-    await do_music_np(interaction.guild, _slash_send(interaction))
 
 
 # ============================================================

@@ -1931,8 +1931,10 @@ async def on_ready():
     start_dashboard()
 
     try:
-        # Global only + clear guild ghosts (avoids CommandNotFound from stale guild cmds)
-        await sync_slash_commands(force_print=True, clear_guild_dupes=False, push_to_guilds=True)
+        # Global sync only on boot. Pushing to every guild blocks for a long time
+        # and can rate-limit / look like random restarts under pm2.
+        # Owner can still run: *resync push
+        await sync_slash_commands(force_print=True, clear_guild_dupes=False, push_to_guilds=False)
     except Exception as e:
         print(f"Slash sync failed: {e}")
 

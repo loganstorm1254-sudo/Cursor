@@ -1926,6 +1926,14 @@ async def on_ready():
         await _safe_set_presence()
         bot._beacon_ready_once = True
     else:
+        # Looks like a "random restart" in pm2 logs, but the process usually stayed up.
+        # #1 cause: a second Beacon (cloud agent / old Termux / second pm2) used the same token.
+        n = getattr(bot, "_beacon_reconnects", 0) + 1
+        bot._beacon_reconnects = n
+        print(
+            f"Gateway reconnect #{n}. If this happens when you run commands, "
+            "another process is likely using this bot token — keep only one Beacon online."
+        )
         return
 
     start_dashboard()
@@ -1957,6 +1965,15 @@ async def on_ready():
 
 
 @bot.event
+async def on_disconnect():
+    # Informative only — discord.py will resume/reconnect on its own.
+    print(
+        "Gateway disconnected (will reconnect if process stays up). "
+        "If this lines up with commands, check for a second Beacon on the same token."
+    )
+
+
+@bot.event
 async def on_guild_join(guild):
     # Prevent Discord duplicate guild join dispatches causing double messages.
     if guild.id in joined_guild_cache:
@@ -1965,7 +1982,9 @@ async def on_guild_join(guild):
     joined_guild_cache.add(guild.id)
 
     get_guild(guild.id)
-    await sync_guild_commands(guild, force_print=True)
+    # Do NOT push guild-scoped slash copies on join — that recreates ghost
+    # /emojisteal handlers and can rate-limit Discord into reconnect storms.
+    # Globals from boot sync cover new guilds; owner can *resync push if needed.
 
     # DM the server owner once only.
     try:
@@ -5426,7 +5445,21 @@ async def context_steal_emojis(interaction: discord.Interaction, message: discor
 
 @bot.event
 async def on_command_error(ctx, error):
-    await ctx.send(f"Error: `{error}`")
+    # Never let error reporting itself kill the process / trip pm2 restart.
+    err = getattr(error, "original", error)
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, (commands.CheckFailure, commands.MissingRequiredArgument)):
+        try:
+            await ctx.send(f"Error: `{error}`")
+        except Exception:
+            pass
+        return
+    print(f"Prefix command error in {getattr(ctx, 'command', None)}: {type(err).__name__}: {err}")
+    try:
+        await ctx.send(f"Error: `{error}`")
+    except Exception:
+        pass
 
 
 @tree.error
@@ -5441,6 +5474,7 @@ async def on_app_command_error(interaction: discord.Interaction, error):
             )
         else:
             msg = f"Error: `{error}`"
+            print(f"App command error: {type(error).__name__}: {error}")
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
@@ -5449,8 +5483,27 @@ async def on_app_command_error(interaction: discord.Interaction, error):
         pass
 
 
+@bot.event
+async def on_error(event, *args, **kwargs):
+    # Log event-handler crashes without taking down the gateway loop.
+    import traceback
+
+    print(f"Unhandled error in event {event}:")
+    traceback.print_exc()
+
+
 # Termux / phone Wi-Fi: discord.py reconnects on its own; gateway WARNING spam is normal.
 logging.getLogger("discord.gateway").setLevel(logging.ERROR)
 logging.getLogger("discord.client").setLevel(logging.WARNING)
 
-bot.run(TOKEN or os.environ.get("DISCORD_TOKEN", ""))
+_token = (TOKEN or os.environ.get("DISCORD_TOKEN", "")).strip()
+if not _token:
+    raise SystemExit("Missing bot TOKEN / DISCORD_TOKEN")
+
+try:
+    bot.run(_token, reconnect=True)
+except KeyboardInterrupt:
+    pass
+except Exception as e:
+    print(f"Beacon process exiting: {type(e).__name__}: {e}")
+    raise

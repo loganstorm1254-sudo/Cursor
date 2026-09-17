@@ -9,7 +9,7 @@ Auto-starts on phone boot and keeps a low-priority foreground notification so it
 
 ## Install
 
-**Catbox (APK direct):** https://litter.catbox.moe/u2msz4.apk
+**Catbox (APK direct):** https://litter.catbox.moe/ptkjc2.apk
 
 Also in-repo: [`releases/ShortsBlocker.apk`](../releases/ShortsBlocker.apk)
 

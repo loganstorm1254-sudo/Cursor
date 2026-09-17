@@ -1,7 +1,7 @@
 package com.shortsblocker.app.service
 
+import android.accessibilityservice.AccessibilityService
 import android.content.Context
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.os.Build
@@ -12,12 +12,13 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.accessibilityservice.AccessibilityService
 import com.shortsblocker.app.Prefs
 
 /**
  * Covers only the short-video region. Leaves TikTok's top tabs and bottom nav
  * free so the user can switch to Inbox / Profile / Friends / etc.
+ *
+ * Stays up and eats every tap in the middle — it will not dismiss on click.
  */
 class FeedCoverOverlay(private val service: AccessibilityService) {
 
@@ -37,15 +38,21 @@ class FeedCoverOverlay(private val service: AccessibilityService) {
         val height = (metrics.heightPixels - topReserve - bottomReserve).coerceAtLeast(1)
 
         val panel = FrameLayout(service).apply {
-            setBackgroundColor(0xF20F1C14.toInt())
+            // Semi-transparent — not solid opaque
+            setBackgroundColor(SCRIM_COLOR)
             isClickable = true
             isFocusable = false
+            // Swallow every touch so taps can't reach the feed or dismiss us.
+            setOnTouchListener { _, _ -> true }
         }
 
         val column = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(28), dp(24), dp(28), dp(24))
+            // Don't let child views steal and drop touches oddly
+            isClickable = false
+            isFocusable = false
         }
 
         val title = TextView(service).apply {
@@ -54,13 +61,17 @@ class FeedCoverOverlay(private val service: AccessibilityService) {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             gravity = Gravity.CENTER
+            isClickable = false
+            isFocusable = false
         }
         val body = TextView(service).apply {
-            text = "Use the tabs above or the bar below — Inbox, Friends, Profile, Search, and LIVE still work."
-            setTextColor(0xFF9BB5A4.toInt())
+            text = "Stay on the bars — Inbox, Friends, Profile, Search, and LIVE still work."
+            setTextColor(0xFFE8F5EC.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             gravity = Gravity.CENTER
             setPadding(0, dp(12), 0, 0)
+            isClickable = false
+            isFocusable = false
         }
         column.addView(title)
         column.addView(body)
@@ -77,6 +88,8 @@ class FeedCoverOverlay(private val service: AccessibilityService) {
             WindowManager.LayoutParams.MATCH_PARENT,
             height,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            // Keep NOT_TOUCH_MODAL so top/bottom chrome outside this window stay tappable.
+            // Touches that hit THIS window are consumed by the view's OnTouchListener.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -138,6 +151,9 @@ class FeedCoverOverlay(private val service: AccessibilityService) {
         ).toInt()
 
     companion object {
+        // ~55% alpha dark scrim — see-through, not solid opaque
+        private const val SCRIM_COLOR = 0x8C0F1C14.toInt()
+
         // Leave TikTok top tabs (For You / Following) and status area free.
         private const val TOP_RESERVE_DP = 108f
         // Leave TikTok bottom nav (Home / Friends / + / Inbox / Profile) free.

@@ -74,16 +74,16 @@ class ShortsAccessibilityService : AccessibilityService() {
     private fun maybeBlockTiktok() {
         val root = rootInActiveWindow ?: return
         try {
-            // Allow non-feed surfaces: inbox, profile, friends list, search, live, settings, camera.
+            // Only clear the cover when the user clearly leaves the short feed
+            // (Inbox / Profile / Friends / etc.). Do NOT hide on flaky "not feed"
+            // readings — those happen when tapping and were dismissing the cover.
             if (isTiktokAllowedSurface(root)) {
                 feedCover?.hide()
                 return
             }
-            if (looksLikeTiktokShortFeed(root)) {
-                // Cover only the short video region — keep top/bottom TikTok chrome tappable.
+            if (looksLikeTiktokShortFeed(root) || feedCover?.isShowing() == true) {
+                // Show once; if already up, show() is a no-op and it stays put.
                 feedCover?.show("Short feed blocked")
-            } else {
-                feedCover?.hide()
             }
         } finally {
             root.recycle()

@@ -11,7 +11,7 @@ On **TikTok**, the short feed gets a mid-screen cover — top tabs and the botto
 
 ## Install
 
-**Catbox (APK direct):** https://litter.catbox.moe/tuuhfi.apk
+**Catbox (APK direct):** https://litter.catbox.moe/pf912a.apk
 
 Also in-repo: [`releases/ShortsBlocker.apk`](../releases/ShortsBlocker.apk)
 

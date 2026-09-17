@@ -12,41 +12,53 @@ import com.shortsblocker.app.ui.BlockOverlayActivity
 
 /**
  * Watches YouTube + TikTok and only interrupts short-form feeds.
- * Regular YouTube watch pages and TikTok inbox/profile/search/live stay usable.
+ * TikTok: covers just the video area (top tabs + bottom nav stay usable).
+ * YouTube Shorts: backs out of the Shorts player (regular watch stays open).
  */
 class ShortsAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastActionAt = 0L
     private var lastPackage: String? = null
+    private var feedCover: FeedCoverOverlay? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        serviceInfo = serviceInfo?.apply {
-            packageNames = arrayOf(
-                "com.google.android.youtube",
-                "app.revanced.android.youtube",
-                "com.zhiliaoapp.musically",
-                "com.ss.android.ugc.trill"
-            )
-        }
+        feedCover = FeedCoverOverlay(this)
+        // Listen broadly so we can hide the TikTok cover when the user leaves the app.
         startForegroundGuard()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        if (!Prefs.isEnabled(this)) return
+
+        if (!Prefs.isEnabled(this)) {
+            feedCover?.hide()
+            return
+        }
 
         val pkg = event.packageName?.toString() ?: return
         lastPackage = pkg
 
         when {
-            isYoutube(pkg) && Prefs.blockYoutube(this) -> maybeBlockYoutube()
+            isYoutube(pkg) && Prefs.blockYoutube(this) -> {
+                feedCover?.hide()
+                maybeBlockYoutube()
+            }
             isTiktok(pkg) && Prefs.blockTiktok(this) -> maybeBlockTiktok()
+            else -> feedCover?.hide()
         }
     }
 
-    override fun onInterrupt() = Unit
+    override fun onInterrupt() {
+        feedCover?.hide()
+    }
+
+    override fun onDestroy() {
+        feedCover?.hide()
+        feedCover = null
+        super.onDestroy()
+    }
 
     private fun maybeBlockYoutube() {
         val root = rootInActiveWindow ?: return
@@ -63,9 +75,15 @@ class ShortsAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         try {
             // Allow non-feed surfaces: inbox, profile, friends list, search, live, settings, camera.
-            if (isTiktokAllowedSurface(root)) return
+            if (isTiktokAllowedSurface(root)) {
+                feedCover?.hide()
+                return
+            }
             if (looksLikeTiktokShortFeed(root)) {
-                bounceOut(reason = "tiktok_shorts")
+                // Cover only the short video region — keep top/bottom TikTok chrome tappable.
+                feedCover?.show("Short feed blocked")
+            } else {
+                feedCover?.hide()
             }
         } finally {
             root.recycle()
@@ -79,22 +97,14 @@ class ShortsAccessibilityService : AccessibilityService() {
 
         Prefs.incrementBlocks(this)
 
-        // Back out of the short player first; if still trapped, leave to our overlay.
+        // YouTube Shorts: back out of the short player; if still trapped, leave to our screen.
         performGlobalAction(GLOBAL_ACTION_BACK)
         handler.postDelayed({
             val pkg = lastPackage ?: return@postDelayed
-            if ((isYoutube(pkg) && Prefs.blockYoutube(this)) ||
-                (isTiktok(pkg) && Prefs.blockTiktok(this))
-            ) {
+            if (isYoutube(pkg) && Prefs.blockYoutube(this)) {
                 val still = rootInActiveWindow
                 try {
-                    val trapped = when {
-                        isYoutube(pkg) -> still != null && looksLikeYoutubeShorts(still)
-                        else -> still != null &&
-                            !isTiktokAllowedSurface(still) &&
-                            looksLikeTiktokShortFeed(still)
-                    }
-                    if (trapped) {
+                    if (still != null && looksLikeYoutubeShorts(still)) {
                         val intent = Intent(this, BlockOverlayActivity::class.java).apply {
                             addFlags(
                                 Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -113,7 +123,6 @@ class ShortsAccessibilityService : AccessibilityService() {
     }
 
     private fun looksLikeYoutubeShorts(root: AccessibilityNodeInfo): Boolean {
-        // Strong signals for the Shorts player / Shorts tab.
         val idHits = listOf(
             "com.google.android.youtube:id/reel_recycler",
             "com.google.android.youtube:id/reel_player_page_container",
@@ -127,10 +136,7 @@ class ShortsAccessibilityService : AccessibilityService() {
             return true
         }
 
-        // Content-description / text fallbacks used across YouTube versions.
         if (hasTextOrDesc(root, "shorts", exactWord = true)) {
-            // Avoid false positives on search results mentioning "shorts" in titles:
-            // only treat as Shorts UI when a Shorts chrome cue is also present.
             val chrome = hasTextOrDesc(root, "subscribe") ||
                 hasTextOrDesc(root, "like this video") ||
                 hasTextOrDesc(root, "dislike this video") ||
@@ -138,14 +144,12 @@ class ShortsAccessibilityService : AccessibilityService() {
             if (chrome) return true
         }
 
-        // Selected Shorts tab in bottom nav.
         if (hasSelectedTab(root, "Shorts")) return true
 
         return false
     }
 
     private fun looksLikeTiktokShortFeed(root: AccessibilityNodeInfo): Boolean {
-        // Vertical short feed / For You surface.
         val feedIds = listOf(
             "com.zhiliaoapp.musically:id/viewpager",
             "com.zhiliaoapp.musically:id/feed_video",
@@ -158,11 +162,9 @@ class ShortsAccessibilityService : AccessibilityService() {
             hasSelectedTab(root, "Home") ||
             hasSelectedTab(root, "Following")
 
-        // Following is also a short feed — block it too. Friends/Inbox/Profile are allowed elsewhere.
         if (forYouSelected) return true
         if (feedHit && !isTiktokAllowedSurface(root)) return true
 
-        // Like / comment / share column typical of vertical short UI with no long-form chrome.
         val shortChrome = hasTextOrDesc(root, "Like") &&
             hasTextOrDesc(root, "Comment") &&
             hasTextOrDesc(root, "Share") &&
@@ -171,7 +173,6 @@ class ShortsAccessibilityService : AccessibilityService() {
     }
 
     private fun isTiktokAllowedSurface(root: AccessibilityNodeInfo): Boolean {
-        // Keep messaging, profile, friends hub, search, live, create, settings usable.
         if (hasSelectedTab(root, "Inbox") ||
             hasSelectedTab(root, "Profile") ||
             hasSelectedTab(root, "Friends") ||

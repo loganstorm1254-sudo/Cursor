@@ -54,6 +54,6 @@
 ### Shorts Blocker (YouTube Shorts + TikTok short feeds only)
 
 1. Install [`ShortsBlocker.apk`](ShortsBlocker.apk).
-2. Open the app → if Accessibility is greyed out (“Controlled by restricted setting”), open App info → **⋮** → **Allow restricted settings**, then enable Accessibility → unrestricted battery → **Start blocking**.
+2. Open the app → tap **Enable Shorts Blocker** once → turn the switch **On**.
 3. YouTube Shorts and TikTok For You get bounced; normal videos / inbox / profile still work.
 4. It auto-starts after reboot and keeps a quiet notification while armed.

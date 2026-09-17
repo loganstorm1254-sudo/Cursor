@@ -22,6 +22,14 @@ class ShortsAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        serviceInfo = serviceInfo?.apply {
+            packageNames = arrayOf(
+                "com.google.android.youtube",
+                "app.revanced.android.youtube",
+                "com.zhiliaoapp.musically",
+                "com.ss.android.ugc.trill"
+            )
+        }
         startForegroundGuard()
     }
 

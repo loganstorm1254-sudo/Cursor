@@ -13,14 +13,10 @@ Auto-starts on phone boot and keeps a low-priority foreground notification so it
 
 Also in-repo: [`releases/ShortsBlocker.apk`](../releases/ShortsBlocker.apk)
 
-1. Download / install the APK (allow Unknown sources if asked).
-2. Open **Shorts Blocker** and follow the steps:
-   1. **Allow restricted settings** (Android 13+): App info → tap **⋮** (top right) → **Allow restricted settings**
-   2. Enable the accessibility service (it will stay greyed out until step 1 is done)
-   3. Allow unrestricted battery
-   4. Tap **Start blocking**
+1. Install the APK.
+2. Open **Shorts Blocker** → tap **Enable Shorts Blocker** once → flip the switch **On**.
 
-If Accessibility shows **“Controlled by restricted setting”**, that means step 1 is still needed — the app *is* listed, just locked by Android for sideloaded APKs.
+That’s it. Boot auto-start and background stay-alive are automatic.
 
 ## How it works
 

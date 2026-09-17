@@ -11,6 +11,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.text.TextUtils
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -22,57 +23,95 @@ import com.shortsblocker.app.service.ShortsGuardService
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var statusAccessibility: TextView
-    private lateinit var statusService: TextView
-    private lateinit var statusBattery: TextView
-    private lateinit var statusBlocks: TextView
-    private lateinit var btnToggle: MaterialButton
+    private lateinit var statusLine: TextView
+    private lateinit var helpLine: TextView
+    private lateinit var btnEnable: MaterialButton
 
     private val notifPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { refreshUi() }
+    ) { /* no-op */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        statusAccessibility = findViewById(R.id.statusAccessibility)
-        statusService = findViewById(R.id.statusService)
-        statusBattery = findViewById(R.id.statusBattery)
-        statusBlocks = findViewById(R.id.statusBlocks)
-        btnToggle = findViewById(R.id.btnToggle)
+        statusLine = findViewById(R.id.statusLine)
+        helpLine = findViewById(R.id.helpLine)
+        btnEnable = findViewById(R.id.btnEnable)
 
-        findViewById<MaterialButton>(R.id.btnRestricted).setOnClickListener {
-            openAppInfoForRestrictedSettings()
-        }
-        findViewById<MaterialButton>(R.id.btnAccessibility).setOnClickListener {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
-        findViewById<MaterialButton>(R.id.btnBattery).setOnClickListener {
-            requestBatteryExemption()
-        }
-        btnToggle.setOnClickListener { toggleBlocking() }
-
+        btnEnable.setOnClickListener { oneStepEnable() }
         maybeAskNotificationPermission()
     }
 
     override fun onResume() {
         super.onResume()
         refreshUi()
-        if (Prefs.isEnabled(this) && isAccessibilityEnabled()) {
+        if (isAccessibilityEnabled()) {
+            Prefs.setEnabled(this, true)
             startGuard()
+            maybeRequestBatteryQuietly()
         }
     }
 
-    private fun toggleBlocking() {
-        val next = !Prefs.isEnabled(this)
-        Prefs.setEnabled(this, next)
-        if (next) {
-            startGuard()
-        } else {
-            stopService(Intent(this, ShortsGuardService::class.java))
+    /** One tap: arm service + jump straight to this app's accessibility toggle. */
+    private fun oneStepEnable() {
+        Prefs.setEnabled(this, true)
+        startGuard()
+        openOurAccessibilityPage()
+    }
+
+    private fun openOurAccessibilityPage() {
+        val component = ComponentName(this, ShortsAccessibilityService::class.java)
+
+        // 1) Best: jump straight to Shorts Blocker's own accessibility screen
+        try {
+            val details = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
+            details.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            details.data = Uri.parse("package:$packageName")
+            details.putExtra(Intent.EXTRA_COMPONENT_NAME, component)
+            startActivity(details)
+            Toast.makeText(this, "Turn Shorts Blocker ON", Toast.LENGTH_LONG).show()
+            return
+        } catch (_: Exception) {
+            // fall through
         }
-        refreshUi()
+
+        // 2) Open Accessibility list and highlight our service so it "appears"
+        try {
+            val key = component.flattenToString()
+            val highlight = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            highlight.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            highlight.putExtra(EXTRA_FRAGMENT_ARG_KEY, key)
+            val bundle = Bundle()
+            bundle.putString(EXTRA_FRAGMENT_ARG_KEY, key)
+            highlight.putExtra(EXTRA_SHOW_FRAGMENT_ARGUMENTS, bundle)
+            startActivity(highlight)
+            Toast.makeText(this, "Find Shorts Blocker → turn ON", Toast.LENGTH_LONG).show()
+            return
+        } catch (_: Exception) {
+            // fall through
+        }
+
+        // 3) Last resort
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        Toast.makeText(this, "Installed apps → Shorts Blocker → ON", Toast.LENGTH_LONG).show()
+    }
+
+    private fun refreshUi() {
+        val on = isAccessibilityEnabled()
+        if (on) {
+            statusLine.text = "Status: ON — Shorts are being blocked"
+            statusLine.setTextColor(ContextCompat.getColor(this, R.color.ok))
+            btnEnable.text = "Open accessibility settings"
+            helpLine.text = "You're set. It stays on after reboot. Tap the button only if you need to change the switch."
+        } else {
+            statusLine.text = "Status: OFF — tap the button once"
+            statusLine.setTextColor(ContextCompat.getColor(this, R.color.danger))
+            btnEnable.text = "Enable Shorts Blocker"
+            helpLine.text =
+                "Tap once. It opens the Shorts Blocker accessibility page — flip the switch On.\n\n" +
+                "If it says “Controlled by restricted setting”: on that same phone screen go back → App info → ⋮ → Allow restricted settings, then tap this button again."
+        }
     }
 
     private fun startGuard() {
@@ -84,56 +123,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun refreshUi() {
-        val a11y = isAccessibilityEnabled()
-        statusAccessibility.text = if (a11y) {
-            "Accessibility: ON ✓"
-        } else {
-            "Accessibility: OFF — if greyed out, do step 1 first"
+    private fun maybeRequestBatteryQuietly() {
+        if (isIgnoringBatteryOptimizations()) return
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+            )
+        } catch (_: Exception) {
+            // ignore — not required for first enable
         }
-        statusAccessibility.setTextColor(
-            ContextCompat.getColor(this, if (a11y) R.color.ok else R.color.danger)
-        )
-
-        findViewById<MaterialButton>(R.id.btnRestricted).visibility =
-            if (a11y) android.view.View.GONE else android.view.View.VISIBLE
-        findViewById<TextView>(R.id.restrictedHint).visibility =
-            if (a11y) android.view.View.GONE else android.view.View.VISIBLE
-
-        val enabled = Prefs.isEnabled(this)
-        statusService.text = if (enabled) {
-            "Background: armed — will auto-start on boot"
-        } else {
-            "Background: paused"
-        }
-        statusService.setTextColor(
-            ContextCompat.getColor(this, if (enabled) R.color.ok else R.color.accent)
-        )
-
-        val batteryOk = isIgnoringBatteryOptimizations()
-        statusBattery.text = if (batteryOk) {
-            "Battery: unrestricted ✓"
-        } else {
-            "Battery: restricted — tap step 2 so it stays online"
-        }
-        statusBattery.setTextColor(
-            ContextCompat.getColor(this, if (batteryOk) R.color.ok else R.color.accent)
-        )
-
-        statusBlocks.text = "Blocks so far: ${Prefs.blockCount(this)}"
-
-        btnToggle.text = if (enabled) "Pause blocking" else "4. Start blocking"
-        btnToggle.setBackgroundColor(
-            ContextCompat.getColor(this, if (enabled) R.color.accent else R.color.brand)
-        )
     }
 
-    /** Opens App info so the user can tap ⋮ → Allow restricted settings (Android 13+). */
-    private fun openAppInfoForRestrictedSettings() {
-        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-            data = Uri.parse("package:$packageName")
-        }
-        startActivity(intent)
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
     }
 
     private fun isAccessibilityEnabled(): Boolean {
@@ -151,23 +156,6 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
-    private fun isIgnoringBatteryOptimizations(): Boolean {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        return pm.isIgnoringBatteryOptimizations(packageName)
-    }
-
-    private fun requestBatteryExemption() {
-        if (isIgnoringBatteryOptimizations()) return
-        try {
-            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
-        } catch (_: Exception) {
-            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-        }
-    }
-
     private fun maybeAskNotificationPermission() {
         if (Build.VERSION.SDK_INT < 33) return
         val granted = ContextCompat.checkSelfPermission(
@@ -177,5 +165,11 @@ class MainActivity : AppCompatActivity() {
         if (!granted) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    companion object {
+        // Undocumented Settings extras — used by many apps to highlight a row.
+        private const val EXTRA_FRAGMENT_ARG_KEY = ":settings:fragment_args_key"
+        private const val EXTRA_SHOW_FRAGMENT_ARGUMENTS = ":settings:show_fragment_args"
     }
 }

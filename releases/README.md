@@ -9,6 +9,7 @@
 | [`NovaAI.apk`](NovaAI.apk) | **Nova AI** — your own AI trained from scratch + Wikipedia lookups, unlocks with your master API key |
 | [`NovaAI-Windows.zip`](NovaAI-Windows.zip) | **Nova AI for Windows** — unzip, double-click `NovaAI.exe`, chat in your browser |
 | [`Reel-Windows.zip`](Reel-Windows.zip) | **Reel** — Wi‑Fi movie stream from `D:\Movies` (MKV/MP4). Unzip, double-click `Reel.bat` |
+| [`ShortsBlocker.apk`](ShortsBlocker.apk) | **Shorts Blocker** — blocks YouTube Shorts + TikTok short feeds only; auto-starts on boot |
 
 ## Install on Samsung
 
@@ -49,3 +50,10 @@
 3. Run **`Reel.bat`** → **Yes** to Administrator.
 4. On PC: scan the **QR** with your phone, or open PHONE-URL.txt (`http://YOUR-IP:8787/`).
 5. Tap a movie → **Open in VLC** (best audio) or **Play here**.
+
+### Shorts Blocker (YouTube Shorts + TikTok short feeds only)
+
+1. Install [`ShortsBlocker.apk`](ShortsBlocker.apk).
+2. Open the app → tap **Enable Shorts Blocker** once → turn the switch **On**.
+3. YouTube Shorts and TikTok For You get bounced; normal videos / inbox / profile still work.
+4. It auto-starts after reboot and keeps a quiet notification while armed.

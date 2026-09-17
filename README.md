@@ -1,5 +1,14 @@
 # Cursor bots + Wi‑Fi Notify apps
 
+## Shorts Blocker (Android)
+
+Blocks **only** YouTube Shorts and TikTok For You / short feeds — normal YouTube videos, TikTok inbox/profile/search/live stay usable. Auto-starts on boot and stays online in the background.
+
+Project: [`ShortsBlocker/`](ShortsBlocker/) · Ready APK: [`releases/ShortsBlocker.apk`](releases/ShortsBlocker.apk)
+
+1. Install the APK.
+2. Enable **Accessibility** → allow **unrestricted battery** → **Start blocking**.
+
 ## Nova — your own AI (Android, offline, trained from scratch)
 
 A **5.9M-parameter GPT transformer trained from zero** just for you. The

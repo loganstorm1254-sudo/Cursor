@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:padding="28dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-medium"
+            android:text="@string/app_name"
+            android:textColor="@color/brand"
+            android:textSize="36sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Blocks YouTube Shorts + TikTok short feeds only."
+            android:textColor="@color/text_secondary"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/statusLine"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="Status: checking…"
+            android:textColor="@color/text_primary"
+            android:textSize="17sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnEnable"
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:layout_marginTop="28dp"
+            android:text="Enable Shorts Blocker"
+            android:textAllCaps="false"
+            android:textColor="@color/bg"
+            android:textSize="18sp"
+            app:backgroundTint="@color/brand"
+            app:cornerRadius="12dp" />
+
+        <TextView
+            android:id="@+id/helpLine"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="Tap once. It opens the Shorts Blocker accessibility page — turn the switch On."
+            android:textColor="@color/text_secondary"
+            android:textSize="14sp" />
+    </LinearLayout>
+</FrameLayout>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shorts Blocker</string>
+    <string name="accessibility_description">Blocks YouTube Shorts and TikTok For You / vertical short videos only. Normal YouTube videos, TikTok inbox, profile, live, and search stay usable.</string>
+    <string name="notification_channel">Shorts Guard</string>
+    <string name="notification_title">Shorts Blocker is on</string>
+    <string name="notification_text">Watching for YouTube Shorts &amp; TikTok short feeds</string>
+</resources>

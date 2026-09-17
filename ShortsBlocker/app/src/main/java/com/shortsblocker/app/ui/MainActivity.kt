@@ -42,6 +42,9 @@ class MainActivity : AppCompatActivity() {
         statusBlocks = findViewById(R.id.statusBlocks)
         btnToggle = findViewById(R.id.btnToggle)
 
+        findViewById<MaterialButton>(R.id.btnRestricted).setOnClickListener {
+            openAppInfoForRestrictedSettings()
+        }
         findViewById<MaterialButton>(R.id.btnAccessibility).setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -86,11 +89,16 @@ class MainActivity : AppCompatActivity() {
         statusAccessibility.text = if (a11y) {
             "Accessibility: ON ✓"
         } else {
-            "Accessibility: OFF — tap step 1 (required)"
+            "Accessibility: OFF — if greyed out, do step 1 first"
         }
         statusAccessibility.setTextColor(
             ContextCompat.getColor(this, if (a11y) R.color.ok else R.color.danger)
         )
+
+        findViewById<MaterialButton>(R.id.btnRestricted).visibility =
+            if (a11y) android.view.View.GONE else android.view.View.VISIBLE
+        findViewById<TextView>(R.id.restrictedHint).visibility =
+            if (a11y) android.view.View.GONE else android.view.View.VISIBLE
 
         val enabled = Prefs.isEnabled(this)
         statusService.text = if (enabled) {
@@ -114,10 +122,18 @@ class MainActivity : AppCompatActivity() {
 
         statusBlocks.text = "Blocks so far: ${Prefs.blockCount(this)}"
 
-        btnToggle.text = if (enabled) "Pause blocking" else "3. Start blocking"
+        btnToggle.text = if (enabled) "Pause blocking" else "4. Start blocking"
         btnToggle.setBackgroundColor(
             ContextCompat.getColor(this, if (enabled) R.color.accent else R.color.brand)
         )
+    }
+
+    /** Opens App info so the user can tap ⋮ → Allow restricted settings (Android 13+). */
+    private fun openAppInfoForRestrictedSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:$packageName")
+        }
+        startActivity(intent)
     }
 
     private fun isAccessibilityEnabled(): Boolean {

@@ -79,59 +79,84 @@
             android:textSize="14sp" />
     </LinearLayout>
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnAccessibility"
+    <ScrollView
+        android:id="@+id/actionsScroll"
         android:layout_width="0dp"
-        android:layout_height="56dp"
+        android:layout_height="0dp"
         android:layout_marginTop="24dp"
-        android:text="1. Enable accessibility"
-        android:textAllCaps="false"
-        app:backgroundTint="@color/brand_dim"
-        app:cornerRadius="10dp"
+        android:fillViewport="true"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/statusPanel" />
+        app:layout_constraintTop_toBottomOf="@id/statusPanel">
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnBattery"
-        android:layout_width="0dp"
-        android:layout_height="56dp"
-        android:layout_marginTop="12dp"
-        android:text="2. Allow always-on (battery)"
-        android:textAllCaps="false"
-        app:backgroundTint="@color/bg_panel"
-        app:cornerRadius="10dp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/btnAccessibility"
-        app:strokeColor="@color/brand_dim"
-        app:strokeWidth="1dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnToggle"
-        android:layout_width="0dp"
-        android:layout_height="64dp"
-        android:layout_marginTop="12dp"
-        android:text="3. Start blocking"
-        android:textAllCaps="false"
-        android:textSize="16sp"
-        app:backgroundTint="@color/brand"
-        app:cornerRadius="10dp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/btnBattery"
-        android:textColor="@color/bg" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnRestricted"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:text="1. Allow restricted settings"
+                android:textAllCaps="false"
+                app:backgroundTint="@color/danger"
+                app:cornerRadius="10dp" />
 
-    <TextView
-        android:id="@+id/hint"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
-        android:text="Tip: after enabling accessibility, open YouTube Shorts or TikTok For You — you should get bounced out of the short feed. Regular YouTube watch pages keep working."
-        android:textColor="@color/text_secondary"
-        android:textSize="13sp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/btnToggle" />
+            <TextView
+                android:id="@+id/restrictedHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="If Accessibility says “Controlled by restricted setting”: open App info → tap ⋮ (top right) → Allow restricted settings. Then come back here."
+                android:textColor="@color/accent"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnAccessibility"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="16dp"
+                android:text="2. Enable accessibility"
+                android:textAllCaps="false"
+                app:backgroundTint="@color/brand_dim"
+                app:cornerRadius="10dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnBattery"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="12dp"
+                android:text="3. Allow always-on (battery)"
+                android:textAllCaps="false"
+                app:backgroundTint="@color/bg_panel"
+                app:cornerRadius="10dp"
+                app:strokeColor="@color/brand_dim"
+                app:strokeWidth="1dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnToggle"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginTop="12dp"
+                android:text="4. Start blocking"
+                android:textAllCaps="false"
+                android:textColor="@color/bg"
+                android:textSize="16sp"
+                app:backgroundTint="@color/brand"
+                app:cornerRadius="10dp" />
+
+            <TextView
+                android:id="@+id/hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:layout_marginBottom="12dp"
+                android:text="Tip: after accessibility is On, open YouTube Shorts or TikTok For You — you should get bounced. Regular YouTube videos keep working."
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </ScrollView>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

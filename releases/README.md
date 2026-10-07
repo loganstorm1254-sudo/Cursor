@@ -9,6 +9,7 @@
 | [`NovaAI.apk`](NovaAI.apk) | **Nova AI** — your own AI trained from scratch + Wikipedia lookups, unlocks with your master API key |
 | [`NovaAI-Windows.zip`](NovaAI-Windows.zip) | **Nova AI for Windows** — unzip, double-click `NovaAI.exe`, chat in your browser |
 | [`Reel-Windows.zip`](Reel-Windows.zip) | **Reel** — Wi‑Fi movie stream from `D:\Movies` (MKV/MP4). Unzip, double-click `Reel.bat` |
+| [`ios-shortcuts/`](ios-shortcuts/) | **iOS Shortcuts** — tap-to-toggle Classic / Smart color invert |
 
 ## Install on Samsung
 

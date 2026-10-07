@@ -9,30 +9,30 @@ Tap once → color inversion **on**. Tap again → **off**.
 
 ## Install on iPhone
 
-Open these in **Safari on your iPhone**, then tap **Add Shortcut**:
+Open these in **Safari on your iPhone**, then tap **Add Shortcut**.
 
-### Classic Invert (recommended for “color inversion”)
+### Classic Invert (full color inversion)
 
-- Direct file: https://d.uguu.se/uwJHpxiD.shortcut  
-- One-tap import: [Add Toggle Color Invert](shortcuts://import-shortcut?url=https%3A%2F%2Fd.uguu.se%2FuwJHpxiD.shortcut&name=Toggle%20Color%20Invert)
+- File: https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-invert-shortcut-c4ae/releases/ios-shortcuts/Toggle-Color-Invert.shortcut  
+- One-tap import: [Add Toggle Color Invert](shortcuts://import-shortcut?url=https%3A%2F%2Fraw.githubusercontent.com%2Floganstorm1254-sudo%2FCursor%2Fcursor%2Fios-invert-shortcut-c4ae%2Freleases%2Fios-shortcuts%2FToggle-Color-Invert.shortcut&name=Toggle%20Color%20Invert)
 
-### Smart Invert
+### Smart Invert (UI only)
 
-- Direct file: https://h.uguu.se/bbjYWfMp.shortcut  
-- One-tap import: [Add Toggle Smart Invert](shortcuts://import-shortcut?url=https%3A%2F%2Fh.uguu.se%2FbbjYWfMp.shortcut&name=Toggle%20Smart%20Invert)
+- File: https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-invert-shortcut-c4ae/releases/ios-shortcuts/Toggle-Smart-Invert.shortcut  
+- One-tap import: [Add Toggle Smart Invert](shortcuts://import-shortcut?url=https%3A%2F%2Fraw.githubusercontent.com%2Floganstorm1254-sudo%2FCursor%2Fcursor%2Fios-invert-shortcut-c4ae%2Freleases%2Fios-shortcuts%2FToggle-Smart-Invert.shortcut&name=Toggle%20Smart%20Invert)
 
 If prompted: **Settings → Shortcuts → Allow Untrusted Shortcuts**.
 
-Then: open the shortcut → share sheet → **Add to Home Screen**.
+Then open the shortcut → share sheet → **Add to Home Screen**.
 
-> Note: uguu.se links expire after ~48 hours. Same `.shortcut` files are in this folder for re-hosting.
+### Extra mirrors
 
-### Gofile backups
+- Classic (uguu, ~48h): https://d.uguu.se/uwJHpxiD.shortcut  
+- Smart (uguu, ~48h): https://h.uguu.se/bbjYWfMp.shortcut  
+- Classic (Gofile): https://gofile.io/d/PkbDMQMc  
+- Smart (Gofile): https://gofile.io/d/EtOdY3us  
 
-- Classic: https://gofile.io/d/PkbDMQMc  
-- Smart: https://gofile.io/d/EtOdY3us  
-
-(Catbox rejected uploads from this environment — “Invalid uploader”.)
+Catbox rejected uploads from this environment (`Invalid uploader`).
 
 ## Manual (30 seconds)
 

@@ -8,7 +8,7 @@
 # - Saves server name + icon bytes
 # - Antinuke trigger ONLY: 5 channel creates in 10 seconds
 # - On trigger: punish, wipe server structure, restore from backup, then re-backup
-# Free: sticky, polls, reminders, basic XP, economy, AI image generation, emoji steal, Oval /code
+# Free: sticky, polls, reminders, basic XP, economy, AI image generation, emoji steal, Oval /code, decoy channel
 # Premium: temprole, autoresponder, invite tracker
 # ============================================================
 
@@ -892,8 +892,13 @@ def get_guild(guild_id):
             "role_create": True,
             "role_delete": True,
             "member_update": True,
-            "voice_update": True
+            "voice_update": True,
+            "decoy_catch": True,
         },
+        # Decoy channel: anyone who types here gets kick/ban (catches spam bots)
+        "decoy_enabled": False,
+        "decoy_channel": None,
+        "decoy_action": "ban",  # "kick" or "ban"
     }
 
     if gid not in config:
@@ -910,6 +915,72 @@ def get_guild(guild_id):
 def is_whitelisted(guild, user):
     cfg = get_guild(guild.id)
     return user.id == guild.owner_id or user.id in cfg["whitelist"]
+
+
+def is_decoy_exempt(member: discord.Member) -> bool:
+    """Staff / owner / whitelist never trip the decoy channel."""
+    if member is None or getattr(member, "bot", False):
+        return True
+    guild = member.guild
+    if guild is None:
+        return True
+    if member.id == guild.owner_id:
+        return True
+    if is_whitelisted(guild, member):
+        return True
+    perms = getattr(member, "guild_permissions", None)
+    if perms is not None and (perms.administrator or perms.manage_guild):
+        return True
+    return False
+
+
+async def handle_decoy_catch(message: discord.Message):
+    """Delete the message and kick/ban the author for typing in the decoy channel."""
+    guild = message.guild
+    member = message.author
+    if guild is None or not isinstance(member, discord.Member):
+        return
+    if is_decoy_exempt(member):
+        return
+
+    cfg = get_guild(guild.id)
+    action = (cfg.get("decoy_action") or "ban").lower()
+    if action not in ("kick", "ban"):
+        action = "ban"
+    reason = "Beacon decoy channel — typed in the decoy (spam catch)"
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    punished = False
+    err = None
+    try:
+        if action == "kick":
+            await member.kick(reason=reason)
+        else:
+            await member.ban(reason=reason)
+        punished = True
+    except Exception as e:
+        err = e
+        print(f"Decoy {action} failed for {member.id} in {guild.id}: {e}")
+
+    embed = log_embed(
+        "🪤 Decoy Catch",
+        (
+            f"**User:** {member} (`{member.id}`)\n"
+            f"**Channel:** {message.channel.mention}\n"
+            f"**Action:** `{action}`\n"
+            f"**Status:** {'✅ punished' if punished else f'❌ failed: `{err}`'}\n"
+            f"**Snippet:** {(message.content or '')[:200] or '*empty / attachment*'}"
+        ),
+        color=0xED4245,
+    )
+    try:
+        await send_log(guild, "decoy_catch", embed)
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -2267,6 +2338,17 @@ async def on_message(message):
 
     cfg = get_guild(message.guild.id)
 
+    # Decoy channel — any non-staff typing here gets kick/ban (catches spam bots)
+    decoy_ch = cfg.get("decoy_channel")
+    if (
+        cfg.get("decoy_enabled")
+        and decoy_ch
+        and message.channel.id == int(decoy_ch)
+        and not is_decoy_exempt(message.author)
+    ):
+        await handle_decoy_catch(message)
+        return
+
     if cfg.get("profanity_filter", False):
 
         words = message.content.lower().split()
@@ -2377,6 +2459,7 @@ class HelpDropdown(discord.ui.Select):
 `/warnings` or `*warnings` - View warnings.
 `/clearwarnings` or `*clearwarnings` - Clear warnings.
 `/purge` or `*purge` - Delete messages.
+`/decoy` or `*decoy` - Decoy channel: anyone who types there is auto kick/ban (you choose). Catches spam bots. Staff/owner/whitelist are safe.
 """
 
         elif choice == "Antinuke":
@@ -2783,6 +2866,113 @@ async def slash_profanity(
         f"✅ Profanity filter {'enabled' if state.value == 'on' else 'disabled'}.",
         ephemeral=True
     )
+
+
+async def do_decoy_cmd(guild, author, action: str, channel, punishment: str, send):
+    """Configure the decoy spam-catch channel (kick/ban anyone who types there)."""
+    if guild is None:
+        return await send("Use this in a server.")
+    cfg = get_guild(guild.id)
+    action = (action or "info").lower().strip()
+
+    if action in ("info", "status", "show"):
+        ch_id = cfg.get("decoy_channel")
+        ch = guild.get_channel(int(ch_id)) if ch_id else None
+        enabled = bool(cfg.get("decoy_enabled")) and ch is not None
+        pun = (cfg.get("decoy_action") or "ban").lower()
+        return await send(
+            "**Decoy channel**\n"
+            f"Status: `{'ON' if enabled else 'OFF'}`\n"
+            f"Channel: {ch.mention if ch else '`not set`'}\n"
+            f"Punishment: `{pun}`\n\n"
+            "Anyone who types in that channel (except owner/admins/whitelist) "
+            "gets that punishment automatically — great for catching spam bots.\n"
+            "Setup: `/decoy set` · `/decoy punishment` · `/decoy on`"
+        )
+
+    if action in ("set", "channel"):
+        if channel is None:
+            return await send("Usage: `/decoy set` with a channel, or `*decoy set #channel`")
+        cfg["decoy_channel"] = channel.id
+        cfg["decoy_enabled"] = True
+        save_config()
+        return await send(
+            f"✅ Decoy set to {channel.mention} and **enabled**.\n"
+            f"Punishment: `{(cfg.get('decoy_action') or 'ban')}` "
+            f"(change with `/decoy punishment`).\n"
+            "Tip: make the channel look normal (e.g. `#verify-help`). "
+            "Don't type in it yourself unless you're staff."
+        )
+
+    if action in ("punishment", "action", "mode"):
+        pun = (punishment or "").lower().strip()
+        if pun not in ("kick", "ban"):
+            return await send("Usage: `/decoy punishment` → kick or ban · `*decoy punishment kick|ban`")
+        cfg["decoy_action"] = pun
+        save_config()
+        return await send(f"✅ Decoy punishment set to `{pun}`.")
+
+    if action in ("on", "enable"):
+        if not cfg.get("decoy_channel"):
+            return await send("Set a channel first: `/decoy set` or `*decoy set #channel`")
+        cfg["decoy_enabled"] = True
+        save_config()
+        return await send("✅ Decoy **enabled**.")
+
+    if action in ("off", "disable"):
+        cfg["decoy_enabled"] = False
+        save_config()
+        return await send("✅ Decoy **disabled**.")
+
+    return await send(
+        "Usage:\n"
+        "`*decoy info`\n"
+        "`*decoy set #channel`\n"
+        "`*decoy punishment kick|ban`\n"
+        "`*decoy on` / `*decoy off`"
+    )
+
+
+@tree.command(
+    name="decoy",
+    description="Decoy channel — auto kick/ban anyone who types there (catches spam bots)",
+)
+@app_commands.describe(
+    action="What to do",
+    channel="Channel to use as the decoy (for set)",
+    punishment="kick or ban when someone types in the decoy",
+)
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="Info", value="info"),
+        app_commands.Choice(name="Set channel", value="set"),
+        app_commands.Choice(name="Set punishment", value="punishment"),
+        app_commands.Choice(name="Enable", value="on"),
+        app_commands.Choice(name="Disable", value="off"),
+    ],
+    punishment=[
+        app_commands.Choice(name="Kick", value="kick"),
+        app_commands.Choice(name="Ban", value="ban"),
+    ],
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def slash_decoy(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+    channel: discord.TextChannel = None,
+    punishment: app_commands.Choice[str] = None,
+):
+    await interaction.response.defer(ephemeral=True)
+    pun = punishment.value if punishment else None
+    await do_decoy_cmd(
+        interaction.guild,
+        interaction.user,
+        action.value,
+        channel,
+        pun,
+        _slash_send(interaction, ephemeral=True),
+    )
+
 
 @tree.command(name="setwelcome", description="Set the welcome channel")
 @app_commands.checks.has_permissions(administrator=True)
@@ -3690,6 +3880,54 @@ async def profanity(ctx, state: str):
     await ctx.send(
         f"✅ Profanity filter {'enabled' if state == 'on' else 'disabled'}."
     )
+
+
+@bot.command(name="decoy", aliases=["spamtrap", "trapchannel", "decoychannel"])
+@commands.has_permissions(administrator=True)
+async def prefix_decoy(ctx, action: str = "info", value: str = None):
+    """
+    Decoy channel — auto kick/ban non-staff who type there.
+    *decoy info | set #channel | punishment kick|ban | on | off
+    """
+    channel = None
+    punishment = None
+    action_l = (action or "info").lower()
+
+    # *decoy #channel  → treat as set
+    if ctx.message.channel_mentions and action_l not in (
+        "info",
+        "status",
+        "show",
+        "set",
+        "channel",
+        "punishment",
+        "action",
+        "mode",
+        "on",
+        "off",
+        "enable",
+        "disable",
+        "kick",
+        "ban",
+    ):
+        action_l = "set"
+        channel = ctx.message.channel_mentions[0]
+
+    if action_l in ("set", "channel"):
+        if ctx.message.channel_mentions:
+            channel = ctx.message.channel_mentions[0]
+        elif value:
+            raw = value.strip("<># ")
+            if raw.isdigit():
+                channel = ctx.guild.get_channel(int(raw))
+    elif action_l in ("punishment", "action", "mode"):
+        punishment = (value or "").lower()
+    elif action_l in ("kick", "ban") and value is None:
+        # shorthand: *decoy ban  /  *decoy kick
+        punishment = action_l
+        action_l = "punishment"
+
+    await do_decoy_cmd(ctx.guild, ctx.author, action_l, channel, punishment, ctx.send)
 
 
 @bot.command(name="help")

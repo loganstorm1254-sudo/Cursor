@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+  <meta name="apple-mobile-web-app-title" content="SeekAra"/>
+  <meta name="application-name" content="SeekAra"/>
+  <meta name="theme-color" content="#f8f9fb"/>
+  <meta name="description" content="SeekAra on iOS — Beacon moderation info, plus seekara.pt and Oval."/>
+  <link rel="apple-touch-icon" href="seekara-mark.png"/>
+  <title>SeekAra</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@550;650;700&family=Source+Sans+3:wght@450;550;650&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --ink: #0f1216;
+      --mute: #5a616c;
+      --wash: #f8f9fb;
+      --paper: #ffffff;
+      --line: #e4e7ec;
+      --seek: #e07a45;
+      --ara: #c24b4b;
+      --oval: #3ddc84;
+      --oval-deep: #0e7a3d;
+      --oval-ink: #03110b;
+      --beacon: #5856d6;
+      --font-d: "Sora", system-ui, sans-serif;
+      --font-b: "Source Sans 3", system-ui, sans-serif;
+      --pad: max(20px, env(safe-area-inset-left));
+      --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      font-family: var(--font-b);
+      color: var(--ink);
+      background:
+        radial-gradient(70% 45% at 100% 0%, rgba(224,122,69,0.12), transparent 55%),
+        radial-gradient(55% 40% at 0% 100%, rgba(61,220,132,0.08), transparent 50%),
+        linear-gradient(180deg, #fcfcfd 0%, var(--wash) 55%, #eef0f4 100%);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      padding-bottom: calc(72px + env(safe-area-inset-bottom));
+    }
+    a { color: inherit; text-decoration: none; }
+    .wrap { width: min(560px, 100%); margin: 0 auto; padding: 0 var(--pad); }
+    header.hero {
+      min-height: 100dvh;
+      display: grid;
+      align-content: center;
+      gap: 18px;
+      padding: max(48px, env(safe-area-inset-top)) 0 40px;
+    }
+    .brand {
+      width: min(220px, 62vw);
+      height: auto;
+      animation: lift .7s var(--ease) both;
+    }
+    h1 {
+      margin: 0;
+      font-family: var(--font-d);
+      font-weight: 650;
+      font-size: clamp(2rem, 7vw, 2.6rem);
+      letter-spacing: -0.04em;
+      line-height: 1.08;
+      animation: lift .8s var(--ease) .05s both;
+    }
+    .lead {
+      margin: 0;
+      color: var(--mute);
+      font-size: 1.05rem;
+      max-width: 32ch;
+      animation: lift .85s var(--ease) .1s both;
+    }
+    .cta {
+      display: flex; flex-wrap: wrap; gap: 10px;
+      animation: lift .9s var(--ease) .14s both;
+    }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 44px; padding: 0 18px; border-radius: 999px;
+      font-family: var(--font-d); font-weight: 650; font-size: 0.9rem;
+      border: 1px solid transparent;
+      transition: transform .16s var(--ease);
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn.brand {
+      color: #fff;
+      background: linear-gradient(135deg, var(--seek), var(--ara));
+      box-shadow: 0 10px 24px rgba(194,75,75,0.18);
+    }
+    .btn.ghost {
+      background: var(--paper);
+      border-color: var(--line);
+      color: var(--ink);
+    }
+    .btn.oval {
+      color: var(--oval-ink);
+      background: linear-gradient(180deg, #6ef0a8, var(--oval));
+    }
+    section {
+      padding: 28px 0 8px;
+    }
+    section h2 {
+      margin: 0 0 8px;
+      font-family: var(--font-d);
+      font-size: 1.45rem;
+      letter-spacing: -0.03em;
+    }
+    section .sub {
+      margin: 0 0 16px;
+      color: var(--mute);
+      max-width: 40ch;
+    }
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+      margin-bottom: 14px;
+    }
+    .tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .tag {
+      font-family: var(--font-d);
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(88,86,214,0.1);
+      color: var(--beacon);
+    }
+    .tag.live {
+      background: rgba(61,220,132,0.18);
+      color: var(--oval-deep);
+    }
+    .feature + .feature { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .feature strong {
+      display: block;
+      font-family: var(--font-d);
+      font-size: 0.95rem;
+      margin-bottom: 2px;
+    }
+    .feature span { color: var(--mute); font-size: 0.92rem; }
+    .nav {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+      padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+      background: rgba(248,249,251,0.92);
+      backdrop-filter: blur(12px);
+      border-top: 1px solid var(--line);
+      z-index: 20;
+    }
+    .nav a {
+      text-align: center;
+      font-family: var(--font-d);
+      font-size: 0.68rem;
+      font-weight: 650;
+      color: var(--mute);
+      padding: 8px 4px;
+      border-radius: 12px;
+    }
+    .nav a:hover, .nav a:focus-visible { color: var(--ink); background: rgba(15,18,22,0.04); }
+    @keyframes lift {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero" id="home">
+      <img class="brand" src="seekara-mark.png" width="438" height="87" alt="SeekAra"/>
+      <h1>Projects designed to help you get things done quickly.</h1>
+      <p class="lead">Beacon moderation info, plus SeekAra and Oval — on your iPhone Home Screen.</p>
+      <div class="cta">
+        <a class="btn brand" href="#beacon">Beacon info</a>
+        <a class="btn oval" href="https://oval.seekara.pt">Open Oval</a>
+        <a class="btn ghost" href="https://seekara.pt">seekara.pt</a>
+      </div>
+    </header>
+
+    <section id="beacon">
+      <h2>Beacon</h2>
+      <p class="sub">SKR-010 · Advanced Discord moderation by SeekAra Discord Bot Labs.</p>
+      <div class="panel">
+        <div class="tags">
+          <span class="tag">SKR-010</span>
+          <span class="tag live">Live</span>
+          <span class="tag">Discord</span>
+        </div>
+        <p style="margin:0;color:var(--mute)">
+          Beacon helps communities stay safe and organized with antinuke protection,
+          structure backups, warns, stickies, polls, XP/economy, and more.
+        </p>
+      </div>
+      <div class="panel">
+        <div class="feature"><strong>Antinuke</strong><span>Hardens your server against mass bans, channel wipes, and takeovers.</span></div>
+        <div class="feature"><strong>Structure backups</strong><span>Snapshot roles, channels, and layout for recovery.</span></div>
+        <div class="feature"><strong>Warns</strong><span>Track member warnings with a clear moderation history.</span></div>
+        <div class="feature"><strong>Stickies</strong><span>Keep important messages visible as chat moves.</span></div>
+        <div class="feature"><strong>Polls</strong><span>Run community votes without leaving Discord.</span></div>
+        <div class="feature"><strong>XP &amp; economy</strong><span>Reward activity with leveling and a lightweight economy.</span></div>
+      </div>
+      <div class="panel">
+        <p style="margin:0 0 10px;font-family:var(--font-d);font-weight:650">Works with</p>
+        <div class="feature"><strong>Flare · SKR-011</strong><span>Security &amp; verification — alt scans, automod, captcha, reports.</span></div>
+        <div class="feature"><strong>Reverb · SKR-012</strong><span>Builds channels/roles and wires Beacon, Flare, and SeekDesk.</span></div>
+        <div class="feature"><strong>SeekDesk · SKR-013</strong><span>Support-ticket help-desk flow for communities.</span></div>
+      </div>
+      <div class="cta">
+        <a class="btn brand" href="https://seekara.pt/#works">See on seekara.pt</a>
+        <a class="btn ghost" href="https://www.seekara.pt/support/discordbotsupport">Bot support</a>
+      </div>
+    </section>
+
+    <section id="oval">
+      <h2>Oval</h2>
+      <p class="sub">SKR-001 · SeekAra’s flagship AI chat for writing, learning, and everyday questions.</p>
+      <div class="panel" style="border-color: color-mix(in srgb, var(--oval) 35%, var(--line));">
+        <p style="margin:0 0 14px;color:var(--mute)">
+          Try free as a guest at oval.seekara.pt. A SeekAra account unlocks chats, memory, Oval+, and the API.
+        </p>
+        <a class="btn oval" href="https://oval.seekara.pt">Open oval.seekara.pt</a>
+      </div>
+    </section>
+  </div>
+
+  <nav class="nav" aria-label="Primary">
+    <a href="#home">Home</a>
+    <a href="#beacon">Beacon</a>
+    <a href="https://seekara.pt">Site</a>
+    <a href="https://oval.seekara.pt">Oval</a>
+  </nav>
+</body>
+</html>

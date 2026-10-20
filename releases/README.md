@@ -3,6 +3,8 @@
 | File | What it is |
 |------|------------|
 | [`Seekara.apk`](Seekara.apk) | The **Seekara** app — browse [seekara.pt](https://www.seekara.pt/) (needs internet) |
+| iOS source: [`SeekaraIOS/`](../SeekaraIOS/) | **SeekAra for iOS** (SwiftUI) — Beacon info + in-app [seekara.pt](https://seekara.pt) / [oval.seekara.pt](https://oval.seekara.pt). Open in Xcode (iOS 18+) |
+| [`seekara-ios/`](seekara-ios/) | **SeekAra Home Screen web app** — open `index.html` in Safari → Share → Add to Home Screen |
 | [`NotifyReceiver.apk`](NotifyReceiver.apk) | Notify: phone that should **get** notifications (Bluetooth only) |
 | [`NotifySender.apk`](NotifySender.apk) | Notify: phone that should **send** notifications (Bluetooth only) |
 | [`Walkie.apk`](Walkie.apk) | **Walkie-talkie** — install on any number of phones, works over internet on any network |

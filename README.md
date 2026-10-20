@@ -1,5 +1,9 @@
 # Cursor bots + Wi‑Fi Notify apps
 
+## SeekAra for iOS (Beacon + Oval)
+
+SwiftUI app with **Beacon** (SKR-010) details and in-app browsers for [seekara.pt](https://seekara.pt) and [oval.seekara.pt](https://oval.seekara.pt). Open [`SeekaraIOS/Seekara.xcodeproj`](SeekaraIOS/Seekara.xcodeproj) in Xcode (iOS 18+). Docs: [`SeekaraIOS/README.md`](SeekaraIOS/README.md).
+
 ## Nova — your own AI (Android, offline, trained from scratch)
 
 A **5.9M-parameter GPT transformer trained from zero** just for you. The

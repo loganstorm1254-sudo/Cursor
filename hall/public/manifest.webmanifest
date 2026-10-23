@@ -6,12 +6,17 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "orientation": "any",
   "background_color": "#121318",
   "theme_color": "#121318",
   "lang": "en",
   "dir": "ltr",
   "categories": ["social", "communication"],
+  "handle_links": "preferred",
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
   "icons": [
     {
       "src": "/icons/icon-192.png",

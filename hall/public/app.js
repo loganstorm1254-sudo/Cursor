@@ -206,8 +206,10 @@ function extractInviteCode(value) {
   if (!raw) return "";
   try {
     const url = new URL(raw, PUBLIC_ORIGIN);
-    const match = url.pathname.match(/^\/invite\/([a-z0-9-]{2,32})\/?$/i);
-    if (match?.[1]) return match[1].toLowerCase();
+    const pathMatch = url.pathname.match(/^\/invite\/([a-z0-9-]{2,32})\/?$/i);
+    if (pathMatch?.[1]) return pathMatch[1].toLowerCase();
+    const queryCode = url.searchParams.get("invite");
+    if (queryCode && /^[a-z0-9-]{2,32}$/i.test(queryCode)) return queryCode.toLowerCase();
   } catch {
     // Fall through to bare codes.
   }
@@ -216,19 +218,27 @@ function extractInviteCode(value) {
   return "";
 }
 
+function pendingInviteCode() {
+  return sessionStorage.getItem(INVITE_PENDING_KEY) || extractInviteCode(location.href) || "";
+}
+
 function captureInviteFromLocation() {
-  const match = location.pathname.match(/^\/invite\/([a-z0-9-]{2,32})\/?$/i);
-  if (!match?.[1]) return;
-  sessionStorage.setItem(INVITE_PENDING_KEY, match[1].toLowerCase());
-  history.replaceState({}, "", "/");
+  const code = extractInviteCode(location.href);
+  if (!code) return;
+  sessionStorage.setItem(INVITE_PENDING_KEY, code);
+  // Keep a stable in-scope URL so the installed Hall app can claim the link.
+  if (location.pathname.startsWith("/invite/")) {
+    history.replaceState({}, "", `/?invite=${encodeURIComponent(code)}`);
+  }
 }
 
 async function consumePendingInvite() {
-  const code = sessionStorage.getItem(INVITE_PENDING_KEY);
+  const code = pendingInviteCode();
   if (!code) return null;
-  sessionStorage.removeItem(INVITE_PENDING_KEY);
   try {
     const data = await api("/api/join", { method: "POST", body: JSON.stringify({ code }) });
+    sessionStorage.removeItem(INVITE_PENDING_KEY);
+    if (location.search.includes("invite=")) history.replaceState({}, "", "/");
     return data.server?.id ?? null;
   } catch (error) {
     openModal("Invite", (form) => {
@@ -240,6 +250,7 @@ async function consumePendingInvite() {
 
 async function enterApp() {
   showApp();
+  if (boot.querySelector("p")) boot.querySelector("p").textContent = pendingInviteCode() ? "Joining server…" : "Hall";
   const invitedServerId = await consumePendingInvite();
   const listed = await api("/api/servers");
   state.servers = listed.servers;
@@ -1198,16 +1209,20 @@ async function refreshAndOpen(serverId) {
 
 async function bootApp() {
   captureInviteFromLocation();
+  const inviteCode = pendingInviteCode();
+  if (inviteCode && boot.querySelector("p")) boot.querySelector("p").textContent = "Opening invite…";
   try {
     const data = await api("/api/me");
     state.me = data.user;
     await enterApp();
   } catch (error) {
     if (error.status === 401) {
-      setAuthMode(sessionStorage.getItem(INVITE_PENDING_KEY) ? "register" : "login");
+      // Prefer sign-in for invite links — most people already have an account.
+      setAuthMode("login");
       showAuth();
-      if (sessionStorage.getItem(INVITE_PENDING_KEY)) {
-        authLede.textContent = "Create an account or sign in to join that server.";
+      if (inviteCode) {
+        authTitle.textContent = "Join with invite";
+        authLede.textContent = "Sign in (or create an account) to open that server in Hall.";
       }
     } else {
       setAuthMode("login");

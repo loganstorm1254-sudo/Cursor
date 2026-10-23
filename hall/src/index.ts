@@ -1,10 +1,33 @@
-import { clearSessionHeaders, createSession, destroySession, findUserByUsername, hashPassword, passwordMatches, requireUser, sessionHeaders, toPublicUser, type PublicUser } from "./auth";
+import {
+  clearSessionHeaders,
+  createSession,
+  destroySession,
+  findUserById,
+  findUserByUsername,
+  hashPassword,
+  passwordMatches,
+  requireUser,
+  sessionHeaders,
+  toPublicUser,
+  type PublicUser,
+} from "./auth";
 import { type ChatMessage } from "./channel";
 import { HttpError, asRecord, asString, json, readJson } from "./http";
 import { ensureReady } from "./schema";
-import { iconLetter, normalizeChannelName, normalizePassword, normalizeServerName, normalizeUsername } from "./username";
+import {
+  iconLetter,
+  isPlatformOwnerUsername,
+  normalizeBio,
+  normalizeChannelName,
+  normalizePassword,
+  normalizeServerName,
+  normalizeUsername,
+} from "./username";
 
 export { ChannelRoom } from "./channel";
+
+const MAX_AVATAR_BYTES = 512_000;
+const AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
 type ServerRow = {
   id: string;
@@ -72,18 +95,23 @@ async function register(request: Request, env: Env): Promise<Response> {
   const parsedPassword = normalizePassword(asString(body.password, "Password"));
   if (typeof parsedPassword !== "string") throw new HttpError(400, parsedPassword.error);
 
+  if (isPlatformOwnerUsername(parsedName.username) && env.OWNER_PASSWORD) {
+    throw new HttpError(403, "Sign in as Rogue1254 — that account is already set up.");
+  }
+
   const existing = await findUserByUsername(env, parsedName.username);
   if (existing) throw new HttpError(409, "That username is taken");
 
   const userId = crypto.randomUUID();
   const passwordHash = await hashPassword(parsedPassword);
   const now = Date.now();
+  const role = isPlatformOwnerUsername(parsedName.username) ? "owner" : "user";
   try {
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO users (id, username, display_name, password_hash, created_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      ).bind(userId, parsedName.username, parsedName.displayName, passwordHash, now),
+        `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, avatar_key, role)
+         VALUES (?, ?, ?, ?, ?, '', NULL, ?)`,
+      ).bind(userId, parsedName.username, parsedName.displayName, passwordHash, now, role),
       env.DB.prepare(
         `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
          VALUES ('lobby', ?, ?)`,
@@ -98,7 +126,16 @@ async function register(request: Request, env: Env): Promise<Response> {
   const token = await createSession(env, userId);
   console.log(JSON.stringify({ event: "register", username: parsedName.username }));
   return json(
-    { user: { id: userId, username: parsedName.username, displayName: parsedName.displayName } },
+    {
+      user: toPublicUser({
+        id: userId,
+        username: parsedName.username,
+        display_name: parsedName.displayName,
+        bio: "",
+        avatar_key: null,
+        role,
+      }),
+    },
     201,
     sessionHeaders(token, request),
   );
@@ -114,10 +151,92 @@ async function login(request: Request, env: Env): Promise<Response> {
   const valid = await passwordMatches(password, user?.password_hash ?? null);
   if (!user || !valid) throw new HttpError(401, "Wrong username or password");
 
+  if (isPlatformOwnerUsername(user.username) && user.role !== "owner") {
+    await env.DB.prepare(`UPDATE users SET role = 'owner', display_name = 'Rogue1254' WHERE id = ?`).bind(user.id).run();
+    user.role = "owner";
+    user.display_name = "Rogue1254";
+  }
+
   await env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND expires_at < ?").bind(user.id, Date.now()).run();
   const token = await createSession(env, user.id);
   console.log(JSON.stringify({ event: "login", username: user.username }));
   return json({ user: toPublicUser(user) }, 200, sessionHeaders(token, request));
+}
+
+async function updateProfile(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const body = asRecord(await readJson(request, 4_096));
+  let bio = user.bio;
+  if (body.bio !== undefined) {
+    const parsed = normalizeBio(asString(body.bio, "Bio"));
+    if (typeof parsed !== "string") throw new HttpError(400, parsed.error);
+    bio = parsed;
+  }
+  await env.DB.prepare(`UPDATE users SET bio = ? WHERE id = ?`).bind(bio, user.id).run();
+  const row = await findUserById(env, user.id);
+  if (!row) throw new HttpError(404, "User not found");
+  return json({ user: toPublicUser(row) });
+}
+
+async function uploadAvatar(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) throw new HttpError(400, "Empty image");
+  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(413, "Image must be under 512KB");
+
+  const key = `${user.id}/${crypto.randomUUID()}`;
+  await env.AVATARS.put(key, bytes, {
+    httpMetadata: { contentType: type, cacheControl: "public, max-age=31536000, immutable" },
+  });
+
+  const previous = await findUserById(env, user.id);
+  await env.DB.prepare(`UPDATE users SET avatar_key = ? WHERE id = ?`).bind(key, user.id).run();
+  if (previous?.avatar_key && previous.avatar_key !== key) {
+    try {
+      await env.AVATARS.delete(previous.avatar_key);
+    } catch {
+      // Best-effort cleanup.
+    }
+  }
+
+  const row = await findUserById(env, user.id);
+  if (!row) throw new HttpError(404, "User not found");
+  return json({ user: toPublicUser(row) });
+}
+
+async function clearAvatar(env: Env, user: PublicUser): Promise<Response> {
+  const previous = await findUserById(env, user.id);
+  await env.DB.prepare(`UPDATE users SET avatar_key = NULL WHERE id = ?`).bind(user.id).run();
+  if (previous?.avatar_key) {
+    try {
+      await env.AVATARS.delete(previous.avatar_key);
+    } catch {
+      // Best-effort cleanup.
+    }
+  }
+  const row = await findUserById(env, user.id);
+  if (!row) throw new HttpError(404, "User not found");
+  return json({ user: toPublicUser(row) });
+}
+
+async function getAvatar(env: Env, keyPath: string): Promise<Response> {
+  const key = decodeURIComponent(keyPath);
+  if (!key || key.includes("..") || key.startsWith("/")) throw new HttpError(400, "Bad avatar");
+  const object = await env.AVATARS.get(key);
+  if (!object) throw new HttpError(404, "Avatar not found");
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("cache-control", "public, max-age=31536000, immutable");
+  headers.set("etag", object.httpEtag);
+  return new Response(object.body, { headers });
+}
+
+async function getProfile(env: Env, usernameRaw: string): Promise<Response> {
+  const parsed = normalizeUsername(usernameRaw);
+  if ("error" in parsed) throw new HttpError(404, "User not found");
+  const row = await findUserByUsername(env, parsed.username);
+  if (!row || row.id === "system") throw new HttpError(404, "User not found");
+  return json({ user: toPublicUser(row) });
 }
 
 async function listServers(env: Env, user: PublicUser): Promise<Response> {
@@ -223,24 +342,32 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
     .bind(server.id)
     .all<{ id: string; name: string; position: number }>();
   const members = await env.DB.prepare(
-    `SELECT u.id, u.username, u.display_name
+    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role
      FROM memberships m
      JOIN users u ON u.id = m.user_id
      WHERE m.server_id = ? AND u.id != 'system'
      ORDER BY u.display_name COLLATE NOCASE ASC`,
   )
     .bind(server.id)
-    .all<{ id: string; username: string; display_name: string }>();
+    .all<{
+      id: string;
+      username: string;
+      display_name: string;
+      bio: string | null;
+      avatar_key: string | null;
+      role: string | null;
+    }>();
 
   return json({
     server: publicServer(server, user.id),
     channels: channels.results ?? [],
-    members: (members.results ?? []).map((member) => ({
-      id: member.id,
-      username: member.username,
-      displayName: member.display_name,
-      isOwner: member.id === server.owner_id,
-    })),
+    members: (members.results ?? []).map((member) => {
+      const profile = toPublicUser(member);
+      return {
+        ...profile,
+        isOwner: member.id === server.owner_id,
+      };
+    }),
   });
 }
 
@@ -250,7 +377,7 @@ async function createChannel(request: Request, env: Env, user: PublicUser, serve
     .first<{ id: string; owner_id: string }>();
   if (!server) throw new HttpError(404, "Server not found");
   if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
-  const canCreate = server.owner_id === user.id || server.owner_id === "system";
+  const canCreate = server.owner_id === user.id || server.owner_id === "system" || user.isPlatformOwner;
   if (!canCreate) throw new HttpError(403, "Only the server owner can add channels");
 
   const body = asRecord(await readJson(request, 2_048));
@@ -306,7 +433,12 @@ async function postMessage(request: Request, env: Env, user: PublicUser, channel
   const body = asRecord(await readJson(request, 8_192));
   const text = asString(body.body, "Message");
   const result = await room(env, channelId).postMessage(
-    { userId: user.id, username: user.username, displayName: user.displayName },
+    {
+      userId: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+    },
     text,
   );
   if (!result.ok) throw new HttpError(400, result.error);
@@ -325,6 +457,7 @@ async function openSocket(request: Request, env: Env, user: PublicUser, channelI
   headers.set("x-hall-user-id", user.id);
   headers.set("x-hall-username", user.username);
   headers.set("x-hall-display-name", user.displayName);
+  if (user.avatarUrl) headers.set("x-hall-avatar-url", user.avatarUrl);
   return room(env, channelId).fetch(new Request(request, { headers }));
 }
 
@@ -332,6 +465,10 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
   const { pathname } = url;
   const method = request.method;
   await ensureReady(env);
+
+  if (method === "GET" && pathname.startsWith("/api/avatars/")) {
+    return getAvatar(env, pathname.slice("/api/avatars/".length));
+  }
 
   if (method === "POST" && pathname === "/api/register") return register(request, env);
   if (method === "POST" && pathname === "/api/login") return login(request, env);
@@ -346,6 +483,13 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
   }
 
   const user = await requireUser(env, request);
+
+  if (pathname === "/api/me" && method === "PATCH") return updateProfile(request, env, user);
+  if (pathname === "/api/me/avatar" && method === "PUT") return uploadAvatar(request, env, user);
+  if (pathname === "/api/me/avatar" && method === "DELETE") return clearAvatar(env, user);
+
+  const profileMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
+  if (profileMatch && method === "GET") return getProfile(env, decodeURIComponent(profileMatch[1] ?? ""));
 
   if (method === "GET" && pathname === "/api/servers") return listServers(env, user);
   if (method === "POST" && pathname === "/api/servers") return createServer(request, env, user);

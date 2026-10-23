@@ -1,10 +1,16 @@
+import { hashPassword } from "./auth";
+import { PLATFORM_OWNER_DISPLAY, PLATFORM_OWNER_USERNAME } from "./username";
+
 const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    bio TEXT NOT NULL DEFAULT '',
+    avatar_key TEXT,
+    role TEXT NOT NULL DEFAULT 'user'
   )`,
   `CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
@@ -43,12 +49,78 @@ const STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS memberships_user_idx ON memberships (user_id)`,
 ];
 
-export async function ensureReady(env: Env): Promise<void> {
-  await env.DB.batch(STATEMENTS.map((sql) => env.DB.prepare(sql)));
+const COLUMN_PATCHES = [
+  `ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN avatar_key TEXT`,
+  `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`,
+];
+
+let ready: Promise<void> | null = null;
+
+async function patchColumns(env: Env): Promise<void> {
+  for (const sql of COLUMN_PATCHES) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!/duplicate column/i.test(message)) {
+        // Older SQLite wording varies; ignore only duplicate-column failures.
+        if (!/already exists/i.test(message)) {
+          console.error(JSON.stringify({ event: "schema_patch", sql, message }));
+        }
+      }
+    }
+  }
+}
+
+async function bootstrapOwner(env: Env): Promise<void> {
+  const password = env.OWNER_PASSWORD;
+  if (!password || password.length < 8) return;
+
+  const passwordHash = await hashPassword(password);
+  const existing = await env.DB.prepare("SELECT id FROM users WHERE username = ?")
+    .bind(PLATFORM_OWNER_USERNAME)
+    .first<{ id: string }>();
+  const now = Date.now();
+
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE users
+       SET password_hash = ?, display_name = ?, role = 'owner'
+       WHERE id = ?`,
+    )
+      .bind(passwordHash, PLATFORM_OWNER_DISPLAY, existing.id)
+      .run();
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
+       VALUES ('lobby', ?, ?)`,
+    )
+      .bind(existing.id, now)
+      .run();
+    return;
+  }
+
+  const userId = crypto.randomUUID();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT OR IGNORE INTO users (id, username, display_name, password_hash, created_at)
-       VALUES ('system', 'hall:system', 'Hall', 'disabled', 0)`,
+      `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, avatar_key, role)
+       VALUES (?, ?, ?, ?, ?, '', NULL, 'owner')`,
+    ).bind(userId, PLATFORM_OWNER_USERNAME, PLATFORM_OWNER_DISPLAY, passwordHash, now),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
+       VALUES ('lobby', ?, ?)`,
+    ).bind(userId, now),
+  ]);
+  console.log(JSON.stringify({ event: "owner_bootstrapped", username: PLATFORM_OWNER_USERNAME }));
+}
+
+async function init(env: Env): Promise<void> {
+  await env.DB.batch(STATEMENTS.map((sql) => env.DB.prepare(sql)));
+  await patchColumns(env);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO users (id, username, display_name, password_hash, created_at, bio, role)
+       VALUES ('system', 'hall:system', 'Hall', 'disabled', 0, '', 'system')`,
     ),
     env.DB.prepare(
       `INSERT OR IGNORE INTO servers (id, name, icon_letter, owner_id, invite_code, created_at)
@@ -63,4 +135,15 @@ export async function ensureReady(env: Env): Promise<void> {
        VALUES ('lobby-random', 'lobby', 'random', 1, 0)`,
     ),
   ]);
+  await bootstrapOwner(env);
+}
+
+export async function ensureReady(env: Env): Promise<void> {
+  if (!ready) ready = init(env);
+  try {
+    await ready;
+  } catch (error) {
+    ready = null;
+    throw error;
+  }
 }

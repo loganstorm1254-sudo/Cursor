@@ -140,6 +140,49 @@ describe("Hall", () => {
     socket.close(1000, "done");
   });
 
+  it("bootstraps Rogue1254 as the platform owner and supports bios and avatars", async () => {
+    const login = await exports.default.fetch("http://hall.test/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "Rogue1254", password: "rogue-owner-pass" }),
+    });
+    expect(login.status).toBe(200);
+    const loginBody = (await login.json()) as UserBody & { user: { isPlatformOwner: boolean; bio: string } };
+    expect(loginBody.user).toMatchObject({
+      username: "rogue1254",
+      displayName: "Rogue1254",
+      isPlatformOwner: true,
+    });
+    const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
+
+    const blockedRegister = await register("Rogue1254");
+    expect(blockedRegister.response.status).toBe(403);
+
+    const patched = await authed(cookie, "/api/me", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bio: "Built Hall." }),
+    });
+    expect(patched.status).toBe(200);
+    expect(((await patched.json()) as { user: { bio: string } }).user.bio).toBe("Built Hall.");
+
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) =>
+      c.charCodeAt(0),
+    );
+    const uploaded = await authed(cookie, "/api/me/avatar", {
+      method: "PUT",
+      headers: { "content-type": "image/png" },
+      body: png,
+    });
+    expect(uploaded.status).toBe(200);
+    const uploadedBody = (await uploaded.json()) as { user: { avatarUrl: string | null } };
+    expect(uploadedBody.user.avatarUrl).toMatch(/^\/api\/avatars\//);
+
+    const avatar = await exports.default.fetch(`http://hall.test${uploadedBody.user.avatarUrl}`);
+    expect(avatar.status).toBe(200);
+    expect(avatar.headers.get("content-type")).toMatch(/image\/png/);
+  });
+
   it("lets the owner add a channel and keeps strangers out until they use the invite", async () => {
     const ada = await register("ada_owner");
     const grace = await register("grace_guest");

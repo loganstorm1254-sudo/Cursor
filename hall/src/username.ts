@@ -1,5 +1,9 @@
 const RESERVED = new Set(["admin", "owner"]);
 
+/** Platform owner account — created/updated from OWNER_PASSWORD. */
+export const PLATFORM_OWNER_USERNAME = "rogue1254";
+export const PLATFORM_OWNER_DISPLAY = "Rogue1254";
+
 export type Username = {
   username: string;
   displayName: string;
@@ -15,11 +19,16 @@ export function normalizeUsername(input: string): Username | { error: string } {
   if (RESERVED.has(username)) {
     return { error: `@${username} is reserved.` };
   }
-  return { username, displayName: raw };
+  const displayName = username === PLATFORM_OWNER_USERNAME ? PLATFORM_OWNER_DISPLAY : raw;
+  return { username, displayName };
 }
 
 export function isReservedUsername(username: string): boolean {
   return RESERVED.has(username.toLowerCase());
+}
+
+export function isPlatformOwnerUsername(username: string): boolean {
+  return username.toLowerCase() === PLATFORM_OWNER_USERNAME;
 }
 
 export function normalizeChannelName(input: string): string | null {
@@ -51,4 +60,13 @@ export function normalizePassword(input: string): string | { error: string } {
     return { error: "Passwords are 8–200 characters." };
   }
   return input;
+}
+
+export function normalizeBio(input: string): string | { error: string } {
+  const bio = input.replace(/\r\n/g, "\n").trim();
+  if (bio.length > 280) return { error: "Bios are at most 280 characters." };
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(bio)) {
+    return { error: "Bio has invalid characters." };
+  }
+  return bio;
 }

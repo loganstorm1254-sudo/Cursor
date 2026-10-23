@@ -4,5 +4,5 @@
     "types": ["@cloudflare/vitest-plugin/types"],
     "verbatimModuleSyntax": false
   },
-  "include": ["./**/*.ts", "../src/**/*.ts", "../worker-configuration.d.ts"]
+  "include": ["./**/*.ts", "../src/**/*.ts", "../worker-configuration.d.ts", "../env.d.ts"]
 }

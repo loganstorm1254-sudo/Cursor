@@ -25,11 +25,22 @@ The Worker creates tables on first use, so local dev works before you apply migr
 ## Deploy
 
 1. `npx wrangler login`
-2. `npx wrangler d1 create hall`
-3. Put the printed database id in `wrangler.jsonc` as `database_id`.
-4. `npm run db:migrate:remote`
-5. `npm run deploy`
+2. `npx wrangler d1 create hall` (skip if you already have the `hall` database)
+3. Put the printed database id in `wrangler.jsonc` as `database_id`
+4. `npx wrangler r2 bucket create hall-avatars`
+5. Set the owner login password (creates/updates **Rogue1254**):
+
+```bash
+npx wrangler secret put OWNER_PASSWORD
+```
+
+6. `npm run db:migrate:remote`
+7. `npm run deploy`
+
+Sign in as **Rogue1254** with the password you put in `OWNER_PASSWORD`.
 
 The first request also creates the Lobby server if it is missing, so a brand-new database still comes up with `#general`, `#random`, and invite code `hall`.
+
+Everyone can set a **bio** and **profile photo** from Profile in the app.
 
 Logs and traces are turned on in `wrangler.jsonc`. Trace sampling is 1%.

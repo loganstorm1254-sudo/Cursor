@@ -1,4 +1,5 @@
 import { HttpError } from "./http";
+import { isPlatformOwnerUsername } from "./username";
 
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const PBKDF2_ITERATIONS = 100_000;
@@ -12,13 +13,19 @@ export type PublicUser = {
   id: string;
   username: string;
   displayName: string;
+  bio: string;
+  avatarUrl: string | null;
+  isPlatformOwner: boolean;
 };
 
-type UserRow = {
+export type UserRow = {
   id: string;
   username: string;
   display_name: string;
   password_hash: string;
+  bio: string | null;
+  avatar_key: string | null;
+  role: string | null;
 };
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -93,8 +100,27 @@ function readCookie(request: Request): string | null {
   return null;
 }
 
-export function toPublicUser(row: { id: string; username: string; display_name: string }): PublicUser {
-  return { id: row.id, username: row.username, displayName: row.display_name };
+export function avatarUrlFor(avatarKey: string | null | undefined): string | null {
+  if (!avatarKey) return null;
+  return `/api/avatars/${encodeURIComponent(avatarKey)}`;
+}
+
+export function toPublicUser(row: {
+  id: string;
+  username: string;
+  display_name: string;
+  bio?: string | null;
+  avatar_key?: string | null;
+  role?: string | null;
+}): PublicUser {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    bio: row.bio ?? "",
+    avatarUrl: avatarUrlFor(row.avatar_key),
+    isPlatformOwner: row.role === "owner" || isPlatformOwnerUsername(row.username),
+  };
 }
 
 export async function createSession(env: Env, userId: string): Promise<string> {
@@ -113,18 +139,28 @@ export async function destroySession(env: Env, request: Request): Promise<void> 
   await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(tokenHash).run();
 }
 
+const USER_SELECT = `u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role`;
+
 export async function currentUser(env: Env, request: Request): Promise<PublicUser | null> {
   const token = readCookie(request);
   if (!token) return null;
   const tokenHash = await sha256Hex(token);
   const row = await env.DB.prepare(
-    `SELECT u.id, u.username, u.display_name, s.expires_at
+    `SELECT ${USER_SELECT}, s.expires_at
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.token_hash = ?`,
   )
     .bind(tokenHash)
-    .first<{ id: string; username: string; display_name: string; expires_at: number }>();
+    .first<{
+      id: string;
+      username: string;
+      display_name: string;
+      bio: string | null;
+      avatar_key: string | null;
+      role: string | null;
+      expires_at: number;
+    }>();
   if (!row) return null;
   if (row.expires_at < Date.now()) {
     await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(tokenHash).run();
@@ -140,8 +176,18 @@ export async function requireUser(env: Env, request: Request): Promise<PublicUse
 }
 
 export async function findUserByUsername(env: Env, username: string): Promise<UserRow | null> {
-  return env.DB.prepare("SELECT id, username, display_name, password_hash FROM users WHERE username = ?")
+  return env.DB.prepare(
+    `SELECT id, username, display_name, password_hash, bio, avatar_key, role FROM users WHERE username = ?`,
+  )
     .bind(username)
+    .first<UserRow>();
+}
+
+export async function findUserById(env: Env, id: string): Promise<UserRow | null> {
+  return env.DB.prepare(
+    `SELECT id, username, display_name, password_hash, bio, avatar_key, role FROM users WHERE id = ?`,
+  )
+    .bind(id)
     .first<UserRow>();
 }
 

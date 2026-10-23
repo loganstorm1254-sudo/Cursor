@@ -30,6 +30,12 @@
       "migrations_dir": "migrations"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "AVATARS",
+      "bucket_name": "hall-avatars"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {

@@ -5,6 +5,11 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
+      miniflare: {
+        bindings: {
+          OWNER_PASSWORD: "rogue-owner-pass",
+        },
+      },
     }),
   ],
 });

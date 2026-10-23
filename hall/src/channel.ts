@@ -5,6 +5,7 @@ export type ChatMessage = {
   userId: string;
   username: string;
   displayName: string;
+  avatarUrl: string | null;
   body: string;
   createdAt: number;
 };
@@ -13,6 +14,7 @@ export type PresenceUser = {
   userId: string;
   username: string;
   displayName: string;
+  avatarUrl: string | null;
 };
 
 type Attachment = PresenceUser;
@@ -22,6 +24,7 @@ type MessageRow = {
   user_id: string;
   username: string;
   display_name: string;
+  avatar_url: string | null;
   body: string;
   created_at: number;
 };
@@ -35,6 +38,7 @@ function toMessage(row: MessageRow): ChatMessage {
     userId: row.user_id,
     username: row.username,
     displayName: row.display_name,
+    avatarUrl: row.avatar_url,
     body: row.body,
     createdAt: row.created_at,
   };
@@ -50,10 +54,16 @@ export class ChannelRoom extends DurableObject<Env> {
           user_id TEXT NOT NULL,
           username TEXT NOT NULL,
           display_name TEXT NOT NULL,
+          avatar_url TEXT,
           body TEXT NOT NULL,
           created_at INTEGER NOT NULL
         )
       `);
+      try {
+        this.ctx.storage.sql.exec(`ALTER TABLE messages ADD COLUMN avatar_url TEXT`);
+      } catch {
+        // Column already exists on newer objects.
+      }
       this.ctx.storage.sql.exec(`
         CREATE INDEX IF NOT EXISTS messages_created_idx ON messages (created_at)
       `);
@@ -73,7 +83,7 @@ export class ChannelRoom extends DurableObject<Env> {
       before === null
         ? this.ctx.storage.sql
             .exec<MessageRow>(
-              `SELECT id, user_id, username, display_name, body, created_at
+              `SELECT id, user_id, username, display_name, avatar_url, body, created_at
                FROM messages
                ORDER BY created_at DESC
                LIMIT ?`,
@@ -82,7 +92,7 @@ export class ChannelRoom extends DurableObject<Env> {
             .toArray()
         : this.ctx.storage.sql
             .exec<MessageRow>(
-              `SELECT id, user_id, username, display_name, body, created_at
+              `SELECT id, user_id, username, display_name, avatar_url, body, created_at
                FROM messages
                WHERE created_at < ?
                ORDER BY created_at DESC
@@ -108,13 +118,19 @@ export class ChannelRoom extends DurableObject<Env> {
     const userId = request.headers.get("x-hall-user-id") ?? "";
     const username = request.headers.get("x-hall-username") ?? "";
     const displayName = request.headers.get("x-hall-display-name") ?? "";
+    const avatarUrl = request.headers.get("x-hall-avatar-url");
     if (!userId || !username || !displayName) {
       return new Response("Missing member", { status: 401 });
     }
 
     const [client, server] = Object.values(new WebSocketPair());
     if (!client || !server) return new Response("Could not open WebSocket", { status: 500 });
-    const attachment: Attachment = { userId, username, displayName };
+    const attachment: Attachment = {
+      userId,
+      username,
+      displayName,
+      avatarUrl: avatarUrl && avatarUrl.length > 0 ? avatarUrl : null,
+    };
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(attachment);
 
@@ -176,16 +192,18 @@ export class ChannelRoom extends DurableObject<Env> {
       userId: author.userId,
       username: author.username,
       displayName: author.displayName,
+      avatarUrl: author.avatarUrl,
       body: text,
       createdAt: now,
     };
     this.ctx.storage.sql.exec(
-      `INSERT INTO messages (id, user_id, username, display_name, body, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, user_id, username, display_name, avatar_url, body, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       message.id,
       message.userId,
       message.username,
       message.displayName,
+      message.avatarUrl,
       message.body,
       message.createdAt,
     );

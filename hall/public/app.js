@@ -44,6 +44,26 @@ function hue(name) {
   return hash % 360;
 }
 
+function avatarNode(person, sizeClass = "avatar") {
+  const name = person.displayName || person.username || "?";
+  const node = el("button", {
+    class: sizeClass,
+    type: "button",
+    title: `@${person.username || name}`,
+    style: person.avatarUrl ? "" : `background: hsl(${hue(person.username || name)} 62% 62%)`,
+    onclick: (event) => {
+      event.stopPropagation();
+      if (person.username) openProfile(person.username, person.id === state.me?.id);
+    },
+  });
+  if (person.avatarUrl) {
+    node.append(el("img", { src: person.avatarUrl, alt: "", decoding: "async" }));
+  } else {
+    node.append(text(name.slice(0, 1).toUpperCase()));
+  }
+  return node;
+}
+
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -193,15 +213,22 @@ function renderChannels() {
   ]);
   invite.append(el("button", { class: "ghost", type: "button", onclick: copyInvite }, [text("Copy")]));
   foot.append(invite);
-  if (server.isOwner || server.isLobby) {
+  if (server.isOwner || server.isLobby || state.me?.isPlatformOwner) {
     foot.append(el("button", { class: "ghost", type: "button", onclick: openCreateChannel }, [text("Add channel")]));
   }
   if (!server.isOwner && !server.isLobby) {
     foot.append(el("button", { class: "text-button", type: "button", onclick: leaveServer }, [text("Leave server")]));
   }
-  const me = el("div", { class: "invite" }, [
-    text(`@${state.me.username}`),
-    el("button", { class: "text-button", type: "button", onclick: logout }, [text("Log out")]),
+  const me = el("div", { class: "me-row" }, [
+    avatarNode(state.me, "avatar sm"),
+    el("div", { class: "me-meta" }, [
+      el("strong", {}, [text(state.me.displayName)]),
+      el("span", {}, [text(`@${state.me.username}`)]),
+    ]),
+    el("div", { class: "me-actions" }, [
+      el("button", { class: "text-button", type: "button", onclick: () => openProfile(state.me.username, true) }, [text("Profile")]),
+      el("button", { class: "text-button", type: "button", onclick: logout }, [text("Log out")]),
+    ]),
   ]);
   foot.append(me);
   channelsEl.replaceChildren(
@@ -236,12 +263,13 @@ function renderMessages(stick) {
   let previous = null;
   for (const message of state.messages) {
     const grouped = previous && previous.userId === message.userId && message.createdAt - previous.createdAt < 5 * 60 * 1000;
-    const avatar = el("div", {
-      class: "avatar",
-      style: `background: hsl(${hue(message.username)} 62% 62%)`,
-    }, [text(message.displayName.slice(0, 1).toUpperCase())]);
+    const avatar = avatarNode(message);
     const header = el("header", {}, [
-      el("span", { class: "author" }, [text(message.displayName)]),
+      el("button", {
+        class: "author linkish",
+        type: "button",
+        onclick: () => openProfile(message.username, message.userId === state.me?.id),
+      }, [text(message.displayName)]),
       el("span", { class: "handle" }, [text(`@${message.username}`)]),
       el("time", { class: "time", datetime: new Date(message.createdAt).toISOString() }, [text(formatTime(message.createdAt))]),
     ]);
@@ -266,10 +294,15 @@ function renderMembers() {
   });
   for (const member of ordered) {
     const online = state.online.has(member.id);
-    list.append(el("li", {}, [
+    const roleLabel = member.isPlatformOwner ? "hall owner" : member.isOwner ? "owner" : null;
+    list.append(el("li", {
+      class: "member-item",
+      onclick: () => openProfile(member.username, member.id === state.me?.id),
+    }, [
       el("span", { class: online ? "dot on" : "dot" }),
-      text(member.displayName),
-      member.isOwner ? el("span", { class: "role" }, [text("owner")]) : null,
+      avatarNode(member, "avatar tiny"),
+      el("span", { class: "member-name" }, [text(member.displayName)]),
+      roleLabel ? el("span", { class: "role" }, [text(roleLabel)]) : null,
     ]));
   }
   membersEl.replaceChildren(
@@ -453,6 +486,141 @@ messageInput.addEventListener("input", () => {
   messageInput.style.height = "auto";
   messageInput.style.height = `${Math.min(messageInput.scrollHeight, 160)}px`;
 });
+
+async function openProfile(username, editable = false) {
+  let profile = state.members.find((member) => member.username === username) || null;
+  if (!profile || profile.bio === undefined) {
+    try {
+      const data = await api(`/api/users/${encodeURIComponent(username)}`);
+      profile = data.user;
+    } catch (error) {
+      openModal("Profile", (form) => {
+        form.append(el("p", { class: "form-error" }, [text(error.message)]));
+      });
+      return;
+    }
+  }
+  if (editable && state.me) {
+    openEditProfile(profile);
+    return;
+  }
+  openModal(profile.displayName, (form) => {
+    form.append(
+      el("div", { class: "profile-card" }, [
+        avatarNode(profile, "avatar lg"),
+        el("div", {}, [
+          el("h3", {}, [text(profile.displayName)]),
+          el("p", { class: "handle" }, [text(`@${profile.username}`)]),
+          profile.isPlatformOwner ? el("p", { class: "role-pill" }, [text("Hall owner")]) : null,
+        ]),
+      ]),
+      el("p", { class: "bio" }, [text(profile.bio || "No bio yet.")]),
+      state.me?.username === profile.username
+        ? el("button", { class: "ghost", type: "button", onclick: () => openEditProfile(profile) }, [text("Edit profile")])
+        : null,
+    );
+  });
+}
+
+function openEditProfile(profile) {
+  openModal("Edit profile", (form) => {
+    const previewWrap = el("div", {});
+    previewWrap.append(avatarNode(profile, "avatar lg"));
+    const bio = el("textarea", {
+      name: "bio",
+      maxlength: "280",
+      rows: "4",
+      placeholder: "Short bio",
+    });
+    bio.value = profile.bio || "";
+    const file = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif" });
+    const error = el("p", { class: "form-error", role: "alert" });
+    const status = el("p", { class: "lede" });
+    form.append(
+      el("div", { class: "profile-card" }, [
+        previewWrap,
+        el("div", {}, [
+          el("h3", {}, [text(profile.displayName)]),
+          el("p", { class: "handle" }, [text(`@${profile.username}`)]),
+        ]),
+      ]),
+      el("label", {}, [text("Photo"), file]),
+      el("label", {}, [text("Bio"), bio]),
+      status,
+      error,
+      el("div", { class: "actions" }, [
+        el("button", {
+          class: "ghost",
+          type: "button",
+          onclick: async () => {
+            error.textContent = "";
+            try {
+              const data = await api("/api/me/avatar", { method: "DELETE" });
+              state.me = data.user;
+              syncMember(data.user);
+              modal.close();
+              renderChannels();
+              renderMembers();
+              renderMessages(false);
+            } catch (err) {
+              error.textContent = err.message;
+            }
+          },
+        }, [text("Remove photo")]),
+        el("button", { type: "submit" }, [text("Save")]),
+      ]),
+    );
+    file.addEventListener("change", async () => {
+      const picked = file.files?.[0];
+      if (!picked) return;
+      error.textContent = "";
+      status.textContent = "Uploading…";
+      try {
+        const response = await fetch("/api/me/avatar", {
+          method: "PUT",
+          headers: { "content-type": picked.type || "application/octet-stream" },
+          body: picked,
+          credentials: "same-origin",
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || "Upload failed");
+        state.me = data.user;
+        syncMember(data.user);
+        previewWrap.replaceChildren(avatarNode(data.user, "avatar lg"));
+        status.textContent = "Photo updated.";
+        renderChannels();
+        renderMembers();
+        renderMessages(false);
+      } catch (err) {
+        error.textContent = err.message;
+        status.textContent = "";
+      } finally {
+        file.value = "";
+      }
+    });
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      try {
+        const data = await api("/api/me", {
+          method: "PATCH",
+          body: JSON.stringify({ bio: bio.value }),
+        });
+        state.me = data.user;
+        syncMember(data.user);
+        modal.close();
+        renderChannels();
+        renderMembers();
+      } catch (err) {
+        error.textContent = err.message;
+      }
+    };
+  });
+}
+
+function syncMember(user) {
+  state.members = state.members.map((member) => (member.id === user.id ? { ...member, ...user } : member));
+}
 
 function openAddMenu() {
   openModal("Add a server", (form) => {

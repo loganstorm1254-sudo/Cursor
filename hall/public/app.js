@@ -476,42 +476,60 @@ function renderChannels() {
   }
   const manage = canManageActiveServer();
   const list = el("ul", { class: "channel-list" });
-  state.channels.forEach((channel, index) => {
-    const row = [
-      el("button", {
-        type: "button",
-        class: "channel-open",
-        "aria-current": channel.id === state.activeChannelId ? "true" : null,
-        onclick: () => openChannel(channel.id),
-      }, [el("span", { class: "hash" }, [text("#")]), text(channel.name)]),
-    ];
-    if (manage) {
-      row.push(el("div", { class: "channel-move" }, [
-        el("button", {
-          class: "ghost channel-move-btn",
-          type: "button",
-          "aria-label": "Move up",
-          disabled: index === 0 ? "disabled" : null,
-          onclick: () => moveChannel(channel.id, -1),
-        }, [text("↑")]),
-        el("button", {
-          class: "ghost channel-move-btn",
-          type: "button",
-          "aria-label": "Move down",
-          disabled: index === state.channels.length - 1 ? "disabled" : null,
-          onclick: () => moveChannel(channel.id, 1),
-        }, [text("↓")]),
-        el("button", {
-          class: "ghost channel-move-btn channel-delete-btn",
-          type: "button",
-          "aria-label": `Delete #${channel.name}`,
-          disabled: state.channels.length <= 1 ? "disabled" : null,
-          onclick: () => deleteChannel(channel.id, channel.name),
-        }, [text("×")]),
-      ]));
+  const textChannels = state.channels.filter((channel) => (channel.kind || "text") !== "voice");
+  const voiceChannels = state.channels.filter((channel) => channel.kind === "voice");
+  const sections = [
+    { label: "Text", items: textChannels },
+    { label: "Voice", items: voiceChannels },
+  ];
+  for (const section of sections) {
+    if (section.items.length === 0 && section.label === "Voice" && !manage) continue;
+    list.append(el("li", { class: "channel-section" }, [text(section.label)]));
+    if (section.items.length === 0) {
+      list.append(el("li", { class: "channel-empty" }, [text(section.label === "Voice" ? "No VCs yet" : "No channels")]));
     }
-    list.append(el("li", { class: manage ? "channel-row manage" : "channel-row" }, row));
-  });
+    section.items.forEach((channel) => {
+      const index = state.channels.findIndex((item) => item.id === channel.id);
+      const isVoice = channel.kind === "voice";
+      const row = [
+        el("button", {
+          type: "button",
+          class: "channel-open",
+          "aria-current": channel.id === state.activeChannelId ? "true" : null,
+          onclick: () => openChannel(channel.id),
+        }, [
+          el("span", { class: isVoice ? "hash voice-hash" : "hash" }, [text(isVoice ? "🔊" : "#")]),
+          text(channel.name),
+        ]),
+      ];
+      if (manage) {
+        row.push(el("div", { class: "channel-move" }, [
+          el("button", {
+            class: "ghost channel-move-btn",
+            type: "button",
+            "aria-label": "Move up",
+            disabled: index <= 0 ? "disabled" : null,
+            onclick: () => moveChannel(channel.id, -1),
+          }, [text("↑")]),
+          el("button", {
+            class: "ghost channel-move-btn",
+            type: "button",
+            "aria-label": "Move down",
+            disabled: index < 0 || index >= state.channels.length - 1 ? "disabled" : null,
+            onclick: () => moveChannel(channel.id, 1),
+          }, [text("↓")]),
+          el("button", {
+            class: "ghost channel-move-btn channel-delete-btn",
+            type: "button",
+            "aria-label": `Delete ${isVoice ? "VC" : "#"}${channel.name}`,
+            disabled: !isVoice && textChannels.length <= 1 ? "disabled" : null,
+            onclick: () => deleteChannel(channel.id, channel.name),
+          }, [text("×")]),
+        ]));
+      }
+      list.append(el("li", { class: manage ? "channel-row manage" : "channel-row" }, row));
+    });
+  }
   const foot = el("div", { class: "side-foot" });
   const link = inviteLink(server.inviteCode);
   const invite = el("div", { class: "invite" }, [
@@ -521,7 +539,8 @@ function renderChannels() {
   invite.append(el("button", { class: "ghost", type: "button", onclick: copyInvite }, [text("Copy link")]));
   foot.append(invite);
   if (manage) {
-    foot.append(el("button", { class: "ghost", type: "button", onclick: openCreateChannel }, [text("Add channel")]));
+    foot.append(el("button", { class: "ghost", type: "button", onclick: () => openCreateChannel("text") }, [text("Add text channel")]));
+    foot.append(el("button", { class: "ghost", type: "button", onclick: () => openCreateChannel("voice") }, [text("Create VC")]));
   }
   if (!server.isLobby && !server.isOwner && !server.unleavable) {
     foot.append(el("button", { class: "text-button", type: "button", onclick: leaveServer }, [text("Leave server")]));
@@ -567,8 +586,9 @@ function renderChannels() {
 
 function renderTopbar() {
   const channel = state.channels.find((item) => item.id === state.activeChannelId);
-  const title = channel ? `#${channel.name}` : "Hall";
-  messageInput.placeholder = channel ? `Message #${channel.name}` : "Message";
+  const isVoice = channel?.kind === "voice";
+  const title = channel ? `${isVoice ? "🔊" : "#"}${channel.name}` : "Hall";
+  messageInput.placeholder = channel && !isVoice ? `Message #${channel.name}` : "Message";
   const inThisVoice = state.voice.active && state.voice.channelId === state.activeChannelId;
   const voiceCount = state.voice.peers?.length || 0;
   topbar.replaceChildren(
@@ -856,6 +876,26 @@ async function openChannel(channelId) {
   closeDrawers();
   renderChannels();
   renderTopbar();
+  const channel = state.channels.find((item) => item.id === channelId);
+  const isVoice = channel?.kind === "voice";
+  composer.hidden = isVoice;
+  if (isVoice) {
+    state.messages = [];
+    state.hasMore = false;
+    transcript.replaceChildren(
+      el("div", { class: "empty voice-empty" }, [
+        el("h2", {}, [text(`🔊 ${channel.name}`)]),
+        el("p", {}, [text("Voice channel — join to talk. Chat stays in text channels.")]),
+        el("button", {
+          class: "primary",
+          type: "button",
+          onclick: () => toggleVoice(),
+        }, [text(state.voice.active && state.voice.channelId === channelId ? "You're in voice" : "Join voice")]),
+      ]),
+    );
+    connect(channelId);
+    return;
+  }
   const data = await api(`/api/channels/${encodeURIComponent(channelId)}/messages?limit=50`);
   state.messages = data.messages;
   state.hasMore = data.messages.length === 50;
@@ -1274,13 +1314,20 @@ async function joinWith(code) {
   await refreshAndOpen(data.server.id);
 }
 
-function openCreateChannel() {
-  openModal("Add a channel", (form) => {
-    const name = el("input", { name: "name", maxlength: "32", placeholder: "channel-name", required: true });
+function openCreateChannel(kind = "text") {
+  const voice = kind === "voice";
+  openModal(voice ? "Create voice channel" : "Add text channel", (form) => {
+    const name = el("input", {
+      name: "name",
+      maxlength: "32",
+      placeholder: voice ? "voice-lounge" : "channel-name",
+      required: true,
+    });
     const error = el("p", { class: "form-error", role: "alert" });
     form.append(
+      el("p", { class: "lede" }, [text(voice ? "People join this VC to talk with mics." : "A normal chat channel.")]),
       el("label", {}, [text("Name"), name]),
-      el("div", { class: "actions" }, [el("button", { type: "submit" }, [text("Create")])]),
+      el("div", { class: "actions" }, [el("button", { type: "submit" }, [text(voice ? "Create VC" : "Create")])]),
       error,
     );
     form.onsubmit = async (event) => {
@@ -1289,7 +1336,7 @@ function openCreateChannel() {
       try {
         const data = await api(`/api/servers/${encodeURIComponent(state.activeServerId)}/channels`, {
           method: "POST",
-          body: JSON.stringify({ name: name.value }),
+          body: JSON.stringify({ name: name.value, kind: voice ? "voice" : "text" }),
         });
         modal.close();
         await openServer(state.activeServerId);

@@ -56,6 +56,7 @@ const COLUMN_PATCHES = [
   `ALTER TABLE servers ADD COLUMN bio TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE servers ADD COLUMN avatar_key TEXT`,
   `ALTER TABLE memberships ADD COLUMN position INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'`,
 ];
 
 let ready: Promise<void> | null = null;

@@ -423,8 +423,8 @@ async function createServer(request: Request, env: Env, user: PublicUser): Promi
            VALUES (?, ?, ?, ?, ?, ?, '')`,
         ).bind(serverId, name, iconLetter(name), user.id, inviteCode, now),
         env.DB.prepare(
-          `INSERT INTO channels (id, server_id, name, position, created_at)
-           VALUES (?, ?, 'general', 0, ?)`,
+          `INSERT INTO channels (id, server_id, name, position, created_at, kind)
+           VALUES (?, ?, 'general', 0, ?, 'text')`,
         ).bind(channelId, serverId, now),
         env.DB.prepare(
           `INSERT INTO memberships (server_id, user_id, joined_at, position)
@@ -501,13 +501,13 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
   if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
 
   const channels = await env.DB.prepare(
-    `SELECT id, name, position
+    `SELECT id, name, position, COALESCE(kind, 'text') AS kind
      FROM channels
      WHERE server_id = ?
-     ORDER BY position ASC, name ASC`,
+     ORDER BY CASE COALESCE(kind, 'text') WHEN 'voice' THEN 1 ELSE 0 END ASC, position ASC, name ASC`,
   )
     .bind(server.id)
-    .all<{ id: string; name: string; position: number }>();
+    .all<{ id: string; name: string; position: number; kind: string }>();
   const members = await env.DB.prepare(
     `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role
      FROM memberships m
@@ -551,6 +551,9 @@ async function createChannel(request: Request, env: Env, user: PublicUser, serve
   const body = asRecord(await readJson(request, 2_048));
   const name = normalizeChannelName(asString(body.name, "Channel name"));
   if (!name) throw new HttpError(400, "Channel names use letters, numbers, and hyphens");
+  const kindRaw = body.kind === undefined ? "text" : asString(body.kind, "Channel type").toLowerCase();
+  if (kindRaw !== "text" && kindRaw !== "voice") throw new HttpError(400, "Channel type must be text or voice");
+  const kind = kindRaw;
 
   const positionRow = await env.DB.prepare(
     "SELECT COALESCE(MAX(position), -1) + 1 AS next FROM channels WHERE server_id = ?",
@@ -561,17 +564,17 @@ async function createChannel(request: Request, env: Env, user: PublicUser, serve
   const now = Date.now();
   try {
     await env.DB.prepare(
-      `INSERT INTO channels (id, server_id, name, position, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO channels (id, server_id, name, position, created_at, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(channelId, server.id, name, positionRow?.next ?? 0, now)
+      .bind(channelId, server.id, name, positionRow?.next ?? 0, now, kind)
       .run();
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (message.includes("UNIQUE")) throw new HttpError(409, "That channel already exists");
     throw error;
   }
-  return json({ channel: { id: channelId, name, position: positionRow?.next ?? 0 } }, 201);
+  return json({ channel: { id: channelId, name, position: positionRow?.next ?? 0, kind } }, 201);
 }
 
 async function reorderChannels(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
@@ -618,10 +621,23 @@ async function deleteChannel(env: Env, user: PublicUser, channelId: string): Pro
       channel.server_id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can delete channels",
     );
   }
-  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM channels WHERE server_id = ?")
-    .bind(channel.server_id)
-    .first<{ n: number }>();
-  if ((count?.n ?? 0) <= 1) throw new HttpError(400, "Keep at least one channel");
+  const kindRow = await env.DB.prepare(`SELECT COALESCE(kind, 'text') AS kind FROM channels WHERE id = ?`)
+    .bind(channel.id)
+    .first<{ kind: string }>();
+  const kind = kindRow?.kind ?? "text";
+  if (kind === "text") {
+    const textCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM channels WHERE server_id = ? AND COALESCE(kind, 'text') = 'text'`,
+    )
+      .bind(channel.server_id)
+      .first<{ n: number }>();
+    if ((textCount?.n ?? 0) <= 1) throw new HttpError(400, "Keep at least one text channel");
+  } else {
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM channels WHERE server_id = ?")
+      .bind(channel.server_id)
+      .first<{ n: number }>();
+    if ((count?.n ?? 0) <= 1) throw new HttpError(400, "Keep at least one channel");
+  }
   await env.DB.prepare("DELETE FROM channels WHERE id = ?").bind(channel.id).run();
   return json({ ok: true, channelId: channel.id });
 }

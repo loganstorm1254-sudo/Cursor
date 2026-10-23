@@ -5,13 +5,17 @@ const ICE = {
   ],
 };
 
-const SCREEN = {
-  video: {
-    width: { ideal: 1920, max: 1920 },
-    height: { ideal: 1080, max: 1080 },
-    frameRate: { ideal: 60, max: 60 },
-  },
-  audio: false,
+const SCREEN_VIDEO = {
+  width: { ideal: 1920, max: 1920 },
+  height: { ideal: 1080, max: 1080 },
+  frameRate: { ideal: 60, max: 60 },
+};
+
+/** System / tab audio — Chrome shows “Share audio” in the picker. */
+const SCREEN_AUDIO = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
 };
 
 export function createVoiceSession({ getSocket, getMe, onState }) {
@@ -54,17 +58,53 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     for (const track of localStream.getAudioTracks()) {
       track.enabled = !muted;
     }
+    const [mic] = localStream.getAudioTracks();
+    if (!mic) return;
     for (const peer of peers.values()) {
-      const audioSender = peer.pc.getSenders().find((sender) => sender.track?.kind === "audio" || peer.audioSender === sender);
-      const [mic] = localStream.getAudioTracks();
-      if (!mic) continue;
-      if (audioSender) {
-        if (audioSender.track !== mic) {
-          audioSender.replaceTrack(mic).catch(() => {});
-        }
-        peer.audioSender = audioSender;
+      // Never touch the screen-audio sender — only keep the mic sender alive.
+      const audioSender = peer.audioSender;
+      if (!audioSender || audioSender === peer.screenAudioSender) continue;
+      if (audioSender.track !== mic) {
+        audioSender.replaceTrack(mic).catch(() => {});
       }
     }
+  }
+
+  async function captureScreen() {
+    try {
+      return await navigator.mediaDevices.getDisplayMedia({
+        video: SCREEN_VIDEO,
+        audio: SCREEN_AUDIO,
+      });
+    } catch (error) {
+      // Some surfaces reject audio; still share video.
+      if (error?.name === "NotAllowedError") throw error;
+      return navigator.mediaDevices.getDisplayMedia({
+        video: SCREEN_VIDEO,
+        audio: false,
+      });
+    }
+  }
+
+  function bindScreenAudio(peer, stream) {
+    const [screenAudio] = stream.getAudioTracks();
+    if (!screenAudio) return;
+    screenAudio.contentHint = "music";
+    if (peer.screenAudioSender) {
+      peer.screenAudioSender.replaceTrack(screenAudio).catch(() => {});
+      return;
+    }
+    peer.screenAudioSender = peer.pc.addTrack(screenAudio, stream);
+  }
+
+  function clearScreenAudio(peer) {
+    if (!peer.screenAudioSender) return;
+    try {
+      peer.pc.removeTrack(peer.screenAudioSender);
+    } catch {
+      // ignore
+    }
+    peer.screenAudioSender = null;
   }
 
   async function ensureMic() {
@@ -149,11 +189,16 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
 
     // Pre-create a video transceiver so screen share is replaceTrack, not a new m-line fight.
     const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
+    let screenAudioSender = null;
     if (screenStream) {
       const [screenTrack] = screenStream.getVideoTracks();
       if (screenTrack) {
         await videoTransceiver.sender.replaceTrack(screenTrack);
         videoTransceiver.direction = "sendrecv";
+      }
+      for (const screenAudio of screenStream.getAudioTracks()) {
+        screenAudio.contentHint = "music";
+        screenAudioSender = pc.addTrack(screenAudio, screenStream);
       }
     }
 
@@ -169,11 +214,24 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     pc.ontrack = (event) => {
       const track = event.track;
       if (track.kind === "audio") {
-        audio.srcObject = new MediaStream([track]);
-        void audio.play().catch(() => {});
+        // Mic + screen audio can both arrive — play them together.
+        let dest = audio.srcObject;
+        if (!(dest instanceof MediaStream)) {
+          dest = new MediaStream();
+          audio.srcObject = dest;
+        }
+        if (!dest.getAudioTracks().includes(track)) dest.addTrack(track);
+        track.addEventListener("ended", () => {
+          try {
+            dest.removeTrack(track);
+          } catch {
+            // ignore
+          }
+        });
         track.addEventListener("unmute", () => {
           void audio.play().catch(() => {});
         });
+        void audio.play().catch(() => {});
         return;
       }
       if (track.kind === "video") {
@@ -193,6 +251,7 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
       video,
       meta,
       audioSender,
+      screenAudioSender,
       videoTransceiver,
       makingOffer: false,
       ignoreOffer: false,
@@ -284,6 +343,7 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
       } catch {
         // ignore
       }
+      clearScreenAudio(peer);
       if (!silent) renegotiate(peer).catch(() => {});
     }
     if (screenStream) {
@@ -302,7 +362,7 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
       throw new Error("This browser cannot share a screen");
     }
     if (sharing) return;
-    const stream = await navigator.mediaDevices.getDisplayMedia(SCREEN);
+    const stream = await captureScreen();
     const [track] = stream.getVideoTracks();
     if (!track) {
       for (const item of stream.getTracks()) item.stop();
@@ -310,17 +370,18 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     }
     track.contentHint = "detail";
     try {
-      await track.applyConstraints({
-        width: { ideal: 1920, max: 1920 },
-        height: { ideal: 1080, max: 1080 },
-        frameRate: { ideal: 60, max: 60 },
-      });
+      await track.applyConstraints(SCREEN_VIDEO);
     } catch {
       // Browser may ignore some constraints after capture starts.
     }
     track.addEventListener("ended", () => {
       stopShare().catch(() => {});
     });
+    for (const screenAudio of stream.getAudioTracks()) {
+      screenAudio.addEventListener("ended", () => {
+        for (const peer of peers.values()) clearScreenAudio(peer);
+      });
+    }
     screenStream = stream;
     sharing = true;
     // Display capture on Windows can soft-drop mic senders — put mic back before video.
@@ -337,6 +398,7 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
       } catch {
         peer.pc.addTrack(track, stream);
       }
+      bindScreenAudio(peer, stream);
       await renegotiate(peer);
     }
     assertMicLive();

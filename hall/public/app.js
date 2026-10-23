@@ -1012,8 +1012,13 @@ function voiceTileFor(peer) {
   const mine = peer.userId === state.me?.id;
   const isSharing = Boolean(peer.sharing || (mine && state.voice.sharing));
   const stream = isSharing ? screenStreamFor(peer) : null;
+  const hasShareAudio = Boolean(stream?.getAudioTracks?.().length);
   const status = isSharing
-    ? mine ? "Sharing screen · 1080p60" : "Sharing screen"
+    ? mine
+      ? hasShareAudio
+        ? "Sharing screen · 1080p60 · sound"
+        : "Sharing screen · 1080p60 — tick Share audio in the picker"
+      : "Sharing screen"
     : peer.muted ? "Muted" : mine ? "You" : "In call";
   if (!stream) {
     return el("div", {
@@ -1105,7 +1110,7 @@ function renderVoiceStage() {
       el("button", {
         class: state.voice.sharing ? "voice-ctrl share on" : "voice-ctrl share",
         type: "button",
-        title: state.voice.sharing ? "Stop sharing" : "Share screen (1080p 60fps)",
+        title: state.voice.sharing ? "Stop sharing" : "Share screen (1080p60 + sound)",
         disabled: !state.voice.active ? "disabled" : null,
         onclick: () => toggleScreenShare(),
       }, [text(state.voice.sharing ? "Stop share" : "Share")]),

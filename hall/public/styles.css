@@ -446,7 +446,25 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
 }
 .voice-tile.me { border-color: rgba(226, 177, 90, 0.45); }
 .voice-tile.empty-tile { color: var(--muted); }
+.voice-tile[data-sharing="1"] {
+  grid-column: 1 / -1;
+  min-height: 280px;
+  padding: 12px;
+  justify-items: stretch;
+}
 .voice-tile-status { color: var(--faint); font-size: 12px; }
+.voice-screen {
+  width: 100%;
+  max-height: min(56vh, 720px);
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #0b0c10;
+  border-radius: 12px;
+}
+.voice-stage-grid.sharing {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  max-width: 1100px;
+}
 .voice-controls {
   position: absolute;
   left: 50%;
@@ -471,8 +489,10 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
   font-weight: 600;
 }
 .voice-ctrl.mute.on { background: #5a3a20; color: #f6d7a8; }
+.voice-ctrl.share.on { background: #1f4d3a; color: #b7f0d2; }
 .voice-ctrl.hangup { background: #c24b3c; color: #fff7f5; }
 .voice-ctrl:disabled { opacity: 0.45; cursor: default; }
+.share-mini.on { color: var(--good) !important; }
 .seekara-watermark {
   position: fixed;
   right: max(10px, env(safe-area-inset-right, 0px));

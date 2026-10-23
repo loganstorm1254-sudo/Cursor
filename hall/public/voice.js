@@ -5,20 +5,42 @@ const ICE = {
   ],
 };
 
+const SCREEN = {
+  video: {
+    width: { ideal: 1920, max: 1920 },
+    height: { ideal: 1080, max: 1080 },
+    frameRate: { ideal: 60, max: 60 },
+  },
+  audio: false,
+};
+
 export function createVoiceSession({ getSocket, getMe, onState }) {
   let localStream = null;
+  let screenStream = null;
   let muted = false;
+  let sharing = false;
   let channelId = null;
-  const peers = new Map(); // userId -> { pc, audio, meta }
+  const peers = new Map(); // userId -> { pc, audio, video, meta, screenSender }
   let voiceUsers = [];
 
   function emit() {
     onState?.({
       active: Boolean(localStream && channelId),
       muted,
+      sharing,
       channelId,
       peers: voiceUsers,
+      localScreenStream: screenStream,
+      remoteScreens: collectRemoteScreens(),
     });
+  }
+
+  function collectRemoteScreens() {
+    const screens = {};
+    for (const [userId, peer] of peers) {
+      if (peer.video?.srcObject) screens[userId] = peer.video.srcObject;
+    }
+    return screens;
   }
 
   function send(payload) {
@@ -50,11 +72,28 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
       // ignore
     }
     peer.audio?.remove();
+    peer.video?.remove();
     peers.delete(userId);
   }
 
   function clearPeers() {
     for (const userId of [...peers.keys()]) removePeer(userId);
+  }
+
+  async function renegotiate(peer) {
+    if (!peer || peer.makingOffer) return;
+    peer.makingOffer = true;
+    try {
+      const offer = await peer.pc.createOffer();
+      await peer.pc.setLocalDescription(offer);
+      send({
+        type: "voice_signal",
+        to: peer.meta.userId,
+        signal: { kind: "offer", sdp: peer.pc.localDescription },
+      });
+    } finally {
+      peer.makingOffer = false;
+    }
   }
 
   async function ensurePeer(meta, polite) {
@@ -68,8 +107,22 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     audio.dataset.peer = meta.userId;
     document.body.append(audio);
 
+    const video = document.createElement("video");
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.dataset.peerScreen = meta.userId;
+
     for (const track of stream.getAudioTracks()) {
       pc.addTrack(track, stream);
+    }
+
+    let screenSender = null;
+    if (screenStream) {
+      const [screenTrack] = screenStream.getVideoTracks();
+      if (screenTrack) {
+        screenSender = pc.addTrack(screenTrack, screenStream);
+      }
     }
 
     pc.onicecandidate = (event) => {
@@ -82,8 +135,21 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     };
 
     pc.ontrack = (event) => {
+      const track = event.track;
       const [remote] = event.streams;
-      if (remote) audio.srcObject = remote;
+      if (!remote) return;
+      if (track.kind === "audio") {
+        audio.srcObject = remote;
+        return;
+      }
+      if (track.kind === "video") {
+        video.srcObject = remote;
+        track.addEventListener("ended", () => {
+          if (video.srcObject === remote) video.srcObject = null;
+          emit();
+        });
+        emit();
+      }
     };
 
     pc.onconnectionstatechange = () => {
@@ -92,25 +158,14 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
       }
     };
 
-    peers.set(meta.userId, { pc, audio, meta, polite });
+    peers.set(meta.userId, { pc, audio, video, meta, polite, screenSender, makingOffer: false });
     return peers.get(meta.userId);
   }
 
   async function callPeer(meta) {
     const peer = await ensurePeer(meta, true);
-    if (!peer || peer.makingOffer) return;
-    peer.makingOffer = true;
-    try {
-      const offer = await peer.pc.createOffer();
-      await peer.pc.setLocalDescription(offer);
-      send({
-        type: "voice_signal",
-        to: meta.userId,
-        signal: { kind: "offer", sdp: peer.pc.localDescription },
-      });
-    } finally {
-      peer.makingOffer = false;
-    }
+    if (!peer) return;
+    await renegotiate(peer);
   }
 
   async function handleSignal(from, signal, meta) {
@@ -156,8 +211,72 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     emit();
   }
 
+  async function stopShare(silent = false) {
+    if (!sharing && !screenStream) return;
+    for (const peer of peers.values()) {
+      if (peer.screenSender) {
+        try {
+          peer.pc.removeTrack(peer.screenSender);
+        } catch {
+          // ignore
+        }
+        peer.screenSender = null;
+        if (!silent) renegotiate(peer).catch(() => {});
+      }
+    }
+    if (screenStream) {
+      for (const track of screenStream.getTracks()) track.stop();
+      screenStream = null;
+    }
+    sharing = false;
+    if (!silent) send({ type: "voice_share", sharing: false });
+    emit();
+  }
+
+  async function startShare() {
+    if (!channelId || !localStream) throw new Error("Join voice before sharing your screen");
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("This browser cannot share a screen");
+    }
+    if (sharing) return;
+    const stream = await navigator.mediaDevices.getDisplayMedia(SCREEN);
+    const [track] = stream.getVideoTracks();
+    if (!track) {
+      for (const item of stream.getTracks()) item.stop();
+      throw new Error("No screen video track");
+    }
+    track.contentHint = "detail";
+    try {
+      await track.applyConstraints({
+        width: { ideal: 1920, max: 1920 },
+        height: { ideal: 1080, max: 1080 },
+        frameRate: { ideal: 60, max: 60 },
+      });
+    } catch {
+      // Browser may ignore some constraints after capture starts.
+    }
+    track.addEventListener("ended", () => {
+      stopShare().catch(() => {});
+    });
+    screenStream = stream;
+    sharing = true;
+    send({ type: "voice_share", sharing: true });
+
+    for (const peer of peers.values()) {
+      peer.screenSender = peer.pc.addTrack(track, stream);
+      renegotiate(peer).catch(() => {});
+    }
+    emit();
+  }
+
+  async function toggleShare() {
+    if (sharing) await stopShare();
+    else await startShare();
+  }
+
   async function leave() {
     if (channelId) send({ type: "voice_leave" });
+    await stopShare(true);
     clearPeers();
     if (localStream) {
       for (const track of localStream.getTracks()) track.stop();
@@ -166,6 +285,7 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     channelId = null;
     voiceUsers = [];
     muted = false;
+    sharing = false;
     emit();
   }
 
@@ -188,6 +308,12 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     const ids = new Set(voiceUsers.map((user) => user.userId));
     for (const userId of [...peers.keys()]) {
       if (!ids.has(userId)) removePeer(userId);
+    }
+    for (const user of voiceUsers) {
+      if (!user.sharing) {
+        const peer = peers.get(user.userId);
+        if (peer?.video) peer.video.srcObject = null;
+      }
     }
     emit();
     if (!localStream || !me) return;
@@ -217,12 +343,18 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     leave,
     toggleMute,
     setMuted,
+    startShare,
+    stopShare,
+    toggleShare,
     handleSocketMessage,
     getState: () => ({
       active: Boolean(localStream && channelId),
       muted,
+      sharing,
       channelId,
       peers: voiceUsers,
+      localScreenStream: screenStream,
+      remoteScreens: collectRemoteScreens(),
     }),
   };
 }

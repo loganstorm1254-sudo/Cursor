@@ -84,7 +84,15 @@ const state = {
   voiceSocket: null,
   voiceSocketAbort: null,
   voicePingTimer: null,
-  voice: { active: false, muted: false, channelId: null, peers: [] },
+  voice: {
+    active: false,
+    muted: false,
+    sharing: false,
+    channelId: null,
+    peers: [],
+    localScreenStream: null,
+    remoteScreens: {},
+  },
   voiceRoster: {},
   home: false,
   friends: [],
@@ -832,6 +840,50 @@ function renderTopbar() {
   syncMobileNav();
 }
 
+async function toggleScreenShare() {
+  try {
+    await voiceSession.toggleShare();
+  } catch (error) {
+    if (error?.name === "NotAllowedError") return;
+    openModal("Screen share", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not share screen")]));
+    });
+  }
+}
+
+function screenStreamFor(peer) {
+  if (peer.userId === state.me?.id) return state.voice.localScreenStream || null;
+  return state.voice.remoteScreens?.[peer.userId] || null;
+}
+
+function voiceTileFor(peer) {
+  const mine = peer.userId === state.me?.id;
+  const isSharing = Boolean(peer.sharing || (mine && state.voice.sharing));
+  const stream = isSharing ? screenStreamFor(peer) : null;
+  const status = isSharing
+    ? mine ? "Sharing screen · 1080p60" : "Sharing screen"
+    : peer.muted ? "Muted" : mine ? "You" : "In call";
+  let media;
+  if (stream) {
+    media = document.createElement("video");
+    media.className = "voice-screen";
+    media.autoplay = true;
+    media.playsInline = true;
+    media.muted = true;
+    media.srcObject = stream;
+  } else {
+    media = avatarNode({ ...peer, id: peer.userId }, "avatar lg");
+  }
+  return el("div", {
+    class: mine ? "voice-tile me" : "voice-tile",
+    "data-sharing": isSharing ? "1" : null,
+  }, [
+    media,
+    el("strong", {}, [text(peer.displayName)]),
+    el("span", { class: "voice-tile-status" }, [text(status)]),
+  ]);
+}
+
 function renderVoiceStage() {
   const stage = document.querySelector("#voice-stage");
   if (!stage) return;
@@ -851,15 +903,9 @@ function renderVoiceStage() {
   stage.hidden = false;
   const rosterChannelId = state.voice.active ? state.voice.channelId : state.activeChannelId;
   const peers = voiceRosterFor(rosterChannelId);
+  const anyoneSharing = peers.some((peer) => peer.sharing) || state.voice.sharing;
   const tiles = peers.length
-    ? peers.map((peer) => {
-        const mine = peer.userId === state.me?.id;
-        return el("div", { class: mine ? "voice-tile me" : "voice-tile" }, [
-          avatarNode({ ...peer, id: peer.userId }, "avatar lg"),
-          el("strong", {}, [text(peer.displayName)]),
-          el("span", { class: "voice-tile-status" }, [text(peer.muted ? "Muted" : mine ? "You" : "In call")]),
-        ]);
-      })
+    ? peers.map((peer) => voiceTileFor(peer))
     : [
         el("div", { class: "voice-tile empty-tile" }, [
           el("strong", {}, [text(channel?.name || "Voice")]),
@@ -867,7 +913,7 @@ function renderVoiceStage() {
         ]),
       ];
   stage.replaceChildren(
-    el("div", { class: "voice-stage-grid" }, tiles),
+    el("div", { class: anyoneSharing ? "voice-stage-grid sharing" : "voice-stage-grid" }, tiles),
     el("div", { class: "voice-controls" }, [
       el("button", {
         class: state.voice.muted ? "voice-ctrl mute on" : "voice-ctrl mute",
@@ -876,6 +922,13 @@ function renderVoiceStage() {
         disabled: !state.voice.active ? "disabled" : null,
         onclick: () => voiceSession.toggleMute(),
       }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+      el("button", {
+        class: state.voice.sharing ? "voice-ctrl share on" : "voice-ctrl share",
+        type: "button",
+        title: state.voice.sharing ? "Stop sharing" : "Share screen (1080p 60fps)",
+        disabled: !state.voice.active ? "disabled" : null,
+        onclick: () => toggleScreenShare(),
+      }, [text(state.voice.sharing ? "Stop share" : "Share")]),
       el("button", {
         class: "voice-ctrl join",
         type: "button",
@@ -902,8 +955,8 @@ function renderVoiceStage() {
       : `Voice · ${channel?.name || "channel"}`;
     dock.replaceChildren(
       el("div", { class: "voice-dock-meta" }, [
-        el("strong", {}, [text("Voice Connected")]),
-        el("span", {}, [text(label)]),
+        el("strong", {}, [text(state.voice.sharing ? "Sharing screen" : "Voice Connected")]),
+        el("span", {}, [text(state.voice.sharing ? `${label} · 1080p60` : label)]),
       ]),
       el("div", { class: "voice-dock-actions" }, [
         el("button", {
@@ -911,6 +964,11 @@ function renderVoiceStage() {
           type: "button",
           onclick: () => voiceSession.toggleMute(),
         }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+        el("button", {
+          class: state.voice.sharing ? "ghost share-mini on" : "ghost share-mini",
+          type: "button",
+          onclick: () => toggleScreenShare(),
+        }, [text(state.voice.sharing ? "Stop share" : "Share")]),
         el("button", {
           class: "ghost hangup-mini",
           type: "button",

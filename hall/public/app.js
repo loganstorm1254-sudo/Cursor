@@ -21,6 +21,46 @@ const membersEl = document.querySelector("#members");
 const backdrop = document.querySelector("#drawer-backdrop");
 const modal = document.querySelector("#modal");
 const modalForm = document.querySelector("#modal-form");
+const emojiButton = document.querySelector("#emoji-button");
+const emojiPanel = document.querySelector("#emoji-panel");
+
+const POLL_PREFIX = "§HALLPOLL§";
+const EMOJI_SHORTCODES = {
+  smile: "😄",
+  grin: "😁",
+  joy: "😂",
+  wink: "😉",
+  heart: "❤️",
+  hearts: "💕",
+  fire: "🔥",
+  thumbsup: "👍",
+  thumbsdown: "👎",
+  clap: "👏",
+  wave: "👋",
+  think: "🤔",
+  cry: "😢",
+  sob: "😭",
+  angry: "😠",
+  cool: "😎",
+  party: "🥳",
+  tada: "🎉",
+  100: "💯",
+  check: "✅",
+  cross: "❌",
+  star: "⭐",
+  eyes: "👀",
+  skull: "💀",
+  rocket: "🚀",
+  coffee: "☕",
+  pizza: "🍕",
+  moon: "🌙",
+  sun: "☀️",
+  ok: "👌",
+  pray: "🙏",
+  muscle: "💪",
+  sparkles: "✨",
+};
+const EMOJI_PICKER = Object.values(EMOJI_SHORTCODES);
 
 const state = {
   mode: "register",
@@ -179,9 +219,37 @@ async function enterApp() {
   await openServer(preferred.id);
 }
 
+async function moveServer(serverId, direction) {
+  const index = state.servers.findIndex((server) => server.id === serverId);
+  if (index < 0) return;
+  const swap = index + direction;
+  if (swap < 0 || swap >= state.servers.length) return;
+  const next = [...state.servers];
+  const [item] = next.splice(index, 1);
+  next.splice(swap, 0, item);
+  state.servers = next;
+  renderRail();
+  try {
+    await api("/api/servers/order", {
+      method: "PUT",
+      body: JSON.stringify({ serverIds: next.map((server) => server.id) }),
+    });
+  } catch (error) {
+    openModal("Could not reorder", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message)]));
+    });
+    const listed = await api("/api/servers");
+    state.servers = listed.servers;
+    renderRail();
+  }
+}
+
 function renderRail() {
   rail.replaceChildren();
-  for (const server of state.servers) {
+  state.servers.forEach((server, index) => {
+    const icon = server.avatarUrl
+      ? el("img", { src: server.avatarUrl, alt: "", class: "server-icon" })
+      : text(server.iconLetter);
     const button = el("button", {
       class: "server-button",
       type: "button",
@@ -192,9 +260,34 @@ function renderRail() {
         closeDrawers();
         openDrawer("channels");
       },
-    }, [text(server.iconLetter)]);
-    rail.append(button);
-  }
+    }, [icon]);
+    const wrap = el("div", { class: "server-slot" }, [
+      button,
+      el("div", { class: "server-move" }, [
+        el("button", {
+          class: "ghost server-move-btn",
+          type: "button",
+          "aria-label": "Move server up",
+          disabled: index === 0 ? "disabled" : null,
+          onclick: (event) => {
+            event.stopPropagation();
+            moveServer(server.id, -1);
+          },
+        }, [text("↑")]),
+        el("button", {
+          class: "ghost server-move-btn",
+          type: "button",
+          "aria-label": "Move server down",
+          disabled: index === state.servers.length - 1 ? "disabled" : null,
+          onclick: (event) => {
+            event.stopPropagation();
+            moveServer(server.id, 1);
+          },
+        }, [text("↓")]),
+      ]),
+    ]);
+    rail.append(wrap);
+  });
   rail.append(el("button", {
     class: "add-server",
     type: "button",
@@ -320,15 +413,27 @@ function renderChannels() {
     ]),
   ]);
   foot.append(me);
+  const headActions = [];
+  if (canManageActiveServer()) {
+    headActions.push(el("button", {
+      class: "ghost",
+      type: "button",
+      onclick: openServerSettings,
+    }, [text("Edit")]));
+  }
+  headActions.push(el("button", {
+    class: "ghost drawer-close",
+    type: "button",
+    "aria-label": "Close",
+    onclick: closeDrawers,
+  }, [text("Close")]));
   channelsEl.replaceChildren(
     el("div", { class: "side-head" }, [
-      el("h2", {}, [text(server.name)]),
-      el("button", {
-        class: "ghost drawer-close",
-        type: "button",
-        "aria-label": "Close",
-        onclick: closeDrawers,
-      }, [text("Close")]),
+      el("div", { class: "side-head-title" }, [
+        el("h2", {}, [text(server.name)]),
+        server.bio ? el("p", { class: "server-bio" }, [text(server.bio)]) : null,
+      ]),
+      el("div", { class: "side-head-actions" }, headActions),
     ]),
     list,
     foot,
@@ -389,10 +494,19 @@ function renderMessages(stick) {
       el("span", { class: "handle" }, [text(`@${message.username}`)]),
       el("time", { class: "time", datetime: new Date(message.createdAt).toISOString() }, [text(formatTime(message.createdAt))]),
     ]);
-    const body = el("p", { class: "body" });
-    appendRichText(body, message.body);
-    const column = el("div", {}, grouped ? [body] : [header, body]);
-    nodes.push(el("article", { class: grouped ? "message grouped" : "message" }, [avatar, column]));
+    const poll = parsePollBody(message.body);
+    const body = poll
+      ? renderPoll(message, poll)
+      : (() => {
+          const node = el("p", { class: "body" });
+          appendRichText(node, message.body);
+          return node;
+        })();
+    const column = el("div", {}, grouped && !poll ? [body] : [header, body]);
+    nodes.push(el("article", {
+      class: `${grouped && !poll ? "message grouped" : "message"}${poll ? " has-poll" : ""}`,
+      "data-message-id": message.id,
+    }, [avatar, column]));
     previous = message;
   }
   transcript.replaceChildren(...nodes);
@@ -435,17 +549,82 @@ function renderMembers() {
   );
 }
 
+function expandEmojiShortcodes(value) {
+  return value.replace(/:([a-z0-9_]+):/gi, (full, name) => EMOJI_SHORTCODES[name.toLowerCase()] || full);
+}
+
 function appendRichText(node, value) {
+  const expanded = expandEmojiShortcodes(value);
   const pattern = /https?:\/\/[^\s<]+/g;
   let last = 0;
-  for (const match of value.matchAll(pattern)) {
+  for (const match of expanded.matchAll(pattern)) {
     const index = match.index ?? 0;
-    if (index > last) node.append(text(value.slice(last, index)));
+    if (index > last) node.append(text(expanded.slice(last, index)));
     const href = match[0];
     node.append(el("a", { href, target: "_blank", rel: "noreferrer noopener" }, [text(href)]));
     last = index + href.length;
   }
-  if (last < value.length) node.append(text(value.slice(last)));
+  if (last < expanded.length) node.append(text(expanded.slice(last)));
+}
+
+function parsePollBody(body) {
+  if (!body?.startsWith(POLL_PREFIX)) return null;
+  try {
+    const poll = JSON.parse(body.slice(POLL_PREFIX.length));
+    if (!poll?.question || !Array.isArray(poll.options)) return null;
+    return poll;
+  } catch {
+    return null;
+  }
+}
+
+function renderPoll(message, poll) {
+  const votes = poll.votes || {};
+  const total = Object.values(votes).reduce((sum, list) => sum + (list?.length || 0), 0);
+  const myId = state.me?.id;
+  const options = poll.options.map((label, index) => {
+    const voters = votes[String(index)] || [];
+    const count = voters.length;
+    const pct = total ? Math.round((count / total) * 100) : 0;
+    const mine = myId && voters.includes(myId);
+    return el("button", {
+      class: mine ? "poll-option mine" : "poll-option",
+      type: "button",
+      onclick: () => voteOnPoll(message.id, index),
+    }, [
+      el("span", { class: "poll-label" }, [text(expandEmojiShortcodes(label))]),
+      el("span", { class: "poll-meta" }, [text(`${count} · ${pct}%`)]),
+      el("span", { class: "poll-bar", style: `width:${pct}%` }),
+    ]);
+  });
+  return el("div", { class: "poll" }, [
+    el("p", { class: "poll-q" }, [text(expandEmojiShortcodes(poll.question))]),
+    ...options,
+    el("p", { class: "poll-total" }, [text(`${total} vote${total === 1 ? "" : "s"} · tap to vote`)]),
+  ]);
+}
+
+async function voteOnPoll(messageId, optionIndex) {
+  if (!state.activeChannelId) return;
+  try {
+    const data = await api(`/api/channels/${encodeURIComponent(state.activeChannelId)}/poll-vote`, {
+      method: "POST",
+      body: JSON.stringify({ messageId, optionIndex }),
+    });
+    upsertMessage(data.message);
+  } catch (error) {
+    messageInput.setCustomValidity(error.message);
+    messageInput.reportValidity();
+    setTimeout(() => messageInput.setCustomValidity(""), 2000);
+  }
+}
+
+function upsertMessage(message) {
+  const index = state.messages.findIndex((item) => item.id === message.id);
+  if (index >= 0) state.messages[index] = message;
+  else state.messages.push(message);
+  state.messages.sort((a, b) => a.createdAt - b.createdAt);
+  renderMessages(true);
 }
 
 function formatTime(timestamp) {
@@ -528,6 +707,7 @@ function connect(channelId) {
       return;
     }
     if (payload.type === "message" && payload.message) addMessage(payload.message);
+    if (payload.type === "poll_update" && payload.message) upsertMessage(payload.message);
     if (payload.type === "error" && payload.error) {
       messageInput.setCustomValidity(payload.error);
       messageInput.reportValidity();
@@ -747,6 +927,96 @@ function syncMember(user) {
   state.members = state.members.map((member) => (member.id === user.id ? { ...member, ...user } : member));
 }
 
+function openServerSettings() {
+  const server = state.server;
+  if (!server || !canManageActiveServer()) return;
+  openModal("Server settings", (form) => {
+    const name = el("input", {
+      name: "name",
+      maxlength: "80",
+      value: server.name,
+      required: true,
+      disabled: server.isLobby ? "disabled" : null,
+    });
+    const bio = el("textarea", { name: "bio", maxlength: "280", rows: "3" });
+    bio.value = server.bio || "";
+    const invite = el("input", {
+      name: "invite",
+      maxlength: "32",
+      value: server.inviteCode,
+      disabled: server.isLobby ? "disabled" : null,
+    });
+    const file = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/gif" });
+    const status = el("p", { class: "lede" });
+    const error = el("p", { class: "form-error", role: "alert" });
+    const preview = server.avatarUrl
+      ? el("img", { src: server.avatarUrl, alt: "", class: "server-preview" })
+      : el("div", { class: "server-preview letter" }, [text(server.iconLetter)]);
+    form.append(
+      el("div", { class: "profile-card" }, [preview, el("div", {}, [el("h3", {}, [text(server.name)])])]),
+      el("label", {}, [text("Name"), name]),
+      el("label", {}, [text("Bio"), bio]),
+      el("label", {}, [text("Invite code"), invite]),
+      el("label", {}, [text("Icon / pfp"), file]),
+      status,
+      error,
+      el("div", { class: "actions" }, [
+        el("button", { class: "ghost", type: "button", onclick: () => modal.close() }, [text("Cancel")]),
+        el("button", { type: "submit" }, [text("Save")]),
+      ]),
+    );
+    file.addEventListener("change", async () => {
+      const picked = file.files?.[0];
+      if (!picked) return;
+      error.textContent = "";
+      status.textContent = "Uploading…";
+      try {
+        const response = await fetch(`/api/servers/${encodeURIComponent(server.id)}/avatar`, {
+          method: "PUT",
+          headers: { "content-type": picked.type || "application/octet-stream" },
+          body: picked,
+          credentials: "same-origin",
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || "Upload failed");
+        state.server = data.server;
+        state.servers = state.servers.map((item) => (item.id === data.server.id ? { ...item, ...data.server } : item));
+        status.textContent = "Icon updated.";
+        renderRail();
+        renderChannels();
+      } catch (err) {
+        error.textContent = err.message;
+        status.textContent = "";
+      } finally {
+        file.value = "";
+      }
+    });
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      try {
+        const payload = { bio: bio.value };
+        if (!server.isLobby) {
+          payload.name = name.value;
+          payload.inviteCode = invite.value;
+        }
+        const data = await api(`/api/servers/${encodeURIComponent(server.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+        state.server = data.server;
+        state.servers = state.servers.map((item) => (item.id === data.server.id ? { ...item, ...data.server } : item));
+        modal.close();
+        renderRail();
+        renderChannels();
+        renderTopbar();
+      } catch (err) {
+        error.textContent = err.message;
+      }
+    };
+  });
+}
+
 function openAddMenu() {
   openModal("Add a server", (form) => {
     const name = el("input", { name: "name", maxlength: "80", placeholder: "Server name", required: true });
@@ -903,6 +1173,32 @@ window.addEventListener("keydown", (event) => {
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
+
+if (emojiPanel && emojiButton) {
+  for (const emoji of EMOJI_PICKER) {
+    emojiPanel.append(el("button", {
+      class: "emoji-pick",
+      type: "button",
+      onclick: () => {
+        const start = messageInput.selectionStart ?? messageInput.value.length;
+        const end = messageInput.selectionEnd ?? start;
+        messageInput.value = `${messageInput.value.slice(0, start)}${emoji}${messageInput.value.slice(end)}`;
+        messageInput.focus();
+        const caret = start + emoji.length;
+        messageInput.setSelectionRange(caret, caret);
+        emojiPanel.hidden = true;
+      },
+    }, [text(emoji)]));
+  }
+  emojiButton.addEventListener("click", () => {
+    emojiPanel.hidden = !emojiPanel.hidden;
+  });
+  document.addEventListener("click", (event) => {
+    if (emojiPanel.hidden) return;
+    if (event.target === emojiButton || emojiPanel.contains(event.target)) return;
+    emojiPanel.hidden = true;
   });
 }
 

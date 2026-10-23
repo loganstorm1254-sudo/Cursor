@@ -254,4 +254,58 @@ describe("Hall", () => {
     const blockedAgain = await authed(grace.cookie, `/api/channels/${createdBody.channel.id}/messages`);
     expect(blockedAgain.status).toBe(403);
   });
+
+  it("supports server reorder, server profile edits, and /poll votes", async () => {
+    const ada = await register("ada_tools");
+    const created = await authed(ada.cookie, "/api/servers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Tools" }),
+    });
+    const createdBody = (await created.json()) as { server: { id: string }; channel: { id: string } };
+
+    const patched = await authed(ada.cookie, `/api/servers/${createdBody.server.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Tool Shed", bio: "Bring snacks", inviteCode: "toolshed" }),
+    });
+    expect(patched.status).toBe(200);
+    expect(((await patched.json()) as { server: { name: string; bio: string; inviteCode: string } }).server).toMatchObject({
+      name: "Tool Shed",
+      bio: "Bring snacks",
+      inviteCode: "toolshed",
+    });
+
+    const listed = (await (await authed(ada.cookie, "/api/servers")).json()) as {
+      servers: Array<{ id: string }>;
+    };
+    const ids = listed.servers.map((server) => server.id);
+    const reversed = [...ids].reverse();
+    const ordered = await authed(ada.cookie, "/api/servers/order", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverIds: reversed }),
+    });
+    expect(ordered.status).toBe(200);
+    const again = (await (await authed(ada.cookie, "/api/servers")).json()) as { servers: Array<{ id: string }> };
+    expect(again.servers.map((server) => server.id)).toEqual(reversed);
+
+    const poll = await authed(ada.cookie, `/api/channels/${createdBody.channel.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "/poll Lunch? | Pizza | Tacos" }),
+    });
+    expect(poll.status).toBe(201);
+    const pollBody = (await poll.json()) as { message: { id: string; body: string } };
+    expect(pollBody.message.body.startsWith("§HALLPOLL§")).toBe(true);
+
+    const vote = await authed(ada.cookie, `/api/channels/${createdBody.channel.id}/poll-vote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messageId: pollBody.message.id, optionIndex: 1 }),
+    });
+    expect(vote.status).toBe(200);
+    const voted = (await vote.json()) as { message: { body: string } };
+    expect(voted.message.body).toContain('"1"');
+  });
 });

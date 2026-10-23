@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { POLL_PREFIX } from "./username";
 
 export type ChatMessage = {
   id: string;
@@ -8,6 +9,12 @@ export type ChatMessage = {
   avatarUrl: string | null;
   body: string;
   createdAt: number;
+};
+
+type PollPayload = {
+  question: string;
+  options: string[];
+  votes: Record<string, string[]>;
 };
 
 export type PresenceUser = {
@@ -30,7 +37,7 @@ type MessageRow = {
 };
 
 const COOLDOWN_MS = 250;
-const MAX_BODY = 2000;
+const MAX_BODY = 4000;
 
 function toMessage(row: MessageRow): ChatMessage {
   return {
@@ -111,6 +118,44 @@ export class ChannelRoom extends DurableObject<Env> {
     return { ok: true, message: saved };
   }
 
+  async votePoll(
+    userId: string,
+    messageId: string,
+    optionIndex: number,
+  ): Promise<{ ok: true; message: ChatMessage } | { ok: false; error: string }> {
+    const row = this.ctx.storage.sql
+      .exec<MessageRow>(
+        `SELECT id, user_id, username, display_name, avatar_url, body, created_at
+         FROM messages WHERE id = ?`,
+        messageId,
+      )
+      .toArray()[0];
+    if (!row) return { ok: false, error: "Poll not found" };
+    if (!row.body.startsWith(POLL_PREFIX)) return { ok: false, error: "Not a poll" };
+    let poll: PollPayload;
+    try {
+      poll = JSON.parse(row.body.slice(POLL_PREFIX.length)) as PollPayload;
+    } catch {
+      return { ok: false, error: "Broken poll" };
+    }
+    if (!Array.isArray(poll.options) || optionIndex < 0 || optionIndex >= poll.options.length) {
+      return { ok: false, error: "Bad option" };
+    }
+    if (!poll.votes || typeof poll.votes !== "object") poll.votes = {};
+    for (const key of Object.keys(poll.votes)) {
+      poll.votes[key] = (poll.votes[key] ?? []).filter((id) => id !== userId);
+    }
+    const bucket = String(optionIndex);
+    const list = poll.votes[bucket] ?? [];
+    list.push(userId);
+    poll.votes[bucket] = list;
+    const body = `${POLL_PREFIX}${JSON.stringify(poll)}`;
+    this.ctx.storage.sql.exec(`UPDATE messages SET body = ? WHERE id = ?`, body, messageId);
+    const message = toMessage({ ...row, body });
+    this.broadcast(JSON.stringify({ type: "poll_update", message }));
+    return { ok: true, message };
+  }
+
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("Expected WebSocket", { status: 426 });
@@ -149,12 +194,18 @@ export class ChannelRoom extends DurableObject<Env> {
     } catch {
       return;
     }
-    if (parsed.type !== "message" || typeof parsed.body !== "string") return;
     const attachment = ws.deserializeAttachment() as Attachment | null;
     if (!attachment?.userId) {
       ws.close(1008, "Unauthorized");
       return;
     }
+    if (parsed.type === "poll_vote" && typeof (parsed as { messageId?: string }).messageId === "string") {
+      const optionIndex = Number((parsed as { optionIndex?: number }).optionIndex);
+      const result = await this.votePoll(attachment.userId, (parsed as { messageId: string }).messageId, optionIndex);
+      if (!result.ok) ws.send(JSON.stringify({ type: "error", error: result.error }));
+      return;
+    }
+    if (parsed.type !== "message" || typeof parsed.body !== "string") return;
     const saved = this.insertMessage(attachment, parsed.body);
     if ("error" in saved) {
       ws.send(JSON.stringify({ type: "error", error: saved.error }));

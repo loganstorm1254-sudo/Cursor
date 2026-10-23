@@ -72,3 +72,13 @@ export function normalizeBio(input: string): string | { error: string } {
   }
   return bio;
 }
+
+export function normalizeInviteCode(input: string): string | null {
+  const code = input.trim().toLowerCase();
+  if (!/^[a-z0-9-]{3,32}$/.test(code)) return null;
+  if (code === "hall" || code.startsWith("hall-")) return null;
+  return code;
+}
+
+/** Marker for poll payloads stored in message bodies. */
+export const POLL_PREFIX = "§HALLPOLL§";

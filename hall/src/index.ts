@@ -19,9 +19,11 @@ import {
   isPlatformOwnerUsername,
   normalizeBio,
   normalizeChannelName,
+  normalizeInviteCode,
   normalizePassword,
   normalizeServerName,
   normalizeUsername,
+  POLL_PREFIX,
 } from "./username";
 
 export { ChannelRoom } from "./channel";
@@ -35,6 +37,8 @@ type ServerRow = {
   icon_letter: string;
   owner_id: string;
   invite_code: string;
+  bio: string | null;
+  avatar_key: string | null;
 };
 
 type ChannelRow = {
@@ -56,6 +60,8 @@ function publicServer(row: ServerRow, userId: string, user?: PublicUser) {
     iconLetter: row.icon_letter,
     inviteCode: row.invite_code,
     ownerId: row.owner_id,
+    bio: row.bio ?? "",
+    avatarUrl: row.avatar_key ? `/api/avatars/${encodeURIComponent(row.avatar_key)}` : null,
     isOwner: row.owner_id === userId,
     isLobby,
     canManage,
@@ -124,8 +130,8 @@ async function register(request: Request, env: Env): Promise<Response> {
          VALUES (?, ?, ?, ?, ?, '', NULL, ?)`,
       ).bind(userId, parsedName.username, parsedName.displayName, passwordHash, now, role),
       env.DB.prepare(
-        `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
-         VALUES ('lobby', ?, ?)`,
+        `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at, position)
+         VALUES ('lobby', ?, ?, 0)`,
       ).bind(userId, now),
     ]);
   } catch (error) {
@@ -252,15 +258,152 @@ async function getProfile(env: Env, usernameRaw: string): Promise<Response> {
 
 async function listServers(env: Env, user: PublicUser): Promise<Response> {
   const { results } = await env.DB.prepare(
-    `SELECT s.id, s.name, s.icon_letter, s.owner_id, s.invite_code
+    `SELECT s.id, s.name, s.icon_letter, s.owner_id, s.invite_code, s.bio, s.avatar_key
      FROM memberships m
      JOIN servers s ON s.id = m.server_id
      WHERE m.user_id = ?
-     ORDER BY m.joined_at ASC`,
+     ORDER BY m.position ASC, m.joined_at ASC`,
   )
     .bind(user.id)
     .all<ServerRow>();
   return json({ servers: (results ?? []).map((row) => publicServer(row, user.id, user)) });
+}
+
+async function reorderServers(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const body = asRecord(await readJson(request, 8_192));
+  const raw = body.serverIds;
+  if (!Array.isArray(raw) || raw.length === 0) throw new HttpError(400, "serverIds must be a non-empty list");
+  const serverIds = raw.map((id, index) => {
+    if (typeof id !== "string" || !id) throw new HttpError(400, `serverIds[${index}] must be a string`);
+    return id;
+  });
+  const existing = await env.DB.prepare("SELECT server_id AS id FROM memberships WHERE user_id = ?")
+    .bind(user.id)
+    .all<{ id: string }>();
+  const existingIds = new Set((existing.results ?? []).map((row) => row.id));
+  if (serverIds.length !== existingIds.size || serverIds.some((id) => !existingIds.has(id))) {
+    throw new HttpError(400, "serverIds must include every server you are in once");
+  }
+  await env.DB.batch(
+    serverIds.map((id, position) =>
+      env.DB.prepare("UPDATE memberships SET position = ? WHERE server_id = ? AND user_id = ?").bind(
+        position,
+        id,
+        user.id,
+      ),
+    ),
+  );
+  return json({ ok: true, serverIds });
+}
+
+async function updateServer(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
+  const server = await env.DB.prepare(
+    "SELECT id, name, icon_letter, owner_id, invite_code, bio, avatar_key FROM servers WHERE id = ?",
+  )
+    .bind(serverId)
+    .first<ServerRow>();
+  if (!server) throw new HttpError(404, "Server not found");
+  if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
+  if (!canManageServer(server, user)) {
+    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can edit this server");
+  }
+
+  const body = asRecord(await readJson(request, 4_096));
+  let name = server.name;
+  let bio = server.bio ?? "";
+  let invite = server.invite_code;
+  let letter = server.icon_letter;
+
+  if (body.name !== undefined) {
+    const next = normalizeServerName(asString(body.name, "Server name"));
+    if (!next) throw new HttpError(400, "Server names are 1–80 characters");
+    if (server.id === "lobby" && next !== "Hall Official") {
+      // Owner may restyle Hall Official but keep the brand name.
+      name = "Hall Official";
+    } else {
+      name = next;
+    }
+    letter = iconLetter(name);
+  }
+  if (body.bio !== undefined) {
+    const parsed = normalizeBio(asString(body.bio, "Bio"));
+    if (typeof parsed !== "string") throw new HttpError(400, parsed.error);
+    bio = parsed;
+  }
+  if (body.inviteCode !== undefined) {
+    if (server.id === "lobby") throw new HttpError(400, "Hall Official invite stays hall");
+    const next = normalizeInviteCode(asString(body.inviteCode, "Invite"));
+    if (!next) throw new HttpError(400, "Invite codes are 3–32 letters, numbers, or hyphens");
+    invite = next;
+  }
+
+  try {
+    await env.DB.prepare(
+      `UPDATE servers SET name = ?, icon_letter = ?, bio = ?, invite_code = ? WHERE id = ?`,
+    )
+      .bind(name, letter, bio, invite, server.id)
+      .run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("invite_code") || message.includes("UNIQUE")) {
+      throw new HttpError(409, "That invite code is already taken");
+    }
+    throw error;
+  }
+
+  const updated = await env.DB.prepare(
+    "SELECT id, name, icon_letter, owner_id, invite_code, bio, avatar_key FROM servers WHERE id = ?",
+  )
+    .bind(server.id)
+    .first<ServerRow>();
+  if (!updated) throw new HttpError(404, "Server not found");
+  return json({ server: publicServer(updated, user.id, user) });
+}
+
+async function uploadServerAvatar(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
+  const server = await env.DB.prepare(
+    "SELECT id, name, icon_letter, owner_id, invite_code, bio, avatar_key FROM servers WHERE id = ?",
+  )
+    .bind(serverId)
+    .first<ServerRow>();
+  if (!server) throw new HttpError(404, "Server not found");
+  if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
+  if (!canManageServer(server, user)) throw new HttpError(403, "Only the server owner can change the icon");
+
+  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) throw new HttpError(400, "Empty image");
+  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(413, "Image must be under 512KB");
+
+  const key = `servers/${server.id}/${crypto.randomUUID()}`;
+  await env.AVATARS.put(key, bytes, {
+    httpMetadata: { contentType: type, cacheControl: "public, max-age=31536000, immutable" },
+  });
+  await env.DB.prepare(`UPDATE servers SET avatar_key = ? WHERE id = ?`).bind(key, server.id).run();
+  if (server.avatar_key && server.avatar_key !== key) {
+    try {
+      await env.AVATARS.delete(server.avatar_key);
+    } catch {
+      // Best-effort cleanup.
+    }
+  }
+  const updated = await env.DB.prepare(
+    "SELECT id, name, icon_letter, owner_id, invite_code, bio, avatar_key FROM servers WHERE id = ?",
+  )
+    .bind(server.id)
+    .first<ServerRow>();
+  if (!updated) throw new HttpError(404, "Server not found");
+  return json({ server: publicServer(updated, user.id, user) });
+}
+
+async function nextMembershipPosition(env: Env, userId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    "SELECT COALESCE(MAX(position), -1) + 1 AS next FROM memberships WHERE user_id = ?",
+  )
+    .bind(userId)
+    .first<{ next: number }>();
+  return row?.next ?? 0;
 }
 
 async function createServer(request: Request, env: Env, user: PublicUser): Promise<Response> {
@@ -273,26 +416,35 @@ async function createServer(request: Request, env: Env, user: PublicUser): Promi
     const channelId = crypto.randomUUID();
     const inviteCode = inviteToken();
     const now = Date.now();
+    const position = await nextMembershipPosition(env, user.id);
     try {
       await env.DB.batch([
         env.DB.prepare(
-          `INSERT INTO servers (id, name, icon_letter, owner_id, invite_code, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO servers (id, name, icon_letter, owner_id, invite_code, created_at, bio)
+           VALUES (?, ?, ?, ?, ?, ?, '')`,
         ).bind(serverId, name, iconLetter(name), user.id, inviteCode, now),
         env.DB.prepare(
           `INSERT INTO channels (id, server_id, name, position, created_at)
            VALUES (?, ?, 'general', 0, ?)`,
         ).bind(channelId, serverId, now),
         env.DB.prepare(
-          `INSERT INTO memberships (server_id, user_id, joined_at)
-           VALUES (?, ?, ?)`,
-        ).bind(serverId, user.id, now),
+          `INSERT INTO memberships (server_id, user_id, joined_at, position)
+           VALUES (?, ?, ?, ?)`,
+        ).bind(serverId, user.id, now, position),
       ]);
       console.log(JSON.stringify({ event: "server_created", serverId, userId: user.id }));
       return json(
         {
           server: publicServer(
-            { id: serverId, name, icon_letter: iconLetter(name), owner_id: user.id, invite_code: inviteCode },
+            {
+              id: serverId,
+              name,
+              icon_letter: iconLetter(name),
+              owner_id: user.id,
+              invite_code: inviteCode,
+              bio: "",
+              avatar_key: null,
+            },
             user.id,
             user,
           ),
@@ -320,25 +472,29 @@ function inviteToken(): string {
 async function joinServer(request: Request, env: Env, user: PublicUser): Promise<Response> {
   const body = asRecord(await readJson(request, 2_048));
   const code = asString(body.code, "Invite code").trim().toLowerCase();
-  if (!/^[a-z0-9]{2,32}$/.test(code)) throw new HttpError(400, "That invite code is not valid");
+  if (!/^[a-z0-9-]{2,32}$/.test(code)) throw new HttpError(400, "That invite code is not valid");
   const server = await env.DB.prepare(
-    "SELECT id, name, icon_letter, owner_id, invite_code FROM servers WHERE invite_code = ?",
+    "SELECT id, name, icon_letter, owner_id, invite_code, bio, avatar_key FROM servers WHERE invite_code = ?",
   )
     .bind(code)
     .first<ServerRow>();
   if (!server) throw new HttpError(404, "No server uses that invite");
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
-     VALUES (?, ?, ?)`,
-  )
-    .bind(server.id, user.id, Date.now())
-    .run();
+  const already = await memberOf(env, server.id, user.id);
+  if (!already) {
+    const position = await nextMembershipPosition(env, user.id);
+    await env.DB.prepare(
+      `INSERT INTO memberships (server_id, user_id, joined_at, position)
+       VALUES (?, ?, ?, ?)`,
+    )
+      .bind(server.id, user.id, Date.now(), position)
+      .run();
+  }
   return json({ server: publicServer(server, user.id, user) });
 }
 
 async function serverDetail(env: Env, user: PublicUser, serverId: string): Promise<Response> {
   const server = await env.DB.prepare(
-    "SELECT id, name, icon_letter, owner_id, invite_code FROM servers WHERE id = ?",
+    "SELECT id, name, icon_letter, owner_id, invite_code, bio, avatar_key FROM servers WHERE id = ?",
   )
     .bind(serverId)
     .first<ServerRow>();
@@ -475,10 +631,29 @@ async function listMessages(url: URL, env: Env, user: PublicUser, channelId: str
   return json({ messages });
 }
 
+function encodePollBody(question: string, options: string[]): string {
+  return `${POLL_PREFIX}${JSON.stringify({ question, options, votes: {} as Record<string, string[]> })}`;
+}
+
+function parsePollCommand(raw: string): { question: string; options: string[] } | null {
+  const trimmed = raw.trim();
+  if (!trimmed.toLowerCase().startsWith("/poll")) return null;
+  const rest = trimmed.slice(5).trim();
+  if (!rest) return null;
+  const parts = rest.split("|").map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+  const [question, ...options] = parts;
+  if (!question || options.length < 2 || options.length > 8) return null;
+  if (question.length > 200 || options.some((opt) => opt.length > 80)) return null;
+  return { question, options };
+}
+
 async function postMessage(request: Request, env: Env, user: PublicUser, channelId: string): Promise<Response> {
   await requireChannelMember(env, channelId, user);
   const body = asRecord(await readJson(request, 8_192));
   const text = asString(body.body, "Message");
+  const poll = parsePollCommand(text);
+  const payload = poll ? encodePollBody(poll.question, poll.options) : text;
   const result = await room(env, channelId).postMessage(
     {
       userId: user.id,
@@ -486,10 +661,21 @@ async function postMessage(request: Request, env: Env, user: PublicUser, channel
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
     },
-    text,
+    payload,
   );
   if (!result.ok) throw new HttpError(400, result.error);
   return json({ message: result.message satisfies ChatMessage }, 201);
+}
+
+async function votePoll(request: Request, env: Env, user: PublicUser, channelId: string): Promise<Response> {
+  await requireChannelMember(env, channelId, user);
+  const body = asRecord(await readJson(request, 2_048));
+  const messageId = asString(body.messageId, "messageId");
+  const optionIndex = Number(body.optionIndex);
+  if (!Number.isInteger(optionIndex) || optionIndex < 0) throw new HttpError(400, "Bad option");
+  const result = await room(env, channelId).votePoll(user.id, messageId, optionIndex);
+  if (!result.ok) throw new HttpError(400, result.error);
+  return json({ message: result.message });
 }
 
 async function openSocket(request: Request, env: Env, user: PublicUser, channelId: string): Promise<Response> {
@@ -540,6 +726,7 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
 
   if (method === "GET" && pathname === "/api/servers") return listServers(env, user);
   if (method === "POST" && pathname === "/api/servers") return createServer(request, env, user);
+  if (method === "PUT" && pathname === "/api/servers/order") return reorderServers(request, env, user);
   if (method === "POST" && pathname === "/api/join") return joinServer(request, env, user);
 
   const serverMatch = pathname.match(/^\/api\/servers\/([^/]+)(?:\/([^/]+))?$/);
@@ -547,17 +734,20 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     const serverId = decodeURIComponent(serverMatch[1] ?? "");
     const action = serverMatch[2];
     if (!action && method === "GET") return serverDetail(env, user, serverId);
+    if (!action && method === "PATCH") return updateServer(request, env, user, serverId);
+    if (action === "avatar" && method === "PUT") return uploadServerAvatar(request, env, user, serverId);
     if (action === "channels" && method === "POST") return createChannel(request, env, user, serverId);
     if (action === "channel-order" && method === "PUT") return reorderChannels(request, env, user, serverId);
     if (action === "leave" && method === "POST") return leaveServer(env, user, serverId);
   }
 
-  const channelMatch = pathname.match(/^\/api\/channels\/([^/]+)\/(messages|websocket)$/);
+  const channelMatch = pathname.match(/^\/api\/channels\/([^/]+)\/(messages|websocket|poll-vote)$/);
   if (channelMatch) {
     const channelId = decodeURIComponent(channelMatch[1] ?? "");
     const action = channelMatch[2];
     if (action === "messages" && method === "GET") return listMessages(url, env, user, channelId);
     if (action === "messages" && method === "POST") return postMessage(request, env, user, channelId);
+    if (action === "poll-vote" && method === "POST") return votePoll(request, env, user, channelId);
     if (action === "websocket" && method === "GET") return openSocket(request, env, user, channelId);
   }
 

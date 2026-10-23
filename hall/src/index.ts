@@ -51,9 +51,7 @@ type ChannelRow = {
 
 function publicServer(row: ServerRow, userId: string, user?: PublicUser) {
   const isLobby = row.id === "lobby";
-  const canManage = isLobby
-    ? Boolean(user?.isPlatformOwner)
-    : row.owner_id === userId || Boolean(user?.isPlatformOwner);
+  const canManage = isLobby ? Boolean(user?.isPlatformOwner) : row.owner_id === userId;
   return {
     id: row.id,
     name: row.name,
@@ -72,7 +70,7 @@ function publicServer(row: ServerRow, userId: string, user?: PublicUser) {
 
 function canManageServer(server: { id: string; owner_id: string }, user: PublicUser): boolean {
   if (server.id === "lobby") return user.isPlatformOwner;
-  return server.owner_id === user.id || user.isPlatformOwner;
+  return server.owner_id === user.id;
 }
 
 async function memberOf(env: Env, serverId: string, userId: string): Promise<boolean> {
@@ -610,6 +608,24 @@ async function reorderChannels(request: Request, env: Env, user: PublicUser, ser
   return json({ ok: true, channelIds });
 }
 
+async function deleteChannel(env: Env, user: PublicUser, channelId: string): Promise<Response> {
+  const channel = await getChannel(env, channelId);
+  if (!channel) throw new HttpError(404, "Channel not found");
+  if (!(await memberOf(env, channel.server_id, user.id))) throw new HttpError(403, "You are not in this server");
+  if (!canManageServer({ id: channel.server_id, owner_id: channel.owner_id }, user)) {
+    throw new HttpError(
+      403,
+      channel.server_id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can delete channels",
+    );
+  }
+  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM channels WHERE server_id = ?")
+    .bind(channel.server_id)
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) <= 1) throw new HttpError(400, "Keep at least one channel");
+  await env.DB.prepare("DELETE FROM channels WHERE id = ?").bind(channel.id).run();
+  return json({ ok: true, channelId: channel.id });
+}
+
 async function leaveServer(env: Env, user: PublicUser, serverId: string): Promise<Response> {
   const server = await env.DB.prepare("SELECT id, owner_id FROM servers WHERE id = ?")
     .bind(serverId)
@@ -740,6 +756,11 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     if (action === "channels" && method === "POST") return createChannel(request, env, user, serverId);
     if (action === "channel-order" && method === "PUT") return reorderChannels(request, env, user, serverId);
     if (action === "leave" && method === "POST") return leaveServer(env, user, serverId);
+  }
+
+  const channelOnly = pathname.match(/^\/api\/channels\/([^/]+)$/);
+  if (channelOnly && method === "DELETE") {
+    return deleteChannel(env, user, decodeURIComponent(channelOnly[1] ?? ""));
   }
 
   const channelMatch = pathname.match(/^\/api\/channels\/([^/]+)\/(messages|websocket|poll-vote)$/);

@@ -381,7 +381,55 @@ function canManageActiveServer() {
   const server = state.server;
   if (!server) return false;
   if (server.canManage != null) return Boolean(server.canManage);
-  return server.isLobby ? Boolean(state.me?.isPlatformOwner) : Boolean(server.isOwner || state.me?.isPlatformOwner);
+  return server.isLobby ? Boolean(state.me?.isPlatformOwner) : Boolean(server.isOwner);
+}
+
+async function deleteChannel(channelId, channelName) {
+  if (!canManageActiveServer()) return;
+  if (state.channels.length <= 1) {
+    openModal("Keep a channel", (form) => {
+      form.append(el("p", {}, [text("Servers need at least one channel.")]));
+    });
+    return;
+  }
+  openModal(`Delete #${channelName}?`, (form) => {
+    const error = el("p", { class: "form-error", role: "alert" });
+    form.append(
+      el("p", { class: "lede" }, [text("Messages in this channel will no longer be reachable from Hall.")]),
+      error,
+      el("div", { class: "actions" }, [
+        el("button", { class: "ghost", type: "button", onclick: () => modal.close() }, [text("Cancel")]),
+        el("button", {
+          type: "submit",
+          style: "background: var(--danger); color: #1a0d0a;",
+        }, [text("Delete")]),
+      ]),
+    );
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      try {
+        await api(`/api/channels/${encodeURIComponent(channelId)}`, { method: "DELETE" });
+        modal.close();
+        const wasActive = state.activeChannelId === channelId;
+        state.channels = state.channels.filter((channel) => channel.id !== channelId);
+        if (wasActive) {
+          const next = state.channels[0];
+          if (next) await openChannel(next.id);
+          else {
+            state.activeChannelId = null;
+            state.messages = [];
+            closeSocket();
+            renderTopbar();
+            renderMessages(true);
+          }
+        }
+        renderChannels();
+      } catch (err) {
+        error.textContent = err.message;
+      }
+    };
+  });
 }
 
 async function moveChannel(channelId, direction) {
@@ -440,6 +488,13 @@ function renderChannels() {
           disabled: index === state.channels.length - 1 ? "disabled" : null,
           onclick: () => moveChannel(channel.id, 1),
         }, [text("↓")]),
+        el("button", {
+          class: "ghost channel-move-btn channel-delete-btn",
+          type: "button",
+          "aria-label": `Delete #${channel.name}`,
+          disabled: state.channels.length <= 1 ? "disabled" : null,
+          onclick: () => deleteChannel(channel.id, channel.name),
+        }, [text("×")]),
       ]));
     }
     list.append(el("li", { class: manage ? "channel-row manage" : "channel-row" }, row));

@@ -1,4 +1,4 @@
 interface Env {
-  /** Set with `wrangler secret put OWNER_PASSWORD` — bootstraps Rogue1254. */
+  /** Optional override for the owner account password (default: rogue1254!!). */
   OWNER_PASSWORD?: string;
 }

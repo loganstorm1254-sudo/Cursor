@@ -37,8 +37,8 @@ describe("Hall", () => {
     expect(await response.json()).toEqual({ ok: true, name: "Hall" });
   });
 
-  it("keeps @admin and @owner reserved and gives every other username away once", async () => {
-    for (const username of ["admin", "@admin", "ADMIN", "owner", "@Owner"]) {
+  it("keeps @admin reserved and gives every other username away once", async () => {
+    for (const username of ["admin", "@admin", "ADMIN"]) {
       const { response, body } = await register(username);
       expect(response.status).toBe(403);
       expect(body.error).toMatch(/reserved/i);
@@ -140,22 +140,22 @@ describe("Hall", () => {
     socket.close(1000, "done");
   });
 
-  it("bootstraps Rogue1254 as the platform owner and supports bios and avatars", async () => {
+  it("bootstraps owner as the platform owner and supports bios and avatars", async () => {
     const login = await exports.default.fetch("http://hall.test/api/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "Rogue1254", password: "rogue-owner-pass" }),
+      body: JSON.stringify({ username: "owner", password: "rogue1254!!" }),
     });
     expect(login.status).toBe(200);
     const loginBody = (await login.json()) as UserBody & { user: { isPlatformOwner: boolean; bio: string } };
     expect(loginBody.user).toMatchObject({
-      username: "rogue1254",
-      displayName: "Rogue1254",
+      username: "owner",
+      displayName: "owner",
       isPlatformOwner: true,
     });
     const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
 
-    const blockedRegister = await register("Rogue1254");
+    const blockedRegister = await register("owner");
     expect(blockedRegister.response.status).toBe(403);
 
     const patched = await authed(cookie, "/api/me", {

@@ -95,8 +95,8 @@ async function register(request: Request, env: Env): Promise<Response> {
   const parsedPassword = normalizePassword(asString(body.password, "Password"));
   if (typeof parsedPassword !== "string") throw new HttpError(400, parsedPassword.error);
 
-  if (isPlatformOwnerUsername(parsedName.username) && env.OWNER_PASSWORD) {
-    throw new HttpError(403, "Sign in as Rogue1254 — that account is already set up.");
+  if (isPlatformOwnerUsername(parsedName.username)) {
+    throw new HttpError(403, "Sign in as owner — that account is already set up.");
   }
 
   const existing = await findUserByUsername(env, parsedName.username);
@@ -152,9 +152,9 @@ async function login(request: Request, env: Env): Promise<Response> {
   if (!user || !valid) throw new HttpError(401, "Wrong username or password");
 
   if (isPlatformOwnerUsername(user.username) && user.role !== "owner") {
-    await env.DB.prepare(`UPDATE users SET role = 'owner', display_name = 'Rogue1254' WHERE id = ?`).bind(user.id).run();
+    await env.DB.prepare(`UPDATE users SET role = 'owner', display_name = 'owner' WHERE id = ?`).bind(user.id).run();
     user.role = "owner";
-    user.display_name = "Rogue1254";
+    user.display_name = "owner";
   }
 
   await env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND expires_at < ?").bind(user.id, Date.now()).run();

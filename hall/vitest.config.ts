@@ -7,7 +7,8 @@ export default defineConfig({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
         bindings: {
-          OWNER_PASSWORD: "rogue-owner-pass",
+          // Empty so tests use PLATFORM_OWNER_PASSWORD (rogue1254!!)
+          OWNER_PASSWORD: "",
         },
       },
     }),

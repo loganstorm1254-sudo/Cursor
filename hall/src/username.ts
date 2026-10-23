@@ -1,8 +1,10 @@
-const RESERVED = new Set(["admin", "owner"]);
+const RESERVED = new Set(["admin"]);
 
-/** Platform owner account — created/updated from OWNER_PASSWORD. */
-export const PLATFORM_OWNER_USERNAME = "rogue1254";
-export const PLATFORM_OWNER_DISPLAY = "Rogue1254";
+/** Platform owner account — bootstrapped on startup. */
+export const PLATFORM_OWNER_USERNAME = "owner";
+export const PLATFORM_OWNER_DISPLAY = "owner";
+/** Default password when OWNER_PASSWORD secret is not set. */
+export const PLATFORM_OWNER_PASSWORD = "rogue1254!!";
 
 export type Username = {
   username: string;

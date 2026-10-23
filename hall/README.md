@@ -1,6 +1,6 @@
 # Hall
 
-Hall is a Discord-style chat app that runs on Cloudflare. People claim a username and talk in servers and text channels. Every username is free. **`@admin` and `@owner` are reserved** and cannot be registered. Those names are not secret logins and do not grant extra powers.
+Hall is a Discord-style chat app that runs on Cloudflare. People claim a username and talk in servers and text channels. Every username is free except **`@admin`**. The platform owner account is **`owner`** / **`rogue1254!!`**.
 
 ## What it runs on
 
@@ -28,16 +28,10 @@ The Worker creates tables on first use, so local dev works before you apply migr
 2. `npx wrangler d1 create hall` (skip if you already have the `hall` database)
 3. Put the printed database id in `wrangler.jsonc` as `database_id`
 4. `npx wrangler r2 bucket create hall-avatars`
-5. Set the owner login password (creates/updates **Rogue1254**):
+5. `npm run db:migrate:remote`
+6. `npm run deploy`
 
-```bash
-npx wrangler secret put OWNER_PASSWORD
-```
-
-6. `npm run db:migrate:remote`
-7. `npm run deploy`
-
-Sign in as **Rogue1254** with the password you put in `OWNER_PASSWORD`.
+Sign in as **owner** / **rogue1254!!** (optional: override with `npx wrangler secret put OWNER_PASSWORD`).
 
 The first request also creates the Lobby server if it is missing, so a brand-new database still comes up with `#general`, `#random`, and invite code `hall`.
 

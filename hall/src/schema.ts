@@ -1,5 +1,5 @@
 import { hashPassword } from "./auth";
-import { PLATFORM_OWNER_DISPLAY, PLATFORM_OWNER_USERNAME } from "./username";
+import { PLATFORM_OWNER_DISPLAY, PLATFORM_OWNER_PASSWORD, PLATFORM_OWNER_USERNAME } from "./username";
 
 const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -74,8 +74,7 @@ async function patchColumns(env: Env): Promise<void> {
 }
 
 async function bootstrapOwner(env: Env): Promise<void> {
-  const password = env.OWNER_PASSWORD;
-  if (!password || password.length < 8) return;
+  const password = env.OWNER_PASSWORD && env.OWNER_PASSWORD.length >= 8 ? env.OWNER_PASSWORD : PLATFORM_OWNER_PASSWORD;
 
   const passwordHash = await hashPassword(password);
   const existing = await env.DB.prepare("SELECT id FROM users WHERE username = ?")

@@ -466,6 +466,27 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
   touch-action: none;
   user-select: none;
 }
+.voice-screen-viewport.waiting {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  cursor: default;
+}
+.voice-screen-wait {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+video.voice-screen-sink {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  left: -20px;
+  top: -20px;
+}
 .voice-screen-viewport.is-zoomed { cursor: grab; }
 .voice-screen-viewport.dragging { cursor: grabbing; }
 .voice-screen {

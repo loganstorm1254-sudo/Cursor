@@ -1039,29 +1039,44 @@ function openScreenViewer(peer, stream) {
 
 function voiceTileFor(peer) {
   const mine = peer.userId === state.me?.id;
-  const isSharing = Boolean(peer.sharing || (mine && state.voice.sharing));
-  const stream = isSharing ? screenStreamFor(peer) : null;
+  const stream = screenStreamFor(peer);
+  // Prefer a live stream even if the roster flag lagged behind WebRTC.
+  const isSharing = Boolean(peer.sharing || (mine && state.voice.sharing) || stream);
   const hasShareAudio = Boolean(stream?.getAudioTracks?.().length);
   const status = isSharing
-    ? mine
-      ? hasShareAudio
-        ? "Sharing screen · 1080p60 · sound"
-        : "Sharing screen · 1080p60 — tick Share audio in the picker"
-      : "Sharing screen"
+    ? !stream
+      ? mine ? "Starting screen share…" : "Connecting to screen…"
+      : mine
+        ? hasShareAudio
+          ? "Sharing screen · 1080p60 · sound"
+          : "Sharing screen · 1080p60 — tick Share audio in the picker"
+        : "Sharing screen"
     : peer.muted ? "Muted" : mine ? "You" : "In call";
-  if (!stream) {
+  if (!isSharing) {
     return el("div", {
       class: mine ? "voice-tile me" : "voice-tile",
-      "data-sharing": null,
     }, [
       avatarNode({ ...peer, id: peer.userId }, "avatar lg"),
       el("strong", {}, [text(peer.displayName)]),
       el("span", { class: "voice-tile-status" }, [text(status)]),
     ]);
   }
+  if (!stream) {
+    return el("div", {
+      class: mine ? "voice-tile me" : "voice-tile",
+      "data-sharing": "1",
+    }, [
+      el("div", { class: "voice-screen-viewport waiting" }, [
+        avatarNode({ ...peer, id: peer.userId }, "avatar lg"),
+        el("p", { class: "voice-screen-wait" }, [text(mine ? "Starting share…" : "Waiting for video…")]),
+      ]),
+      el("strong", {}, [text(peer.displayName)]),
+      el("span", { class: "voice-tile-status" }, [text(status)]),
+    ]);
+  }
 
   // Reuse the live <video> so roster/WebRTC ticks do not black the share.
-  let video = document.querySelector(`video.voice-screen[data-peer-screen="${CSS.escape(peer.userId)}"]`);
+  let video = document.querySelector(`video.voice-screen[data-peer-screen="${CSS.escape(peer.userId)}"]:not(.voice-screen-sink)`);
   if (!video || video.srcObject !== stream) {
     video = document.createElement("video");
     video.className = "voice-screen";
@@ -1070,7 +1085,10 @@ function voiceTileFor(peer) {
     video.playsInline = true;
     video.muted = true;
     video.srcObject = stream;
+  } else if (video.srcObject !== stream) {
+    video.srcObject = stream;
   }
+  void video.play().catch(() => {});
   const zoomLabel = el("span", { class: "screen-zoom-label" }, [text("100%")]);
   const viewport = el("div", {
     class: "voice-screen-viewport",

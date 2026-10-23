@@ -106,6 +106,33 @@ h1, h2, h3 { font-family: Fraunces, Georgia, serif; font-weight: 560; margin: 0;
   box-shadow: var(--shadow);
 }
 .auth-card h2 { font-size: 34px; }
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: var(--input);
+}
+.auth-tab {
+  border: 0;
+  border-radius: 11px;
+  padding: 12px 10px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  min-height: 44px;
+}
+.auth-tab.active,
+.auth-tab[aria-selected="true"] {
+  background: var(--brass);
+  color: var(--brass-ink);
+}
+.auth-switch {
+  text-align: center;
+  padding: 10px 4px;
+  min-height: 44px;
+}
 .lede { margin: 0; color: var(--muted); }
 label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
 input, textarea {
@@ -389,18 +416,22 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
     align-content: start;
   }
   .auth-story {
-    padding: calc(28px + env(safe-area-inset-top, 0px)) 22px 20px;
+    padding: calc(20px + env(safe-area-inset-top, 0px)) 22px 12px;
     min-height: auto;
+    gap: 10px;
   }
-  .auth-story h1 { font-size: clamp(48px, 16vw, 72px); }
-  .auth-story p { font-size: 16px; }
+  .auth-story .mark { width: 32px; height: 32px; }
+  .auth-story h1 { font-size: clamp(40px, 12vw, 56px); }
+  .auth-story p { font-size: 15px; }
   .auth-card {
     margin: 0 14px calc(20px + env(safe-area-inset-bottom, 0px));
-    padding: 22px 18px;
+    padding: 18px 16px;
     border-radius: 18px;
   }
-  .auth-card h2 { font-size: 28px; }
-  input, textarea, button[type="submit"] {
+  .auth-card h2 { font-size: 24px; }
+  .auth-tabs { margin-bottom: 2px; }
+  .auth-tab { font-size: 15px; }
+  input, textarea, button[type="submit"], .auth-tab {
     min-height: 48px;
     font-size: 16px; /* avoids iOS zoom */
   }

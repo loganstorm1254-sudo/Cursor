@@ -5,6 +5,8 @@ const authLede = document.querySelector("#auth-lede");
 const authError = document.querySelector("#auth-error");
 const authSubmit = document.querySelector("#auth-submit");
 const authSwitch = document.querySelector("#auth-switch");
+const authTabLogin = document.querySelector("#auth-tab-login");
+const authTabRegister = document.querySelector("#auth-tab-register");
 const usernameInput = document.querySelector("#username");
 const passwordInput = document.querySelector("#password");
 const boot = document.querySelector("#boot");
@@ -122,9 +124,17 @@ function setAuthMode(mode) {
   authSwitch.textContent = register ? "Already have an account? Sign in" : "Need an account? Create one";
   passwordInput.autocomplete = register ? "new-password" : "current-password";
   authError.textContent = "";
+  if (authTabLogin && authTabRegister) {
+    authTabLogin.setAttribute("aria-selected", register ? "false" : "true");
+    authTabRegister.setAttribute("aria-selected", register ? "true" : "false");
+    authTabLogin.classList.toggle("active", !register);
+    authTabRegister.classList.toggle("active", register);
+  }
 }
 
 authSwitch.addEventListener("click", () => setAuthMode(state.mode === "register" ? "login" : "register"));
+authTabLogin?.addEventListener("click", () => setAuthMode("login"));
+authTabRegister?.addEventListener("click", () => setAuthMode("register"));
 
 authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -821,8 +831,11 @@ async function bootApp() {
     state.me = data.user;
     await enterApp();
   } catch (error) {
-    if (error.status === 401) showAuth();
-    else {
+    if (error.status === 401) {
+      setAuthMode("login");
+      showAuth();
+    } else {
+      setAuthMode("login");
       showAuth();
       authError.textContent = error.message;
     }
@@ -842,5 +855,5 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-setAuthMode("register");
+setAuthMode("login");
 bootApp();

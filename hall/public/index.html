@@ -35,6 +35,10 @@
         <p>A place to talk. Every username is free to claim, except <strong>@admin</strong>.</p>
       </div>
       <form id="auth-form" class="auth-card">
+        <div class="auth-tabs" role="tablist" aria-label="Account">
+          <button id="auth-tab-login" class="auth-tab" type="button" role="tab" aria-selected="false">Sign in</button>
+          <button id="auth-tab-register" class="auth-tab" type="button" role="tab" aria-selected="true">Create account</button>
+        </div>
         <h2 id="auth-title">Create your account</h2>
         <p class="lede" id="auth-lede">Pick a username. If nobody has it, it is yours.</p>
         <label>
@@ -47,7 +51,7 @@
         </label>
         <p id="auth-error" class="form-error" role="alert"></p>
         <button id="auth-submit" type="submit">Create account</button>
-        <button id="auth-switch" class="text-button" type="button">Already have an account? Sign in</button>
+        <button id="auth-switch" class="text-button auth-switch" type="button">Already have an account? Sign in</button>
       </form>
     </section>
 

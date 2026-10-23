@@ -31,6 +31,8 @@ export type VoiceUser = PresenceUser & {
 type Attachment = PresenceUser & {
   inVoice?: boolean;
   voiceMuted?: boolean;
+  serverId?: string;
+  channelId?: string;
 };
 
 type VoiceSignal = {
@@ -181,6 +183,8 @@ export class ChannelRoom extends DurableObject<Env> {
     const username = request.headers.get("x-hall-username") ?? "";
     const displayName = request.headers.get("x-hall-display-name") ?? "";
     const avatarUrl = request.headers.get("x-hall-avatar-url");
+    const serverId = request.headers.get("x-hall-server-id") ?? "";
+    const channelId = request.headers.get("x-hall-channel-id") ?? "";
     if (!userId || !username || !displayName) {
       return new Response("Missing member", { status: 401 });
     }
@@ -194,6 +198,8 @@ export class ChannelRoom extends DurableObject<Env> {
       avatarUrl: avatarUrl && avatarUrl.length > 0 ? avatarUrl : null,
       inVoice: false,
       voiceMuted: false,
+      serverId,
+      channelId,
     };
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(attachment);
@@ -380,7 +386,39 @@ export class ChannelRoom extends DurableObject<Env> {
   }
 
   private broadcastVoice(except?: WebSocket): void {
-    this.broadcast(JSON.stringify({ type: "voice_state", voice: this.voiceUsers(except) }), except);
+    const voice = this.voiceUsers(except);
+    this.broadcast(JSON.stringify({ type: "voice_state", voice }), except);
+    void this.publishVoiceRoster(voice);
+  }
+
+  private async publishVoiceRoster(voice: VoiceUser[]): Promise<void> {
+    let serverId = "";
+    let channelId = "";
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as Attachment | null;
+      if (attachment?.serverId && attachment.channelId) {
+        serverId = attachment.serverId;
+        channelId = attachment.channelId;
+        break;
+      }
+    }
+    if (!serverId || !channelId || !this.env.SERVERS) return;
+    try {
+      await this.env.SERVERS.getByName(serverId).fetch(
+        new Request("https://hub/publish", {
+          method: "POST",
+          body: JSON.stringify({ type: "voice_roster", channelId, voice }),
+        }),
+      );
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "voice_roster_publish_failed",
+          channelId,
+          message: error instanceof Error ? error.message : "unknown",
+        }),
+      );
+    }
   }
 
   private broadcast(payload: string, except?: WebSocket): void {

@@ -279,6 +279,26 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
   font-size: 13px;
 }
 .voice-hash { color: var(--good); }
+.channel-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  text-align: left;
+}
+.channel-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-voice-count {
+  color: var(--good);
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-channel-open { align-items: flex-start; }
 .voice-empty h2 { margin-bottom: 8px; }
 .voice-empty .primary { margin-top: 16px; justify-self: center; }
 .voice-empty {

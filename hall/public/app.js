@@ -82,6 +82,7 @@ const state = {
   socketAbort: null,
   pingTimer: null,
   voice: { active: false, muted: false, channelId: null, peers: [] },
+  voiceRoster: {},
   home: false,
   friends: [],
   incoming: [],
@@ -100,12 +101,34 @@ const voiceSession = createVoiceSession({
   getMe: () => state.me,
   onState: (next) => {
     state.voice = next;
+    if (next.channelId) {
+      state.voiceRoster = { ...state.voiceRoster, [next.channelId]: next.peers || [] };
+    }
     renderVoiceStage();
     renderTopbar();
     renderMembers();
+    if (!state.home) renderChannels();
     if (state.home) renderHomeSidebar();
   },
 });
+
+function voiceRosterFor(channelId) {
+  if (!channelId) return [];
+  if (state.voice.active && state.voice.channelId === channelId) return state.voice.peers || [];
+  return state.voiceRoster[channelId] || [];
+}
+
+function applyVoiceRoster(channelId, voice) {
+  if (!channelId) return;
+  state.voiceRoster = { ...state.voiceRoster, [channelId]: Array.isArray(voice) ? voice : [] };
+  if (state.voice.active && state.voice.channelId === channelId) {
+    state.voice = { ...state.voice, peers: state.voiceRoster[channelId] };
+  }
+  renderVoiceStage();
+  renderTopbar();
+  renderMembers();
+  if (!state.home) renderChannels();
+}
 
 function hue(name) {
   let hash = 0;
@@ -354,6 +377,10 @@ function connectHub(serverId) {
       } else {
         renderTopbar();
       }
+      return;
+    }
+    if (payload.type === "voice_roster" && payload.channelId) {
+      applyVoiceRoster(payload.channelId, payload.voice);
     }
   }, { signal: abort.signal });
   socket.addEventListener("close", () => {
@@ -605,16 +632,25 @@ function renderChannels() {
     section.items.forEach((channel) => {
       const index = state.channels.findIndex((item) => item.id === channel.id);
       const isVoice = channel.kind === "voice";
+      const roster = isVoice ? voiceRosterFor(channel.id) : [];
+      const openChildren = [
+        el("span", { class: isVoice ? "hash voice-hash" : "hash" }, [text(isVoice ? "🔊" : "#")]),
+        el("span", { class: "channel-label" }, [
+          el("span", { class: "channel-name" }, [text(channel.name)]),
+          isVoice && roster.length
+            ? el("span", { class: "channel-voice-count" }, [
+                text(`${roster.length} in voice · ${roster.map((peer) => peer.displayName).join(", ")}`),
+              ])
+            : null,
+        ]),
+      ];
       const row = [
         el("button", {
           type: "button",
-          class: "channel-open",
+          class: isVoice ? "channel-open voice-channel-open" : "channel-open",
           "aria-current": channel.id === state.activeChannelId ? "true" : null,
           onclick: () => openChannel(channel.id),
-        }, [
-          el("span", { class: isVoice ? "hash voice-hash" : "hash" }, [text(isVoice ? "🔊" : "#")]),
-          text(channel.name),
-        ]),
+        }, openChildren),
       ];
       if (manage) {
         row.push(el("div", { class: "channel-move" }, [
@@ -716,7 +752,7 @@ function renderTopbar() {
       ? `Message #${channel.name}`
       : "Message";
   const inThisVoice = state.voice.active && state.voice.channelId === state.activeChannelId;
-  const voiceCount = state.voice.peers?.length || 0;
+  const voiceCount = voiceRosterFor(state.activeChannelId).length;
   topbar.replaceChildren(
     el("div", { class: "topbar-actions" }, [
       el("button", {
@@ -779,7 +815,8 @@ function renderVoiceStage() {
     return;
   }
   stage.hidden = false;
-  const peers = state.voice.active ? state.voice.peers || [] : [];
+  const rosterChannelId = state.voice.active ? state.voice.channelId : state.activeChannelId;
+  const peers = voiceRosterFor(rosterChannelId);
   const tiles = peers.length
     ? peers.map((peer) => {
         const mine = peer.userId === state.me?.id;
@@ -917,7 +954,8 @@ function renderMembers() {
     if (ao !== bo) return ao - bo;
     return a.displayName.localeCompare(b.displayName);
   });
-  const inVoice = new Map((state.voice.peers || []).map((peer) => [peer.userId, peer]));
+  const activeRoster = voiceRosterFor(state.activeChannelId);
+  const inVoice = new Map(activeRoster.map((peer) => [peer.userId, peer]));
   for (const member of ordered) {
     const online = state.online.has(member.id);
     const voice = inVoice.get(member.id);
@@ -1312,8 +1350,14 @@ function connect(channelId) {
       state.online = new Map((payload.online ?? []).map((person) => [person.userId, person]));
       renderMembers();
       if (payload.type === "ready" && payload.voice) {
+        applyVoiceRoster(channelId, payload.voice);
         voiceSession.handleSocketMessage({ type: "voice_state", voice: payload.voice });
       }
+      return;
+    }
+    if (payload.type === "voice_state") {
+      applyVoiceRoster(channelId, payload.voice);
+      voiceSession.handleSocketMessage(payload);
       return;
     }
     if (voiceSession.handleSocketMessage(payload)) return;

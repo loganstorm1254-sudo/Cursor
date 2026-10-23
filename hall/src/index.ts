@@ -802,6 +802,13 @@ async function openSocket(request: Request, env: Env, user: PublicUser, channelI
   headers.set("x-hall-user-id", user.id);
   headers.set("x-hall-username", user.username);
   headers.set("x-hall-display-name", user.displayName);
+  headers.set("x-hall-channel-id", channelId);
+  if (channelId.startsWith("dm:")) {
+    headers.set("x-hall-server-id", "dm");
+  } else {
+    const channel = await getChannel(env, channelId);
+    if (channel?.server_id) headers.set("x-hall-server-id", channel.server_id);
+  }
   if (user.avatarUrl) headers.set("x-hall-avatar-url", user.avatarUrl);
   return room(env, channelId).fetch(new Request(request, { headers }));
 }

@@ -81,6 +81,9 @@ const state = {
   socket: null,
   socketAbort: null,
   pingTimer: null,
+  voiceSocket: null,
+  voiceSocketAbort: null,
+  voicePingTimer: null,
   voice: { active: false, muted: false, channelId: null, peers: [] },
   voiceRoster: {},
   home: false,
@@ -95,15 +98,18 @@ const state = {
 };
 
 let socketGeneration = 0;
+let voiceSocketGeneration = 0;
 let hubGeneration = 0;
 const voiceSession = createVoiceSession({
-  getSocket: () => state.socket,
+  getSocket: () => state.voiceSocket || state.socket,
   getMe: () => state.me,
   onState: (next) => {
+    const wasActive = state.voice.active;
     state.voice = next;
     if (next.channelId) {
       state.voiceRoster = { ...state.voiceRoster, [next.channelId]: next.peers || [] };
     }
+    if (wasActive && !next.active) releaseVoiceSocket();
     renderVoiceStage();
     renderTopbar();
     renderMembers();
@@ -175,9 +181,33 @@ function text(value) {
 }
 
 async function api(path, options = {}) {
-  const headers = new Headers(options.headers);
-  if (options.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
+  const { timeoutMs = 15_000, signal: outerSignal, headers: rawHeaders, ...fetchOptions } = options;
+  const headers = new Headers(rawHeaders);
+  if (fetchOptions.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (outerSignal) {
+    if (outerSignal.aborted) controller.abort();
+    else outerSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  let response;
+  try {
+    response = await fetch(path, {
+      ...fetchOptions,
+      headers,
+      credentials: "same-origin",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    if (error?.name === "AbortError") {
+      const timedOut = new Error("Hall took too long to respond. Refresh and try again.");
+      timedOut.status = 408;
+      throw timedOut;
+    }
+    throw error;
+  }
+  clearTimeout(timer);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(data.error || "Request failed");
@@ -566,6 +596,10 @@ async function deleteChannel(channelId, channelName) {
         await api(`/api/channels/${encodeURIComponent(channelId)}`, { method: "DELETE" });
         modal.close();
         const wasActive = state.activeChannelId === channelId;
+        if (state.voice.active && state.voice.channelId === channelId) {
+          await voiceSession.leave();
+          releaseVoiceSocket();
+        }
         state.channels = state.channels.filter((channel) => channel.id !== channelId);
         if (wasActive) {
           const next = state.channels[0];
@@ -889,14 +923,177 @@ function renderVoiceStage() {
   }
 }
 
-async function toggleVoice() {
-  if (!state.activeChannelId) return;
-  if (state.voice.active && state.voice.channelId === state.activeChannelId) {
-    await voiceSession.leave();
-    return;
+function releaseVoiceSocket() {
+  voiceSocketGeneration += 1;
+  if (state.voicePingTimer && state.voicePingTimer !== state.pingTimer) {
+    clearInterval(state.voicePingTimer);
   }
+  state.voicePingTimer = null;
+  if (state.voiceSocketAbort && state.voiceSocketAbort !== state.socketAbort) {
+    state.voiceSocketAbort.abort();
+  }
+  state.voiceSocketAbort = null;
+  const socket = state.voiceSocket;
+  const shared = socket && socket === state.socket;
+  state.voiceSocket = null;
+  if (!socket || shared) return;
   try {
-    await voiceSession.join(state.activeChannelId);
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close(1000, "voice-end");
+    }
+  } catch {
+    // Already closed.
+  }
+}
+
+function attachVoiceSocketListeners(socket, channelId, generation, abort) {
+  socket.addEventListener("message", (event) => {
+    if (generation !== voiceSocketGeneration || typeof event.data !== "string" || event.data === "pong") return;
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (payload.type === "ready" || payload.type === "presence") {
+      if (state.activeChannelId === channelId && Array.isArray(payload.online)) {
+        state.online = new Map(payload.online.map((person) => [person.userId, person]));
+        renderMembers();
+      }
+      if (payload.type === "ready" && payload.voice) {
+        applyVoiceRoster(channelId, payload.voice);
+        voiceSession.handleSocketMessage({ type: "voice_state", voice: payload.voice });
+      }
+      return;
+    }
+    if (payload.type === "voice_state") {
+      applyVoiceRoster(channelId, payload.voice);
+      voiceSession.handleSocketMessage(payload);
+      return;
+    }
+    voiceSession.handleSocketMessage(payload);
+  }, { signal: abort.signal });
+
+  socket.addEventListener("close", () => {
+    if (state.voicePingTimer && state.voiceSocket === socket && state.voiceSocket !== state.socket) {
+      clearInterval(state.voicePingTimer);
+      state.voicePingTimer = null;
+    }
+    if (generation !== voiceSocketGeneration) return;
+    if (state.voice.active && state.voice.channelId === channelId && state.voiceSocket !== state.socket) {
+      setTimeout(() => {
+        if (generation === voiceSocketGeneration && state.voice.active && state.voice.channelId === channelId) {
+          openDedicatedVoiceSocket(channelId);
+        }
+      }, 1200);
+    }
+  }, { signal: abort.signal });
+}
+
+/** Keep the VC websocket when the user browses another channel. */
+function promoteSocketToVoice() {
+  if (!state.socket || !state.voice.active) return;
+  const socket = state.socket;
+  const channelId = state.voice.channelId;
+  const pingTimer = state.pingTimer;
+  const oldAbort = state.socketAbort;
+
+  if (state.voiceSocket && state.voiceSocket !== socket) releaseVoiceSocket();
+
+  state.socket = null;
+  state.socketAbort = null;
+  state.pingTimer = null;
+  socketGeneration += 1;
+  // Drop chat listeners; keep the open WebSocket for voice signaling.
+  oldAbort?.abort();
+
+  const generation = ++voiceSocketGeneration;
+  const abort = new AbortController();
+  state.voiceSocket = socket;
+  state.voiceSocketAbort = abort;
+  state.voicePingTimer = pingTimer;
+  attachVoiceSocketListeners(socket, channelId, generation, abort);
+}
+
+function bindCurrentSocketAsVoice() {
+  if (!state.socket) return;
+  if (state.voiceSocket && state.voiceSocket !== state.socket) releaseVoiceSocket();
+  state.voiceSocket = state.socket;
+  state.voiceSocketAbort = state.socketAbort;
+  state.voicePingTimer = state.pingTimer;
+}
+
+function openDedicatedVoiceSocket(channelId) {
+  const generation = ++voiceSocketGeneration;
+  if (state.voiceSocket && state.voiceSocket !== state.socket) {
+    try {
+      state.voiceSocket.close(1000, "voice-switch");
+    } catch {
+      // ignore
+    }
+  }
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${protocol}//${location.host}/api/channels/${encodeURIComponent(channelId)}/websocket`);
+  const abort = new AbortController();
+  state.voiceSocket = socket;
+  state.voiceSocketAbort = abort;
+  state.voicePingTimer = setInterval(() => {
+    if (socket.readyState === WebSocket.OPEN) socket.send("ping");
+  }, 25000);
+
+  attachVoiceSocketListeners(socket, channelId, generation, abort);
+
+  return new Promise((resolve, reject) => {
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("Could not stay connected to voice"));
+    };
+    const cleanup = () => {
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+    };
+    if (socket.readyState === WebSocket.OPEN) {
+      resolve();
+      return;
+    }
+    socket.addEventListener("open", onOpen, { once: true });
+    socket.addEventListener("error", onError, { once: true });
+  });
+}
+
+async function joinVoice(channelId) {
+  if (state.socket && state.activeChannelId === channelId) {
+    bindCurrentSocketAsVoice();
+  } else if (!(state.voiceSocket && state.voice.active && state.voice.channelId === channelId)) {
+    await openDedicatedVoiceSocket(channelId);
+  }
+  await voiceSession.join(channelId);
+  if (state.socket && state.activeChannelId === channelId) bindCurrentSocketAsVoice();
+}
+
+async function toggleVoice() {
+  try {
+    if (state.voice.active) {
+      const viewingOtherVoice =
+        state.activeChannelId &&
+        state.activeChannelId !== state.voice.channelId &&
+        state.channels.find((channel) => channel.id === state.activeChannelId)?.kind === "voice";
+      if (viewingOtherVoice) {
+        await voiceSession.leave();
+        releaseVoiceSocket();
+        await joinVoice(state.activeChannelId);
+        return;
+      }
+      await voiceSession.leave();
+      releaseVoiceSocket();
+      return;
+    }
+    if (!state.activeChannelId) return;
+    await joinVoice(state.activeChannelId);
   } catch (error) {
     openModal("Voice", (form) => {
       form.append(el("p", { class: "form-error" }, [text(error.message || "Could not start voice")]));
@@ -1111,8 +1308,18 @@ async function refreshSocial() {
 }
 
 async function openHome() {
-  if (state.voice.active && !state.voice.channelId?.startsWith("dm:")) {
+  // Stay in server VC while browsing Friends — only DM calls are scoped to Home.
+  if (
+    state.voice.active &&
+    state.voice.channelId &&
+    !state.voice.channelId.startsWith("dm:") &&
+    state.socket &&
+    state.activeChannelId === state.voice.channelId
+  ) {
+    promoteSocketToVoice();
+  } else if (state.voice.active && state.voice.channelId?.startsWith("dm:")) {
     await voiceSession.leave();
+    releaseVoiceSocket();
   }
   state.home = true;
   state.server = null;
@@ -1122,7 +1329,7 @@ async function openHome() {
   state.activeChannelId = null;
   state.online = new Map();
   closeHub();
-  closeSocket();
+  closeChatSocket();
   membersEl.hidden = true;
   await refreshSocial();
   renderRail();
@@ -1285,15 +1492,26 @@ async function openDmThread(thread) {
 }
 
 async function openChannel(channelId) {
-  if (state.voice.active && state.voice.channelId && state.voice.channelId !== channelId) {
+  const channel = state.channels.find((item) => item.id === channelId);
+  const isVoice = channel?.kind === "voice";
+
+  // Joining a different voice channel ends the current call; text channels do not.
+  if (state.voice.active && state.voice.channelId !== channelId && isVoice) {
     await voiceSession.leave();
+    releaseVoiceSocket();
+  } else if (
+    state.voice.active &&
+    state.voice.channelId === state.activeChannelId &&
+    channelId !== state.voice.channelId &&
+    state.socket
+  ) {
+    promoteSocketToVoice();
   }
+
   state.activeChannelId = channelId;
   closeDrawers();
   renderChannels();
   renderTopbar();
-  const channel = state.channels.find((item) => item.id === channelId);
-  const isVoice = channel?.kind === "voice";
   composer.hidden = isVoice;
   if (isVoice) {
     state.messages = [];
@@ -1326,9 +1544,42 @@ async function loadOlder() {
   renderMessages(false);
 }
 
+function closeChatSocket(bump = true) {
+  if (bump) socketGeneration += 1;
+  const sharedWithVoice = state.socket && state.socket === state.voiceSocket;
+  if (state.pingTimer && !sharedWithVoice) {
+    clearInterval(state.pingTimer);
+  }
+  if (!sharedWithVoice) state.pingTimer = null;
+  if (state.socketAbort && !sharedWithVoice) {
+    state.socketAbort.abort();
+  }
+  if (!sharedWithVoice) state.socketAbort = null;
+  const socket = state.socket;
+  state.socket = null;
+  if (!socket || sharedWithVoice) return;
+  try {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close(1000, "switch");
+    }
+  } catch {
+    // Already closed.
+  }
+}
+
 function connect(channelId) {
   const generation = ++socketGeneration;
-  closeSocket(false);
+
+  // Already in this VC on a dedicated socket — reuse it for the channel view.
+  if (state.voiceSocket && state.voice.channelId === channelId) {
+    closeChatSocket(false);
+    state.socket = state.voiceSocket;
+    state.socketAbort = state.voiceSocketAbort;
+    state.pingTimer = state.voicePingTimer;
+    return;
+  }
+
+  closeChatSocket(false);
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(`${protocol}//${location.host}/api/channels/${encodeURIComponent(channelId)}/websocket`);
   const abort = new AbortController();
@@ -1351,16 +1602,18 @@ function connect(channelId) {
       renderMembers();
       if (payload.type === "ready" && payload.voice) {
         applyVoiceRoster(channelId, payload.voice);
-        voiceSession.handleSocketMessage({ type: "voice_state", voice: payload.voice });
+        if (state.voice.channelId === channelId) {
+          voiceSession.handleSocketMessage({ type: "voice_state", voice: payload.voice });
+        }
       }
       return;
     }
     if (payload.type === "voice_state") {
       applyVoiceRoster(channelId, payload.voice);
-      voiceSession.handleSocketMessage(payload);
+      if (state.voice.channelId === channelId) voiceSession.handleSocketMessage(payload);
       return;
     }
-    if (voiceSession.handleSocketMessage(payload)) return;
+    if (state.voice.channelId === channelId && voiceSession.handleSocketMessage(payload)) return;
     if (payload.type === "message" && payload.message) addMessage(payload.message);
     if (payload.type === "poll_update" && payload.message) upsertMessage(payload.message);
     if (payload.type === "error" && payload.error) {
@@ -1371,14 +1624,14 @@ function connect(channelId) {
   }, { signal: abort.signal });
 
   socket.addEventListener("open", () => {
-    if (state.voice.active && state.voice.channelId === channelId) {
+    if (state.voice.active && state.voice.channelId === channelId && state.voiceSocket === socket) {
       socket.send(JSON.stringify({ type: "voice_join" }));
       if (state.voice.muted) socket.send(JSON.stringify({ type: "voice_mute", muted: true }));
     }
   }, { signal: abort.signal });
 
   socket.addEventListener("close", () => {
-    if (state.pingTimer) {
+    if (state.pingTimer && state.socket === socket) {
       clearInterval(state.pingTimer);
       state.pingTimer = null;
     }
@@ -1390,28 +1643,11 @@ function connect(channelId) {
 }
 
 function closeSocket(bump = true) {
-  if (state.voice.active && bump) {
+  if (bump && state.voice.active) {
     voiceSession.leave();
   }
-  if (bump) socketGeneration += 1;
-  if (state.pingTimer) {
-    clearInterval(state.pingTimer);
-    state.pingTimer = null;
-  }
-  if (state.socketAbort) {
-    state.socketAbort.abort();
-    state.socketAbort = null;
-  }
-  const socket = state.socket;
-  state.socket = null;
-  if (!socket) return;
-  try {
-    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-      socket.close(1000, "switch");
-    }
-  } catch {
-    // Already closed.
-  }
+  if (bump) releaseVoiceSocket();
+  closeChatSocket(bump);
 }
 
 function addMessage(message) {
@@ -1831,7 +2067,7 @@ async function bootApp() {
   const inviteCode = pendingInviteCode();
   if (inviteCode && boot.querySelector("p")) boot.querySelector("p").textContent = "Opening invite…";
   try {
-    const data = await api("/api/me");
+    const data = await api("/api/me", { timeoutMs: 12_000 });
     state.me = data.user;
     await enterApp();
   } catch (error) {
@@ -1846,7 +2082,7 @@ async function bootApp() {
     } else {
       setAuthMode("login");
       showAuth();
-      authError.textContent = error.message;
+      authError.textContent = error.message || "Could not reach Hall. Refresh and try again.";
     }
   }
 }

@@ -979,9 +979,22 @@ async function openDm(request: Request, env: Env, user: PublicUser): Promise<Res
   return json({ thread: { id, updatedAt: now, user: toPublicUser(peer) } });
 }
 
+function hasSessionCookie(request: Request): boolean {
+  const header = request.headers.get("cookie");
+  if (!header) return false;
+  return header.split(";").some((part) => part.trim().startsWith("hall_session="));
+}
+
 async function route(request: Request, env: Env, url: URL): Promise<Response> {
   const { pathname } = url;
   const method = request.method;
+
+  // Logged-out boot hits /api/me with no cookie — answer 401 without schema init
+  // so two people opening the site at once do not serialize on cold-start work.
+  if (pathname === "/api/me" && method === "GET" && !hasSessionCookie(request)) {
+    throw new HttpError(401, "Sign in to continue");
+  }
+
   await ensureReady(env);
 
   if (method === "GET" && pathname.startsWith("/api/avatars/")) {

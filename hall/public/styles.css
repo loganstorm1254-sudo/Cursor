@@ -473,6 +473,19 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
 .voice-ctrl.mute.on { background: #5a3a20; color: #f6d7a8; }
 .voice-ctrl.hangup { background: #c24b3c; color: #fff7f5; }
 .voice-ctrl:disabled { opacity: 0.45; cursor: default; }
+.seekara-watermark {
+  position: fixed;
+  right: max(10px, env(safe-area-inset-right, 0px));
+  bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  width: min(112px, 22vw);
+  height: auto;
+  opacity: 0.42;
+  pointer-events: none;
+  user-select: none;
+  z-index: 30;
+  border-radius: 10px;
+  mix-blend-mode: screen;
+}
 .voice-dock {
   margin-top: auto;
   padding: 10px 12px;
@@ -868,6 +881,11 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
     background: color-mix(in srgb, var(--rail) 92%, black);
     border-top: 1px solid var(--line);
+  }
+  .seekara-watermark {
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    width: min(88px, 28vw);
+    opacity: 0.36;
   }
   .mobile-nav-btn {
     border: 0;

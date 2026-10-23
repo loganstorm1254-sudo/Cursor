@@ -308,4 +308,29 @@ describe("Hall", () => {
     const voted = (await vote.json()) as { message: { body: string } };
     expect(voted.message.body).toContain('"1"');
   });
+
+  it("serves two concurrent visitors without hanging on boot", async () => {
+    const started = Date.now();
+    const [a, b, c, d] = await Promise.all([
+      exports.default.fetch("http://hall.test/api/me"),
+      exports.default.fetch("http://hall.test/api/me"),
+      exports.default.fetch("http://hall.test/api/health"),
+      register("concurrent_one"),
+    ]);
+    expect(a.status).toBe(401);
+    expect(b.status).toBe(401);
+    expect(c.status).toBe(200);
+    expect(d.response.status).toBe(201);
+    // Cold init used to re-hash the owner with PBKDF2 and stall the second tab.
+    expect(Date.now() - started).toBeLessThan(8_000);
+
+    const second = await register("concurrent_two");
+    expect(second.response.status).toBe(201);
+    const [meOne, meTwo] = await Promise.all([
+      authed(d.cookie, "/api/me"),
+      authed(second.cookie, "/api/me"),
+    ]);
+    expect(meOne.status).toBe(200);
+    expect(meTwo.status).toBe(200);
+  });
 });

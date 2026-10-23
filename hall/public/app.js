@@ -108,21 +108,50 @@ const state = {
 let socketGeneration = 0;
 let voiceSocketGeneration = 0;
 let hubGeneration = 0;
+let voiceUiFrame = 0;
+function scheduleVoiceUi(full = false) {
+  // Coalesce WebRTC/roster thrash so typing + VC does not rebuild the whole shell every tick.
+  if (full) state._voiceUiFull = true;
+  if (voiceUiFrame) return;
+  voiceUiFrame = requestAnimationFrame(() => {
+    voiceUiFrame = 0;
+    const fullPass = state._voiceUiFull;
+    state._voiceUiFull = false;
+    try {
+      renderVoiceStage();
+      if (fullPass) {
+        renderTopbar();
+        renderMembers();
+        if (!state.home) renderChannels();
+        else renderHomeSidebar();
+      } else {
+        renderTopbar();
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ event: "voice_ui_render_failed", message: error?.message || "unknown" }));
+    }
+  });
+}
+
 const voiceSession = createVoiceSession({
   getSocket: () => state.voiceSocket || state.socket,
   getMe: () => state.me,
   onState: (next) => {
     const wasActive = state.voice.active;
+    const prev = state.voice;
     state.voice = next;
     if (next.channelId) {
       state.voiceRoster = { ...state.voiceRoster, [next.channelId]: next.peers || [] };
     }
     if (wasActive && !next.active) releaseVoiceSocket();
-    renderVoiceStage();
-    renderTopbar();
-    renderMembers();
-    if (!state.home) renderChannels();
-    if (state.home) renderHomeSidebar();
+    const rosterChanged =
+      prev.active !== next.active ||
+      prev.muted !== next.muted ||
+      prev.sharing !== next.sharing ||
+      prev.channelId !== next.channelId ||
+      (prev.peers?.length || 0) !== (next.peers?.length || 0) ||
+      JSON.stringify(prev.peers || []) !== JSON.stringify(next.peers || []);
+    scheduleVoiceUi(rosterChanged || !wasActive || !next.active);
   },
 });
 
@@ -134,14 +163,14 @@ function voiceRosterFor(channelId) {
 
 function applyVoiceRoster(channelId, voice) {
   if (!channelId) return;
-  state.voiceRoster = { ...state.voiceRoster, [channelId]: Array.isArray(voice) ? voice : [] };
+  const list = Array.isArray(voice) ? voice : [];
+  const prev = state.voiceRoster[channelId] || [];
+  state.voiceRoster = { ...state.voiceRoster, [channelId]: list };
   if (state.voice.active && state.voice.channelId === channelId) {
-    state.voice = { ...state.voice, peers: state.voiceRoster[channelId] };
+    state.voice = { ...state.voice, peers: list };
   }
-  renderVoiceStage();
-  renderTopbar();
-  renderMembers();
-  if (!state.home) renderChannels();
+  const changed = JSON.stringify(prev) !== JSON.stringify(list);
+  if (changed) scheduleVoiceUi(true);
 }
 
 function hue(name) {
@@ -1031,12 +1060,17 @@ function voiceTileFor(peer) {
     ]);
   }
 
-  const video = document.createElement("video");
-  video.className = "voice-screen";
-  video.autoplay = true;
-  video.playsInline = true;
-  video.muted = true;
-  video.srcObject = stream;
+  // Reuse the live <video> so roster/WebRTC ticks do not black the share.
+  let video = document.querySelector(`video.voice-screen[data-peer-screen="${CSS.escape(peer.userId)}"]`);
+  if (!video || video.srcObject !== stream) {
+    video = document.createElement("video");
+    video.className = "voice-screen";
+    video.dataset.peerScreen = peer.userId;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.srcObject = stream;
+  }
   const zoomLabel = el("span", { class: "screen-zoom-label" }, [text("100%")]);
   const viewport = el("div", {
     class: "voice-screen-viewport",
@@ -1072,6 +1106,14 @@ function voiceTileFor(peer) {
 function renderVoiceStage() {
   const stage = document.querySelector("#voice-stage");
   if (!stage) return;
+  try {
+    renderVoiceStageInner(stage);
+  } catch (error) {
+    console.error(JSON.stringify({ event: "voice_stage_render_failed", message: error?.message || "unknown" }));
+  }
+}
+
+function renderVoiceStageInner(stage) {
   const active = state.channels.find((item) => item.id === state.activeChannelId);
   const voiceChannel = state.channels.find((item) => item.id === state.voice.channelId);
   const isDmCall = Boolean(state.voice.channelId?.startsWith("dm:") || (state.home && state.activeChannelId?.startsWith("dm:") && state.voice.active));
@@ -1344,45 +1386,54 @@ async function toggleVoice() {
   }
 }
 
+const MAX_RENDERED_MESSAGES = 250;
+
 function renderMessages(stick) {
-  const wasNearBottom = stick || nearBottom(transcript);
-  const nodes = [];
-  if (state.hasMore) {
-    nodes.push(el("button", { class: "ghost load-older", type: "button", onclick: loadOlder }, [text("Load older")]));
+  try {
+    const wasNearBottom = stick || nearBottom(transcript);
+    const frag = document.createDocumentFragment();
+    if (state.hasMore || state.messages.length >= MAX_RENDERED_MESSAGES) {
+      frag.append(el("button", { class: "ghost load-older", type: "button", onclick: loadOlder }, [text("Load older")]));
+    }
+    if (state.messages.length === 0) {
+      frag.append(el("div", { class: "empty" }, [text("This channel is quiet. Say something.")]));
+    }
+    const visible = state.messages.length > MAX_RENDERED_MESSAGES
+      ? state.messages.slice(-MAX_RENDERED_MESSAGES)
+      : state.messages;
+    let previous = null;
+    for (const message of visible) {
+      const grouped = previous && previous.userId === message.userId && message.createdAt - previous.createdAt < 5 * 60 * 1000;
+      const avatar = avatarNode(message);
+      const header = el("header", {}, [
+        el("button", {
+          class: "author linkish",
+          type: "button",
+          onclick: () => openProfile(message.username, message.userId === state.me?.id),
+        }, [text(message.displayName)]),
+        el("span", { class: "handle" }, [text(`@${message.username}`)]),
+        el("time", { class: "time", datetime: formatTimeIso(message.createdAt) }, [text(formatTime(message.createdAt))]),
+      ]);
+      const poll = parsePollBody(message.body);
+      const body = poll
+        ? renderPoll(message, poll)
+        : (() => {
+            const node = el("p", { class: "body" });
+            appendRichText(node, message.body ?? "");
+            return node;
+          })();
+      const column = el("div", {}, grouped && !poll ? [body] : [header, body]);
+      frag.append(el("article", {
+        class: `${grouped && !poll ? "message grouped" : "message"}${poll ? " has-poll" : ""}`,
+        "data-message-id": message.id,
+      }, [avatar, column]));
+      previous = message;
+    }
+    transcript.replaceChildren(frag);
+    if (wasNearBottom) transcript.scrollTop = transcript.scrollHeight;
+  } catch (error) {
+    console.error(JSON.stringify({ event: "messages_render_failed", message: error?.message || "unknown" }));
   }
-  if (state.messages.length === 0) {
-    nodes.push(el("div", { class: "empty" }, [text("This channel is quiet. Say something.")]));
-  }
-  let previous = null;
-  for (const message of state.messages) {
-    const grouped = previous && previous.userId === message.userId && message.createdAt - previous.createdAt < 5 * 60 * 1000;
-    const avatar = avatarNode(message);
-    const header = el("header", {}, [
-      el("button", {
-        class: "author linkish",
-        type: "button",
-        onclick: () => openProfile(message.username, message.userId === state.me?.id),
-      }, [text(message.displayName)]),
-      el("span", { class: "handle" }, [text(`@${message.username}`)]),
-      el("time", { class: "time", datetime: new Date(message.createdAt).toISOString() }, [text(formatTime(message.createdAt))]),
-    ]);
-    const poll = parsePollBody(message.body);
-    const body = poll
-      ? renderPoll(message, poll)
-      : (() => {
-          const node = el("p", { class: "body" });
-          appendRichText(node, message.body);
-          return node;
-        })();
-    const column = el("div", {}, grouped && !poll ? [body] : [header, body]);
-    nodes.push(el("article", {
-      class: `${grouped && !poll ? "message grouped" : "message"}${poll ? " has-poll" : ""}`,
-      "data-message-id": message.id,
-    }, [avatar, column]));
-    previous = message;
-  }
-  transcript.replaceChildren(...nodes);
-  if (wasNearBottom) transcript.scrollTop = transcript.scrollHeight;
 }
 
 function renderMembers() {
@@ -1504,7 +1555,15 @@ function upsertMessage(message) {
 }
 
 function formatTime(timestamp) {
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(timestamp);
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function formatTimeIso(timestamp) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString();
 }
 
 function nearBottom(node) {
@@ -1894,16 +1953,23 @@ function closeSocket(bump = true) {
 }
 
 function addMessage(message) {
+  if (!message?.id) return;
   if (state.messages.some((item) => item.id === message.id)) return;
   state.messages.push(message);
   state.messages.sort((a, b) => a.createdAt - b.createdAt);
+  if (state.messages.length > MAX_RENDERED_MESSAGES * 2) {
+    state.messages = state.messages.slice(-MAX_RENDERED_MESSAGES);
+    state.hasMore = true;
+  }
   renderMessages(true);
 }
 
+let composerSending = false;
 composer.addEventListener("submit", async (event) => {
   event.preventDefault();
   const body = messageInput.value;
-  if (!body.trim() || !state.activeChannelId) return;
+  if (!body.trim() || !state.activeChannelId || composerSending) return;
+  composerSending = true;
   messageInput.disabled = true;
   try {
     const data = await api(`/api/channels/${encodeURIComponent(state.activeChannelId)}/messages`, {
@@ -1914,10 +1980,11 @@ composer.addEventListener("submit", async (event) => {
     messageInput.style.height = "auto";
     addMessage(data.message);
   } catch (error) {
-    messageInput.setCustomValidity(error.message);
+    messageInput.setCustomValidity(error.message || "Could not send");
     messageInput.reportValidity();
     setTimeout(() => messageInput.setCustomValidity(""), 2000);
   } finally {
+    composerSending = false;
     messageInput.disabled = false;
     messageInput.focus();
   }
@@ -1926,7 +1993,7 @@ composer.addEventListener("submit", async (event) => {
 messageInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    composer.requestSubmit();
+    if (!composerSending) composer.requestSubmit();
   }
 });
 

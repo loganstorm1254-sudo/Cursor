@@ -150,7 +150,10 @@ async function init(env: Env): Promise<void> {
     ),
     env.DB.prepare(
       `INSERT OR IGNORE INTO servers (id, name, icon_letter, owner_id, invite_code, created_at)
-       VALUES ('lobby', 'Lobby', 'L', 'system', 'hall', 0)`,
+       VALUES ('lobby', 'Hall Official', 'H', 'system', 'hall', 0)`,
+    ),
+    env.DB.prepare(
+      `UPDATE servers SET name = 'Hall Official', icon_letter = 'H' WHERE id = 'lobby'`,
     ),
     env.DB.prepare(
       `INSERT OR IGNORE INTO channels (id, server_id, name, position, created_at)

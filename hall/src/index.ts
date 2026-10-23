@@ -45,7 +45,11 @@ type ChannelRow = {
   owner_id: string;
 };
 
-function publicServer(row: ServerRow, userId: string) {
+function publicServer(row: ServerRow, userId: string, user?: PublicUser) {
+  const isLobby = row.id === "lobby";
+  const canManage = isLobby
+    ? Boolean(user?.isPlatformOwner)
+    : row.owner_id === userId || Boolean(user?.isPlatformOwner);
   return {
     id: row.id,
     name: row.name,
@@ -53,8 +57,15 @@ function publicServer(row: ServerRow, userId: string) {
     inviteCode: row.invite_code,
     ownerId: row.owner_id,
     isOwner: row.owner_id === userId,
-    isLobby: row.id === "lobby",
+    isLobby,
+    canManage,
+    unleavable: isLobby,
   };
+}
+
+function canManageServer(server: { id: string; owner_id: string }, user: PublicUser): boolean {
+  if (server.id === "lobby") return user.isPlatformOwner;
+  return server.owner_id === user.id || user.isPlatformOwner;
 }
 
 async function memberOf(env: Env, serverId: string, userId: string): Promise<boolean> {
@@ -249,7 +260,7 @@ async function listServers(env: Env, user: PublicUser): Promise<Response> {
   )
     .bind(user.id)
     .all<ServerRow>();
-  return json({ servers: (results ?? []).map((row) => publicServer(row, user.id)) });
+  return json({ servers: (results ?? []).map((row) => publicServer(row, user.id, user)) });
 }
 
 async function createServer(request: Request, env: Env, user: PublicUser): Promise<Response> {
@@ -283,6 +294,7 @@ async function createServer(request: Request, env: Env, user: PublicUser): Promi
           server: publicServer(
             { id: serverId, name, icon_letter: iconLetter(name), owner_id: user.id, invite_code: inviteCode },
             user.id,
+            user,
           ),
           channel: { id: channelId, name: "general", position: 0 },
         },
@@ -321,7 +333,7 @@ async function joinServer(request: Request, env: Env, user: PublicUser): Promise
   )
     .bind(server.id, user.id, Date.now())
     .run();
-  return json({ server: publicServer(server, user.id) });
+  return json({ server: publicServer(server, user.id, user) });
 }
 
 async function serverDetail(env: Env, user: PublicUser, serverId: string): Promise<Response> {
@@ -359,7 +371,7 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
     }>();
 
   return json({
-    server: publicServer(server, user.id),
+    server: publicServer(server, user.id, user),
     channels: channels.results ?? [],
     members: (members.results ?? []).map((member) => {
       const profile = toPublicUser(member);
@@ -377,8 +389,9 @@ async function createChannel(request: Request, env: Env, user: PublicUser, serve
     .first<{ id: string; owner_id: string }>();
   if (!server) throw new HttpError(404, "Server not found");
   if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
-  const canCreate = server.owner_id === user.id || server.owner_id === "system" || user.isPlatformOwner;
-  if (!canCreate) throw new HttpError(403, "Only the server owner can add channels");
+  if (!canManageServer(server, user)) {
+    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can add channels");
+  }
 
   const body = asRecord(await readJson(request, 2_048));
   const name = normalizeChannelName(asString(body.name, "Channel name"));
@@ -406,12 +419,46 @@ async function createChannel(request: Request, env: Env, user: PublicUser, serve
   return json({ channel: { id: channelId, name, position: positionRow?.next ?? 0 } }, 201);
 }
 
+async function reorderChannels(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
+  const server = await env.DB.prepare("SELECT id, owner_id FROM servers WHERE id = ?")
+    .bind(serverId)
+    .first<{ id: string; owner_id: string }>();
+  if (!server) throw new HttpError(404, "Server not found");
+  if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
+  if (!canManageServer(server, user)) {
+    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can reorder channels");
+  }
+
+  const body = asRecord(await readJson(request, 8_192));
+  const raw = body.channelIds;
+  if (!Array.isArray(raw) || raw.length === 0) throw new HttpError(400, "channelIds must be a non-empty list");
+  const channelIds = raw.map((id, index) => {
+    if (typeof id !== "string" || !id) throw new HttpError(400, `channelIds[${index}] must be a string`);
+    return id;
+  });
+
+  const existing = await env.DB.prepare("SELECT id FROM channels WHERE server_id = ?")
+    .bind(server.id)
+    .all<{ id: string }>();
+  const existingIds = new Set((existing.results ?? []).map((row) => row.id));
+  if (channelIds.length !== existingIds.size || channelIds.some((id) => !existingIds.has(id))) {
+    throw new HttpError(400, "channelIds must include every channel in the server once");
+  }
+
+  await env.DB.batch(
+    channelIds.map((id, position) =>
+      env.DB.prepare("UPDATE channels SET position = ? WHERE id = ? AND server_id = ?").bind(position, id, server.id),
+    ),
+  );
+  return json({ ok: true, channelIds });
+}
+
 async function leaveServer(env: Env, user: PublicUser, serverId: string): Promise<Response> {
   const server = await env.DB.prepare("SELECT id, owner_id FROM servers WHERE id = ?")
     .bind(serverId)
     .first<{ id: string; owner_id: string }>();
   if (!server) throw new HttpError(404, "Server not found");
-  if (server.id === "lobby") throw new HttpError(400, "Everyone stays in Lobby");
+  if (server.id === "lobby") throw new HttpError(400, "Hall Official cannot be left");
   if (server.owner_id === user.id) throw new HttpError(400, "The server owner stays with the server");
   await env.DB.prepare("DELETE FROM memberships WHERE server_id = ? AND user_id = ?").bind(server.id, user.id).run();
   return json({ ok: true });
@@ -501,6 +548,7 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     const action = serverMatch[2];
     if (!action && method === "GET") return serverDetail(env, user, serverId);
     if (action === "channels" && method === "POST") return createChannel(request, env, user, serverId);
+    if (action === "channel-order" && method === "PUT") return reorderChannels(request, env, user, serverId);
     if (action === "leave" && method === "POST") return leaveServer(env, user, serverId);
   }
 

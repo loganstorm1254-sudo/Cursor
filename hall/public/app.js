@@ -228,22 +228,73 @@ function openDrawer(which) {
   }
 }
 
+function canManageActiveServer() {
+  const server = state.server;
+  if (!server) return false;
+  if (server.canManage != null) return Boolean(server.canManage);
+  return server.isLobby ? Boolean(state.me?.isPlatformOwner) : Boolean(server.isOwner || state.me?.isPlatformOwner);
+}
+
+async function moveChannel(channelId, direction) {
+  const index = state.channels.findIndex((channel) => channel.id === channelId);
+  if (index < 0) return;
+  const swap = index + direction;
+  if (swap < 0 || swap >= state.channels.length) return;
+  const next = [...state.channels];
+  const [item] = next.splice(index, 1);
+  next.splice(swap, 0, item);
+  state.channels = next;
+  renderChannels();
+  try {
+    await api(`/api/servers/${encodeURIComponent(state.server.id)}/channel-order`, {
+      method: "PUT",
+      body: JSON.stringify({ channelIds: next.map((channel) => channel.id) }),
+    });
+  } catch (error) {
+    openModal("Could not reorder", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message)]));
+    });
+    if (state.activeServerId) await openServer(state.activeServerId);
+  }
+}
+
 function renderChannels() {
   const server = state.server;
   if (!server) {
     channelsEl.replaceChildren(el("div", { class: "empty" }, [text("Create or join a server to start talking.")]));
     return;
   }
+  const manage = canManageActiveServer();
   const list = el("ul", { class: "channel-list" });
-  for (const channel of state.channels) {
-    list.append(el("li", {}, [
+  state.channels.forEach((channel, index) => {
+    const row = [
       el("button", {
         type: "button",
+        class: "channel-open",
         "aria-current": channel.id === state.activeChannelId ? "true" : null,
         onclick: () => openChannel(channel.id),
       }, [el("span", { class: "hash" }, [text("#")]), text(channel.name)]),
-    ]));
-  }
+    ];
+    if (manage) {
+      row.push(el("div", { class: "channel-move" }, [
+        el("button", {
+          class: "ghost channel-move-btn",
+          type: "button",
+          "aria-label": "Move up",
+          disabled: index === 0 ? "disabled" : null,
+          onclick: () => moveChannel(channel.id, -1),
+        }, [text("↑")]),
+        el("button", {
+          class: "ghost channel-move-btn",
+          type: "button",
+          "aria-label": "Move down",
+          disabled: index === state.channels.length - 1 ? "disabled" : null,
+          onclick: () => moveChannel(channel.id, 1),
+        }, [text("↓")]),
+      ]));
+    }
+    list.append(el("li", { class: manage ? "channel-row manage" : "channel-row" }, row));
+  });
   const foot = el("div", { class: "side-foot" });
   const invite = el("div", { class: "invite" }, [
     text("Invite "),
@@ -251,10 +302,10 @@ function renderChannels() {
   ]);
   invite.append(el("button", { class: "ghost", type: "button", onclick: copyInvite }, [text("Copy")]));
   foot.append(invite);
-  if (server.isOwner || server.isLobby || state.me?.isPlatformOwner) {
+  if (manage) {
     foot.append(el("button", { class: "ghost", type: "button", onclick: openCreateChannel }, [text("Add channel")]));
   }
-  if (!server.isOwner && !server.isLobby) {
+  if (!server.isLobby && !server.isOwner && !server.unleavable) {
     foot.append(el("button", { class: "text-button", type: "button", onclick: leaveServer }, [text("Leave server")]));
   }
   const me = el("div", { class: "me-row" }, [

@@ -79,8 +79,10 @@ describe("Hall", () => {
     expect(grace.response.status).toBe(201);
 
     const servers = (await (await authed(ada.cookie, "/api/servers")).json()) as ServerBody;
-    const lobby = servers.servers.find((server) => server.name === "Lobby");
+    const lobby = servers.servers.find((server) => server.name === "Hall Official");
     expect(lobby?.inviteCode).toBe("hall");
+    expect(lobby?.unleavable).toBe(true);
+    expect(lobby?.canManage).toBe(false);
 
     const detail = (await (await authed(ada.cookie, `/api/servers/${lobby?.id}`)).json()) as DetailBody;
     const general = detail.channels.find((channel) => channel.name === "general");
@@ -242,7 +244,7 @@ describe("Hall", () => {
 
     const leaveLobby = await authed(grace.cookie, "/api/servers/lobby/leave", { method: "POST" });
     expect(leaveLobby.status).toBe(400);
-    expect(((await leaveLobby.json()) as ErrorBody).error).toMatch(/Lobby/i);
+    expect(((await leaveLobby.json()) as ErrorBody).error).toMatch(/Hall Official|cannot be left/i);
 
     const leaveOwned = await authed(ada.cookie, `/api/servers/${createdBody.server.id}/leave`, { method: "POST" });
     expect(leaveOwned.status).toBe(400);

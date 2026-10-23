@@ -236,6 +236,21 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
   border-radius: 8px;
   padding: 8px 10px;
 }
+.channel-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.channel-row .channel-open { flex: 1; min-width: 0; }
+.channel-move { display: flex; gap: 2px; flex: none; }
+.channel-move-btn {
+  min-width: 32px !important;
+  width: 32px;
+  padding: 4px 0 !important;
+  justify-content: center;
+  color: var(--faint) !important;
+}
+.channel-move-btn:disabled { opacity: 0.35; cursor: default; }
 .channel-list button[aria-current="true"], .channel-list button:hover { background: rgba(246, 241, 231, 0.06); color: var(--ink); }
 .hash { color: var(--faint); }
 .side-foot { margin-top: auto; padding: 12px; display: grid; gap: 8px; border-top: 1px solid var(--line); }

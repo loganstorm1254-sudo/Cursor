@@ -20,7 +20,7 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
   let muted = false;
   let sharing = false;
   let channelId = null;
-  const peers = new Map(); // userId -> { pc, audio, video, meta, screenSender }
+  const peers = new Map(); // userId -> peer
   let voiceUsers = [];
 
   function emit() {
@@ -49,8 +49,29 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     socket.send(JSON.stringify(payload));
   }
 
+  function assertMicLive() {
+    if (!localStream) return;
+    for (const track of localStream.getAudioTracks()) {
+      track.enabled = !muted;
+    }
+    for (const peer of peers.values()) {
+      const audioSender = peer.pc.getSenders().find((sender) => sender.track?.kind === "audio" || peer.audioSender === sender);
+      const [mic] = localStream.getAudioTracks();
+      if (!mic) continue;
+      if (audioSender) {
+        if (audioSender.track !== mic) {
+          audioSender.replaceTrack(mic).catch(() => {});
+        }
+        peer.audioSender = audioSender;
+      }
+    }
+  }
+
   async function ensureMic() {
-    if (localStream) return localStream;
+    if (localStream) {
+      assertMicLive();
+      return localStream;
+    }
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -81,22 +102,29 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
   }
 
   async function renegotiate(peer) {
-    if (!peer || peer.makingOffer) return;
-    peer.makingOffer = true;
-    try {
-      const offer = await peer.pc.createOffer();
-      await peer.pc.setLocalDescription(offer);
-      send({
-        type: "voice_signal",
-        to: peer.meta.userId,
-        signal: { kind: "offer", sdp: peer.pc.localDescription },
-      });
-    } finally {
-      peer.makingOffer = false;
-    }
+    if (!peer) return;
+    // Queue so share + glare fixes do not overlap on one PC.
+    peer.chain = (peer.chain || Promise.resolve()).then(async () => {
+      if (peer.makingOffer || peer.pc.signalingState !== "stable") return;
+      peer.makingOffer = true;
+      try {
+        assertMicLive();
+        const offer = await peer.pc.createOffer();
+        if (peer.pc.signalingState !== "stable") return;
+        await peer.pc.setLocalDescription(offer);
+        send({
+          type: "voice_signal",
+          to: peer.meta.userId,
+          signal: { kind: "offer", sdp: peer.pc.localDescription },
+        });
+      } finally {
+        peer.makingOffer = false;
+      }
+    }).catch(() => {});
+    return peer.chain;
   }
 
-  async function ensurePeer(meta, polite) {
+  async function ensurePeer(meta) {
     const me = getMe?.();
     if (!me || meta.userId === me.id || peers.has(meta.userId)) return peers.get(meta.userId);
     const stream = await ensureMic();
@@ -113,15 +141,19 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     video.muted = true;
     video.dataset.peerScreen = meta.userId;
 
+    // Mic first so m-line order stays stable across renegotiation.
+    let audioSender = null;
     for (const track of stream.getAudioTracks()) {
-      pc.addTrack(track, stream);
+      audioSender = pc.addTrack(track, stream);
     }
 
-    let screenSender = null;
+    // Pre-create a video transceiver so screen share is replaceTrack, not a new m-line fight.
+    const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
     if (screenStream) {
       const [screenTrack] = screenStream.getVideoTracks();
       if (screenTrack) {
-        screenSender = pc.addTrack(screenTrack, screenStream);
+        await videoTransceiver.sender.replaceTrack(screenTrack);
+        videoTransceiver.direction = "sendrecv";
       }
     }
 
@@ -136,34 +168,42 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
 
     pc.ontrack = (event) => {
       const track = event.track;
-      const [remote] = event.streams;
-      if (!remote) return;
       if (track.kind === "audio") {
-        audio.srcObject = remote;
+        audio.srcObject = new MediaStream([track]);
+        void audio.play().catch(() => {});
+        track.addEventListener("unmute", () => {
+          void audio.play().catch(() => {});
+        });
         return;
       }
       if (track.kind === "video") {
-        video.srcObject = remote;
+        video.srcObject = new MediaStream([track]);
+        void video.play().catch(() => {});
         track.addEventListener("ended", () => {
-          if (video.srcObject === remote) video.srcObject = null;
+          if (video.srcObject) video.srcObject = null;
           emit();
         });
         emit();
       }
     };
 
-    pc.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
-        // Keep entry; ICE may recover. Hard-remove on voice_leave.
-      }
+    const peer = {
+      pc,
+      audio,
+      video,
+      meta,
+      audioSender,
+      videoTransceiver,
+      makingOffer: false,
+      ignoreOffer: false,
+      chain: Promise.resolve(),
     };
-
-    peers.set(meta.userId, { pc, audio, video, meta, polite, screenSender, makingOffer: false });
-    return peers.get(meta.userId);
+    peers.set(meta.userId, peer);
+    return peer;
   }
 
   async function callPeer(meta) {
-    const peer = await ensurePeer(meta, true);
+    const peer = await ensurePeer(meta);
     if (!peer) return;
     await renegotiate(peer);
   }
@@ -171,33 +211,57 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
   async function handleSignal(from, signal, meta) {
     const me = getMe?.();
     if (!me || from === me.id || !signal) return;
-    const peer = await ensurePeer(meta || { userId: from, displayName: from, username: from }, false);
+    const peer = await ensurePeer(meta || { userId: from, displayName: from, username: from });
     if (!peer) return;
 
-    if (signal.kind === "offer") {
-      await peer.pc.setRemoteDescription(signal.sdp);
-      const answer = await peer.pc.createAnswer();
-      await peer.pc.setLocalDescription(answer);
-      send({
-        type: "voice_signal",
-        to: from,
-        signal: { kind: "answer", sdp: peer.pc.localDescription },
-      });
-      return;
-    }
-    if (signal.kind === "answer") {
-      if (peer.pc.signalingState === "have-local-offer") {
-        await peer.pc.setRemoteDescription(signal.sdp);
+    peer.chain = (peer.chain || Promise.resolve()).then(async () => {
+      if (signal.kind === "offer") {
+        // Perfect negotiation: higher id is polite.
+        const polite = me.id > from;
+        const collision = peer.makingOffer || peer.pc.signalingState !== "stable";
+        peer.ignoreOffer = !polite && collision;
+        if (peer.ignoreOffer) return;
+        if (collision) {
+          try {
+            await Promise.all([
+              peer.pc.setLocalDescription({ type: "rollback" }),
+              peer.pc.setRemoteDescription(signal.sdp),
+            ]);
+          } catch {
+            await peer.pc.setRemoteDescription(signal.sdp);
+          }
+        } else {
+          await peer.pc.setRemoteDescription(signal.sdp);
+        }
+        assertMicLive();
+        const answer = await peer.pc.createAnswer();
+        await peer.pc.setLocalDescription(answer);
+        send({
+          type: "voice_signal",
+          to: from,
+          signal: { kind: "answer", sdp: peer.pc.localDescription },
+        });
+        return;
       }
-      return;
-    }
-    if (signal.kind === "ice" && signal.candidate) {
-      try {
-        await peer.pc.addIceCandidate(signal.candidate);
-      } catch {
-        // Out-of-order ICE is common during setup.
+      if (signal.kind === "answer") {
+        if (peer.ignoreOffer) return;
+        if (peer.pc.signalingState === "have-local-offer") {
+          await peer.pc.setRemoteDescription(signal.sdp);
+          assertMicLive();
+        }
+        return;
       }
-    }
+      if (signal.kind === "ice" && signal.candidate) {
+        try {
+          await peer.pc.addIceCandidate(signal.candidate);
+        } catch {
+          if (!peer.ignoreOffer) {
+            // Out-of-order ICE is common during setup.
+          }
+        }
+      }
+    }).catch(() => {});
+    return peer.chain;
   }
 
   async function join(nextChannelId) {
@@ -214,15 +278,13 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
   async function stopShare(silent = false) {
     if (!sharing && !screenStream) return;
     for (const peer of peers.values()) {
-      if (peer.screenSender) {
-        try {
-          peer.pc.removeTrack(peer.screenSender);
-        } catch {
-          // ignore
-        }
-        peer.screenSender = null;
-        if (!silent) renegotiate(peer).catch(() => {});
+      try {
+        await peer.videoTransceiver?.sender.replaceTrack(null);
+        if (peer.videoTransceiver) peer.videoTransceiver.direction = "recvonly";
+      } catch {
+        // ignore
       }
+      if (!silent) renegotiate(peer).catch(() => {});
     }
     if (screenStream) {
       for (const track of screenStream.getTracks()) track.stop();
@@ -230,6 +292,7 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     }
     sharing = false;
     if (!silent) send({ type: "voice_share", sharing: false });
+    assertMicLive();
     emit();
   }
 
@@ -260,12 +323,23 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     });
     screenStream = stream;
     sharing = true;
+    // Display capture on Windows can soft-drop mic senders — put mic back before video.
+    assertMicLive();
     send({ type: "voice_share", sharing: true });
 
     for (const peer of peers.values()) {
-      peer.screenSender = peer.pc.addTrack(track, stream);
-      renegotiate(peer).catch(() => {});
+      try {
+        if (!peer.videoTransceiver) {
+          peer.videoTransceiver = peer.pc.addTransceiver("video", { direction: "sendrecv" });
+        }
+        await peer.videoTransceiver.sender.replaceTrack(track);
+        peer.videoTransceiver.direction = "sendrecv";
+      } catch {
+        peer.pc.addTrack(track, stream);
+      }
+      await renegotiate(peer);
     }
+    assertMicLive();
     emit();
   }
 
@@ -317,6 +391,7 @@ export function createVoiceSession({ getSocket, getMe, onState }) {
     }
     emit();
     if (!localStream || !me) return;
+    assertMicLive();
     for (const user of voiceUsers) {
       if (user.userId === me.id) continue;
       if (!peers.has(user.userId) && me.id < user.userId) {

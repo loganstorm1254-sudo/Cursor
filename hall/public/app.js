@@ -929,18 +929,18 @@ function renderVoiceStage() {
         disabled: !state.voice.active ? "disabled" : null,
         onclick: () => toggleScreenShare(),
       }, [text(state.voice.sharing ? "Stop share" : "Share")]),
-      el("button", {
-        class: "voice-ctrl join",
-        type: "button",
-        onclick: () => toggleVoice(),
-      }, [text(state.voice.active ? "Connected" : "Join")]),
-      el("button", {
-        class: "voice-ctrl hangup",
-        type: "button",
-        title: "Disconnect",
-        disabled: !state.voice.active ? "disabled" : null,
-        onclick: () => voiceSession.leave(),
-      }, [text("Leave")]),
+      state.voice.active
+        ? el("button", {
+            class: "voice-ctrl hangup",
+            type: "button",
+            title: "Disconnect",
+            onclick: () => voiceSession.leave(),
+          }, [text("Leave")])
+        : el("button", {
+            class: "voice-ctrl join",
+            type: "button",
+            onclick: () => toggleVoice(),
+          }, [text("Join")]),
     ]),
   );
 

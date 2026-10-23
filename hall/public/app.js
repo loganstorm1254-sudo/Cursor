@@ -16,6 +16,7 @@ const transcript = document.querySelector("#transcript");
 const composer = document.querySelector("#composer");
 const messageInput = document.querySelector("#message");
 const membersEl = document.querySelector("#members");
+const backdrop = document.querySelector("#drawer-backdrop");
 const modal = document.querySelector("#modal");
 const modalForm = document.querySelector("#modal-form");
 
@@ -176,7 +177,11 @@ function renderRail() {
       type: "button",
       title: server.name,
       "aria-current": server.id === state.activeServerId ? "true" : null,
-      onclick: () => openServer(server.id),
+      onclick: async () => {
+        await openServer(server.id);
+        closeDrawers();
+        openDrawer("channels");
+      },
     }, [text(server.iconLetter)]);
     rail.append(button);
   }
@@ -185,13 +190,36 @@ function renderRail() {
     type: "button",
     title: "Add a server",
     "aria-label": "Add a server",
-    onclick: openAddMenu,
+    onclick: () => {
+      closeDrawers();
+      openAddMenu();
+    },
   }, [text("+")]));
+}
+
+function closeDrawers() {
+  channelsEl.classList.remove("open");
+  membersEl.classList.remove("open");
+  rail.classList.remove("open");
+  if (backdrop) {
+    backdrop.classList.remove("show");
+    backdrop.hidden = true;
+  }
+}
+
+function openDrawer(which) {
+  closeDrawers();
+  if (which === "channels") channelsEl.classList.add("open");
+  if (which === "members") membersEl.classList.add("open");
+  if (which === "servers") rail.classList.add("open");
+  if (backdrop && which) {
+    backdrop.hidden = false;
+    backdrop.classList.add("show");
+  }
 }
 
 function renderChannels() {
   const server = state.server;
-  channelsEl.classList.remove("open");
   if (!server) {
     channelsEl.replaceChildren(el("div", { class: "empty" }, [text("Create or join a server to start talking.")]));
     return;
@@ -232,7 +260,15 @@ function renderChannels() {
   ]);
   foot.append(me);
   channelsEl.replaceChildren(
-    el("div", { class: "side-head" }, [el("h2", {}, [text(server.name)])]),
+    el("div", { class: "side-head" }, [
+      el("h2", {}, [text(server.name)]),
+      el("button", {
+        class: "ghost drawer-close",
+        type: "button",
+        "aria-label": "Close",
+        onclick: closeDrawers,
+      }, [text("Close")]),
+    ]),
     list,
     foot,
   );
@@ -243,11 +279,30 @@ function renderTopbar() {
   const title = channel ? `#${channel.name}` : "Hall";
   messageInput.placeholder = channel ? `Message #${channel.name}` : "Message";
   topbar.replaceChildren(
-    el("button", { class: "ghost menu-button", type: "button", onclick: () => channelsEl.classList.toggle("open") }, [text("Channels")]),
-    el("div", {}, [
+    el("div", { class: "topbar-actions" }, [
+      el("button", {
+        class: "ghost servers-button",
+        type: "button",
+        "aria-label": "Servers",
+        onclick: () => openDrawer("servers"),
+      }, [text("Srv")]),
+      el("button", {
+        class: "ghost menu-button",
+        type: "button",
+        "aria-label": "Channels",
+        onclick: () => openDrawer("channels"),
+      }, [text("#")]),
+    ]),
+    el("div", { class: "topbar-title" }, [
       el("h2", {}, [text(title)]),
       el("p", {}, [text(state.server ? state.server.name : "No server")]),
     ]),
+    el("button", {
+      class: "ghost people-button",
+      type: "button",
+      "aria-label": "Members",
+      onclick: () => openDrawer("members"),
+    }, [text("People")]),
   );
 }
 
@@ -306,7 +361,15 @@ function renderMembers() {
     ]));
   }
   membersEl.replaceChildren(
-    el("div", { class: "side-head" }, [el("h2", {}, [text(`Online — ${onlineCount}`)])]),
+    el("div", { class: "side-head" }, [
+      el("h2", {}, [text(`Online — ${onlineCount}`)]),
+      el("button", {
+        class: "ghost drawer-close",
+        type: "button",
+        "aria-label": "Close",
+        onclick: closeDrawers,
+      }, [text("Close")]),
+    ]),
     list,
   );
 }
@@ -357,7 +420,7 @@ async function openServer(serverId) {
 
 async function openChannel(channelId) {
   state.activeChannelId = channelId;
-  channelsEl.classList.remove("open");
+  closeDrawers();
   renderChannels();
   renderTopbar();
   const data = await api(`/api/channels/${encodeURIComponent(channelId)}/messages?limit=50`);
@@ -488,6 +551,7 @@ messageInput.addEventListener("input", () => {
 });
 
 async function openProfile(username, editable = false) {
+  closeDrawers();
   let profile = state.members.find((member) => member.username === username) || null;
   if (!profile || profile.bio === undefined) {
     try {
@@ -763,6 +827,19 @@ async function bootApp() {
       authError.textContent = error.message;
     }
   }
+}
+
+if (backdrop) {
+  backdrop.addEventListener("click", closeDrawers);
+}
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeDrawers();
+});
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
 }
 
 setAuthMode("register");

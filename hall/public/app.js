@@ -1,3 +1,5 @@
+import { createVoiceSession } from "/voice.js";
+
 const auth = document.querySelector("#auth");
 const authForm = document.querySelector("#auth-form");
 const authTitle = document.querySelector("#auth-title");
@@ -79,9 +81,20 @@ const state = {
   socket: null,
   socketAbort: null,
   pingTimer: null,
+  voice: { active: false, muted: false, channelId: null, peers: [] },
 };
 
 let socketGeneration = 0;
+const voiceSession = createVoiceSession({
+  getSocket: () => state.socket,
+  getMe: () => state.me,
+  onState: (next) => {
+    state.voice = next;
+    renderVoiceBar();
+    renderTopbar();
+    renderMembers();
+  },
+});
 
 function hue(name) {
   let hash = 0;
@@ -556,6 +569,8 @@ function renderTopbar() {
   const channel = state.channels.find((item) => item.id === state.activeChannelId);
   const title = channel ? `#${channel.name}` : "Hall";
   messageInput.placeholder = channel ? `Message #${channel.name}` : "Message";
+  const inThisVoice = state.voice.active && state.voice.channelId === state.activeChannelId;
+  const voiceCount = state.voice.peers?.length || 0;
   topbar.replaceChildren(
     el("div", { class: "topbar-actions" }, [
       el("button", {
@@ -575,13 +590,73 @@ function renderTopbar() {
       el("h2", {}, [text(title)]),
       el("p", {}, [text(state.server ? state.server.name : "No server")]),
     ]),
-    el("button", {
-      class: "ghost people-button",
-      type: "button",
-      "aria-label": "Members",
-      onclick: () => openDrawer("members"),
-    }, [text("People")]),
+    el("div", { class: "topbar-actions topbar-end" }, [
+      state.activeChannelId
+        ? el("button", {
+            class: inThisVoice ? "ghost voice-button on" : "ghost voice-button",
+            type: "button",
+            "aria-label": inThisVoice ? "Leave voice" : "Join voice",
+            onclick: () => toggleVoice(),
+          }, [text(inThisVoice ? `Voice · ${voiceCount}` : "Voice")])
+        : null,
+      el("button", {
+        class: "ghost people-button",
+        type: "button",
+        "aria-label": "Members",
+        onclick: () => openDrawer("members"),
+      }, [text("People")]),
+    ]),
   );
+}
+
+function renderVoiceBar() {
+  let bar = document.querySelector("#voice-bar");
+  if (!state.voice.active) {
+    bar?.remove();
+    return;
+  }
+  if (!bar) {
+    bar = el("div", { id: "voice-bar", class: "voice-bar" });
+    const chat = document.querySelector(".chat");
+    chat?.insertBefore(bar, composer);
+  }
+  const channel = state.channels.find((item) => item.id === state.voice.channelId);
+  const names = (state.voice.peers || [])
+    .map((peer) => `${peer.displayName}${peer.muted ? " (muted)" : ""}`)
+    .join(", ");
+  bar.replaceChildren(
+    el("div", { class: "voice-bar-meta" }, [
+      el("strong", {}, [text(`In voice · #${channel?.name || "channel"}`)]),
+      el("span", {}, [text(names || "Just you")]),
+    ]),
+    el("div", { class: "voice-bar-actions" }, [
+      el("button", {
+        class: state.voice.muted ? "ghost voice-mute on" : "ghost voice-mute",
+        type: "button",
+        onclick: () => voiceSession.toggleMute(),
+      }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+      el("button", {
+        class: "ghost",
+        type: "button",
+        onclick: () => voiceSession.leave(),
+      }, [text("Leave")]),
+    ]),
+  );
+}
+
+async function toggleVoice() {
+  if (!state.activeChannelId) return;
+  if (state.voice.active && state.voice.channelId === state.activeChannelId) {
+    await voiceSession.leave();
+    return;
+  }
+  try {
+    await voiceSession.join(state.activeChannelId);
+  } catch (error) {
+    openModal("Voice", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not start voice")]));
+    });
+  }
 }
 
 function renderMessages(stick) {
@@ -634,8 +709,10 @@ function renderMembers() {
     if (ao !== bo) return ao - bo;
     return a.displayName.localeCompare(b.displayName);
   });
+  const inVoice = new Map((state.voice.peers || []).map((peer) => [peer.userId, peer]));
   for (const member of ordered) {
     const online = state.online.has(member.id);
+    const voice = inVoice.get(member.id);
     const roleLabel = member.isPlatformOwner ? "hall owner" : member.isOwner ? "owner" : null;
     list.append(el("li", {
       class: "member-item",
@@ -644,6 +721,7 @@ function renderMembers() {
       el("span", { class: online ? "dot on" : "dot" }),
       avatarNode(member, "avatar tiny"),
       el("span", { class: "member-name" }, [text(member.displayName)]),
+      voice ? el("span", { class: "role voice-tag" }, [text(voice.muted ? "muted" : "voice")]) : null,
       roleLabel ? el("span", { class: "role" }, [text(roleLabel)]) : null,
     ]));
   }
@@ -771,6 +849,9 @@ async function openServer(serverId) {
 }
 
 async function openChannel(channelId) {
+  if (state.voice.active && state.voice.channelId && state.voice.channelId !== channelId) {
+    await voiceSession.leave();
+  }
   state.activeChannelId = channelId;
   closeDrawers();
   renderChannels();
@@ -816,14 +897,25 @@ function connect(channelId) {
     if (payload.type === "ready" || payload.type === "presence") {
       state.online = new Map((payload.online ?? []).map((person) => [person.userId, person]));
       renderMembers();
+      if (payload.type === "ready" && payload.voice) {
+        voiceSession.handleSocketMessage({ type: "voice_state", voice: payload.voice });
+      }
       return;
     }
+    if (voiceSession.handleSocketMessage(payload)) return;
     if (payload.type === "message" && payload.message) addMessage(payload.message);
     if (payload.type === "poll_update" && payload.message) upsertMessage(payload.message);
     if (payload.type === "error" && payload.error) {
       messageInput.setCustomValidity(payload.error);
       messageInput.reportValidity();
       setTimeout(() => messageInput.setCustomValidity(""), 2000);
+    }
+  }, { signal: abort.signal });
+
+  socket.addEventListener("open", () => {
+    if (state.voice.active && state.voice.channelId === channelId) {
+      socket.send(JSON.stringify({ type: "voice_join" }));
+      if (state.voice.muted) socket.send(JSON.stringify({ type: "voice_mute", muted: true }));
     }
   }, { signal: abort.signal });
 
@@ -840,6 +932,9 @@ function connect(channelId) {
 }
 
 function closeSocket(bump = true) {
+  if (state.voice.active && bump) {
+    voiceSession.leave();
+  }
   if (bump) socketGeneration += 1;
   if (state.pingTimer) {
     clearInterval(state.pingTimer);

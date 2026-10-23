@@ -24,7 +24,24 @@ export type PresenceUser = {
   avatarUrl: string | null;
 };
 
-type Attachment = PresenceUser;
+export type VoiceUser = PresenceUser & {
+  muted: boolean;
+};
+
+type Attachment = PresenceUser & {
+  inVoice?: boolean;
+  voiceMuted?: boolean;
+};
+
+type VoiceSignal = {
+  type?: string;
+  body?: string;
+  to?: string;
+  signal?: { kind?: string; sdp?: unknown; candidate?: unknown };
+  muted?: boolean;
+  messageId?: string;
+  optionIndex?: number;
+};
 
 type MessageRow = {
   id: string;
@@ -175,12 +192,14 @@ export class ChannelRoom extends DurableObject<Env> {
       username,
       displayName,
       avatarUrl: avatarUrl && avatarUrl.length > 0 ? avatarUrl : null,
+      inVoice: false,
+      voiceMuted: false,
     };
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(attachment);
 
     const online = this.onlineUsers();
-    server.send(JSON.stringify({ type: "ready", online }));
+    server.send(JSON.stringify({ type: "ready", online, voice: this.voiceUsers() }));
     this.broadcast(JSON.stringify({ type: "presence", online }), server);
 
     return new Response(null, { status: 101, webSocket: client });
@@ -188,9 +207,9 @@ export class ChannelRoom extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (typeof message !== "string" || message === "ping") return;
-    let parsed: { type?: string; body?: string };
+    let parsed: VoiceSignal;
     try {
-      parsed = JSON.parse(message) as { type?: string; body?: string };
+      parsed = JSON.parse(message) as VoiceSignal;
     } catch {
       return;
     }
@@ -199,10 +218,58 @@ export class ChannelRoom extends DurableObject<Env> {
       ws.close(1008, "Unauthorized");
       return;
     }
-    if (parsed.type === "poll_vote" && typeof (parsed as { messageId?: string }).messageId === "string") {
-      const optionIndex = Number((parsed as { optionIndex?: number }).optionIndex);
-      const result = await this.votePoll(attachment.userId, (parsed as { messageId: string }).messageId, optionIndex);
+    if (parsed.type === "poll_vote" && typeof parsed.messageId === "string") {
+      const optionIndex = Number(parsed.optionIndex);
+      const result = await this.votePoll(attachment.userId, parsed.messageId, optionIndex);
       if (!result.ok) ws.send(JSON.stringify({ type: "error", error: result.error }));
+      return;
+    }
+    if (parsed.type === "voice_join") {
+      if (this.voiceUsers().length >= 8 && !attachment.inVoice) {
+        ws.send(JSON.stringify({ type: "error", error: "Voice is full (8 people)" }));
+        return;
+      }
+      attachment.inVoice = true;
+      attachment.voiceMuted = false;
+      ws.serializeAttachment(attachment);
+      this.broadcastVoice();
+      return;
+    }
+    if (parsed.type === "voice_leave") {
+      attachment.inVoice = false;
+      attachment.voiceMuted = false;
+      ws.serializeAttachment(attachment);
+      this.broadcastVoice();
+      return;
+    }
+    if (parsed.type === "voice_mute") {
+      attachment.voiceMuted = Boolean(parsed.muted);
+      ws.serializeAttachment(attachment);
+      this.broadcastVoice();
+      return;
+    }
+    if (parsed.type === "voice_signal" && typeof parsed.to === "string" && parsed.signal) {
+      if (!attachment.inVoice) return;
+      const target = this.socketForUser(parsed.to);
+      if (!target) return;
+      try {
+        target.send(
+          JSON.stringify({
+            type: "voice_signal",
+            from: attachment.userId,
+            fromUser: {
+              userId: attachment.userId,
+              username: attachment.username,
+              displayName: attachment.displayName,
+              avatarUrl: attachment.avatarUrl,
+              muted: Boolean(attachment.voiceMuted),
+            },
+            signal: parsed.signal,
+          }),
+        );
+      } catch {
+        // Target may have disconnected.
+      }
       return;
     }
     if (parsed.type !== "message" || typeof parsed.body !== "string") return;
@@ -215,8 +282,11 @@ export class ChannelRoom extends DurableObject<Env> {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
+    const attachment = ws.deserializeAttachment() as Attachment | null;
+    const wasVoice = Boolean(attachment?.inVoice);
     const online = this.onlineUsers(ws);
     this.broadcast(JSON.stringify({ type: "presence", online }), ws);
+    if (wasVoice) this.broadcastVoice(ws);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
@@ -273,9 +343,44 @@ export class ChannelRoom extends DurableObject<Env> {
       if (socket === except || socket.readyState !== WebSocket.OPEN) continue;
       const attachment = socket.deserializeAttachment() as Attachment | null;
       if (!attachment?.userId) continue;
-      seen.set(attachment.userId, attachment);
+      seen.set(attachment.userId, {
+        userId: attachment.userId,
+        username: attachment.username,
+        displayName: attachment.displayName,
+        avatarUrl: attachment.avatarUrl,
+      });
     }
     return [...seen.values()];
+  }
+
+  private voiceUsers(except?: WebSocket): VoiceUser[] {
+    const seen = new Map<string, VoiceUser>();
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === except || socket.readyState !== WebSocket.OPEN) continue;
+      const attachment = socket.deserializeAttachment() as Attachment | null;
+      if (!attachment?.userId || !attachment.inVoice) continue;
+      seen.set(attachment.userId, {
+        userId: attachment.userId,
+        username: attachment.username,
+        displayName: attachment.displayName,
+        avatarUrl: attachment.avatarUrl,
+        muted: Boolean(attachment.voiceMuted),
+      });
+    }
+    return [...seen.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }
+
+  private socketForUser(userId: string): WebSocket | null {
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      const attachment = socket.deserializeAttachment() as Attachment | null;
+      if (attachment?.userId === userId) return socket;
+    }
+    return null;
+  }
+
+  private broadcastVoice(except?: WebSocket): void {
+    this.broadcast(JSON.stringify({ type: "voice_state", voice: this.voiceUsers(except) }), except);
   }
 
   private broadcast(payload: string, except?: WebSocket): void {

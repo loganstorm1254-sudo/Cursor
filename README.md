@@ -1,5 +1,11 @@
 # Cursor bots + Wi‑Fi Notify apps
 
+## Hall — Discord-style chat on Cloudflare
+
+Text servers and live channels. Every username is free to claim except **@admin** and **@owner**.
+
+Project: [`hall/`](hall/) · Run: `cd hall && npm install && npm run dev`
+
 ## Nova — your own AI (Android, offline, trained from scratch)
 
 A **5.9M-parameter GPT transformer trained from zero** just for you. The

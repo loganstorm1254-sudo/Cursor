@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#121318" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="Hall — talk in servers and channels." />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Hall" />
+    <meta name="application-name" content="Hall" />
+    <title>Hall</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192" />
+    <link rel="icon" href="/icons/icon-512.png" type="image/png" sizes="512x512" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" sizes="180x180" />
+    <meta name="msapplication-TileColor" content="#121318" />
+    <meta name="msapplication-TileImage" content="/icons/icon-192.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,680&family=Outfit:wght@380;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <base href="/" />
+  </head>
+  <body>
+    <section id="auth" class="auth" hidden>
+      <div class="auth-story">
+        <span class="mark" aria-hidden="true"></span>
+        <h1>Hall</h1>
+        <p>A place to talk. Every username is free to claim, except <strong>@admin</strong>.</p>
+      </div>
+      <form id="auth-form" class="auth-card">
+        <div class="auth-tabs" role="tablist" aria-label="Account">
+          <button id="auth-tab-login" class="auth-tab" type="button" role="tab" aria-selected="false">Sign in</button>
+          <button id="auth-tab-register" class="auth-tab" type="button" role="tab" aria-selected="true">Create account</button>
+        </div>
+        <h2 id="auth-title">Create your account</h2>
+        <p class="lede" id="auth-lede">Pick a username. If nobody has it, it is yours.</p>
+        <label>
+          Username
+          <input id="username" name="username" autocomplete="username" maxlength="33" required placeholder="@you" enterkeyhint="next" />
+        </label>
+        <label>
+          Password
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="200" required enterkeyhint="go" />
+        </label>
+        <p id="auth-error" class="form-error" role="alert"></p>
+        <button id="auth-submit" type="submit">Create account</button>
+        <button id="auth-switch" class="text-button auth-switch" type="button">Already have an account? Sign in</button>
+      </form>
+    </section>
+
+    <div id="shell" class="shell" hidden>
+      <button id="drawer-backdrop" class="drawer-backdrop" type="button" aria-label="Close menu" hidden></button>
+      <nav id="rail" class="rail" aria-label="Servers"></nav>
+      <aside id="channels" class="channels" aria-label="Channels"></aside>
+      <main class="chat">
+        <header id="topbar" class="topbar"></header>
+        <section id="voice-stage" class="voice-stage" hidden></section>
+        <div id="transcript" class="transcript" aria-live="polite"></div>
+        <form id="composer" class="composer">
+          <label class="sr-only" for="message">Message</label>
+          <div class="composer-tools">
+            <button id="emoji-button" class="ghost emoji-button" type="button" aria-label="Emoji" title="Emoji">☺</button>
+            <div id="emoji-panel" class="emoji-panel" hidden></div>
+          </div>
+          <textarea id="message" rows="1" maxlength="2000" placeholder="Message · /poll Q | A | B" enterkeyhint="send"></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </main>
+      <aside id="members" class="members" aria-label="Members"></aside>
+      <nav id="mobile-nav" class="mobile-nav" aria-label="Mobile navigation">
+        <button type="button" class="mobile-nav-btn" data-nav="menu" aria-label="Servers and channels">
+          <span class="mobile-nav-icon" aria-hidden="true">☰</span>
+          <span>Menu</span>
+        </button>
+        <button type="button" class="mobile-nav-btn" data-nav="home" aria-label="Friends and DMs">
+          <span class="mobile-nav-icon" aria-hidden="true">⌂</span>
+          <span>Friends</span>
+        </button>
+        <button type="button" class="mobile-nav-btn" data-nav="chat" aria-label="Current chat">
+          <span class="mobile-nav-icon" aria-hidden="true">💬</span>
+          <span>Chat</span>
+        </button>
+        <button type="button" class="mobile-nav-btn" data-nav="people" aria-label="People">
+          <span class="mobile-nav-icon" aria-hidden="true">☺</span>
+          <span>People</span>
+        </button>
+      </nav>
+    </div>
+
+    <div id="boot" class="boot" aria-live="polite" aria-busy="true">
+      <span class="mark" aria-hidden="true"></span>
+      <p>Hall</p>
+    </div>
+
+    <dialog id="modal">
+      <form id="modal-form" method="dialog"></form>
+    </dialog>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

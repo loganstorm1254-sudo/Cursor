@@ -55,7 +55,7 @@
     },
     {
       "tag": "v2",
-      "new_classes": ["ServerHub"]
+      "new_sqlite_classes": ["ServerHub"]
     }
   ]
 }

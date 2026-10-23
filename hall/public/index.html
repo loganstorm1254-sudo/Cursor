@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#121318" />
+    <title>Hall</title>
+    <link rel="icon" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,680&family=Outfit:wght@380;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section id="auth" class="auth">
+      <div class="auth-story">
+        <span class="mark" aria-hidden="true"></span>
+        <h1>Hall</h1>
+        <p>A place to talk. Every username is free to claim, except <strong>@admin</strong> and <strong>@owner</strong>.</p>
+      </div>
+      <form id="auth-form" class="auth-card">
+        <h2 id="auth-title">Create your account</h2>
+        <p class="lede" id="auth-lede">Pick a username. If nobody has it, it is yours.</p>
+        <label>
+          Username
+          <input id="username" name="username" autocomplete="username" maxlength="33" required placeholder="@you" />
+        </label>
+        <label>
+          Password
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="200" required />
+        </label>
+        <p id="auth-error" class="form-error" role="alert"></p>
+        <button id="auth-submit" type="submit">Create account</button>
+        <button id="auth-switch" class="text-button" type="button">Already have an account? Sign in</button>
+      </form>
+    </section>
+
+    <div id="shell" class="shell" hidden>
+      <nav id="rail" class="rail" aria-label="Servers"></nav>
+      <aside id="channels" class="channels" aria-label="Channels"></aside>
+      <main class="chat">
+        <header id="topbar" class="topbar"></header>
+        <div id="transcript" class="transcript" aria-live="polite"></div>
+        <form id="composer" class="composer">
+          <label class="sr-only" for="message">Message</label>
+          <textarea id="message" rows="1" maxlength="2000" placeholder="Message"></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </main>
+      <aside id="members" class="members" aria-label="Members"></aside>
+    </div>
+
+    <div id="boot" class="boot" aria-live="polite" aria-busy="true">
+      <span class="mark" aria-hidden="true"></span>
+      <p>Hall</p>
+    </div>
+
+    <dialog id="modal">
+      <form id="modal-form" method="dialog"></form>
+    </dialog>
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

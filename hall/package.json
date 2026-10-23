@@ -1,0 +1,21 @@
+{
+  "name": "hall",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "types": "wrangler types",
+    "db:migrate:local": "wrangler d1 migrations apply hall --local",
+    "db:migrate:remote": "wrangler d1 migrations apply hall --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.0.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.45.0"
+  }
+}

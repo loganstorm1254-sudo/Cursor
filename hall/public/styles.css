@@ -451,15 +451,109 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
   min-height: 280px;
   padding: 12px;
   justify-items: stretch;
+  gap: 10px;
 }
 .voice-tile-status { color: var(--faint); font-size: 12px; }
-.voice-screen {
+.voice-screen-viewport {
+  position: relative;
   width: 100%;
   max-height: min(56vh, 720px);
   aspect-ratio: 16 / 9;
-  object-fit: contain;
+  overflow: hidden;
   background: #0b0c10;
   border-radius: 12px;
+  cursor: zoom-in;
+  touch-action: none;
+  user-select: none;
+}
+.voice-screen-viewport.is-zoomed { cursor: grab; }
+.voice-screen-viewport.dragging { cursor: grabbing; }
+.voice-screen {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: center center;
+  will-change: transform;
+  pointer-events: none;
+}
+.voice-screen-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.voice-screen-toolbar strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-screen-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.voice-screen-zoom .ghost {
+  min-width: 34px;
+  padding: 4px 8px;
+}
+.screen-zoom-label {
+  min-width: 44px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.screen-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(6, 7, 10, 0.92);
+  backdrop-filter: blur(6px);
+}
+.screen-viewer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+}
+.screen-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.screen-viewer-viewport {
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #0b0c10;
+  border: 1px solid var(--line);
+  cursor: zoom-in;
+  touch-action: none;
+  user-select: none;
+}
+.screen-viewer-viewport.is-zoomed { cursor: grab; }
+.screen-viewer-viewport.dragging { cursor: grabbing; }
+.screen-viewer-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: center center;
+  will-change: transform;
+  pointer-events: none;
+}
+.screen-viewer-hint {
+  margin: 0;
+  text-align: center;
+  color: var(--faint);
+  font-size: 12px;
 }
 .voice-stage-grid.sharing {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

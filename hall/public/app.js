@@ -856,6 +856,158 @@ function screenStreamFor(peer) {
   return state.voice.remoteScreens?.[peer.userId] || null;
 }
 
+/** Persist zoom/pan across voice-stage re-renders. */
+const screenZoom = new Map(); // userId -> { scale, x, y }
+
+function screenZoomState(userId) {
+  let next = screenZoom.get(userId);
+  if (!next) {
+    next = { scale: 1, x: 0, y: 0 };
+    screenZoom.set(userId, next);
+  }
+  return next;
+}
+
+function clampScreenZoom(view) {
+  view.scale = Math.min(6, Math.max(1, view.scale));
+  if (view.scale === 1) {
+    view.x = 0;
+    view.y = 0;
+  }
+}
+
+function applyScreenTransform(video, userId) {
+  const view = screenZoomState(userId);
+  clampScreenZoom(view);
+  video.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  video.classList.toggle("zoomed", view.scale > 1);
+}
+
+function attachScreenZoom(viewport, video, userId, labelEl) {
+  const syncLabel = () => {
+    if (!labelEl) return;
+    const view = screenZoomState(userId);
+    labelEl.textContent = view.scale === 1 ? "100%" : `${Math.round(view.scale * 100)}%`;
+  };
+  const paint = () => {
+    applyScreenTransform(video, userId);
+    syncLabel();
+    viewport.classList.toggle("is-zoomed", screenZoomState(userId).scale > 1);
+  };
+  paint();
+
+  viewport.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      const view = screenZoomState(userId);
+      const delta = event.deltaY > 0 ? -0.12 : 0.12;
+      view.scale += delta;
+      clampScreenZoom(view);
+      paint();
+    },
+    { passive: false },
+  );
+
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  viewport.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (screenZoomState(userId).scale <= 1) return;
+    dragging = true;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    viewport.setPointerCapture(event.pointerId);
+    viewport.classList.add("dragging");
+  });
+  viewport.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    const view = screenZoomState(userId);
+    view.x += event.clientX - lastX;
+    view.y += event.clientY - lastY;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    paint();
+  });
+  const endDrag = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    viewport.classList.remove("dragging");
+    try {
+      viewport.releasePointerCapture(event.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+  viewport.addEventListener("pointerup", endDrag);
+  viewport.addEventListener("pointercancel", endDrag);
+
+  return {
+    zoomIn: () => {
+      const view = screenZoomState(userId);
+      view.scale += 0.25;
+      paint();
+    },
+    zoomOut: () => {
+      const view = screenZoomState(userId);
+      view.scale -= 0.25;
+      paint();
+    },
+    reset: () => {
+      const view = screenZoomState(userId);
+      view.scale = 1;
+      view.x = 0;
+      view.y = 0;
+      paint();
+    },
+    paint,
+  };
+}
+
+function openScreenViewer(peer, stream) {
+  const existing = document.querySelector("#screen-viewer");
+  existing?.remove();
+  const video = document.createElement("video");
+  video.className = "screen-viewer-video";
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = true;
+  video.srcObject = stream;
+  const zoomLabel = el("span", { class: "screen-zoom-label" }, [text("100%")]);
+  const viewport = el("div", { class: "screen-viewer-viewport" }, [video]);
+  const controls = attachScreenZoom(viewport, video, `viewer:${peer.userId}`, zoomLabel);
+  const overlay = el("div", { id: "screen-viewer", class: "screen-viewer", role: "dialog", "aria-label": "Screen share" }, [
+    el("header", { class: "screen-viewer-bar" }, [
+      el("strong", {}, [text(`${peer.displayName}'s screen`)]),
+      el("div", { class: "screen-viewer-actions" }, [
+        el("button", { class: "ghost", type: "button", onclick: () => controls.zoomOut() }, [text("−")]),
+        zoomLabel,
+        el("button", { class: "ghost", type: "button", onclick: () => controls.zoomIn() }, [text("+")]),
+        el("button", { class: "ghost", type: "button", onclick: () => controls.reset() }, [text("Reset")]),
+        el("button", {
+          class: "ghost",
+          type: "button",
+          onclick: () => overlay.remove(),
+        }, [text("Close")]),
+      ]),
+    ]),
+    viewport,
+    el("p", { class: "screen-viewer-hint" }, [text("Scroll to zoom · drag to pan")]),
+  ]);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  const onKey = (event) => {
+    if (event.key === "Escape") {
+      overlay.remove();
+      window.removeEventListener("keydown", onKey);
+    }
+  };
+  window.addEventListener("keydown", onKey);
+  document.body.append(overlay);
+}
+
 function voiceTileFor(peer) {
   const mine = peer.userId === state.me?.id;
   const isSharing = Boolean(peer.sharing || (mine && state.voice.sharing));
@@ -863,23 +1015,51 @@ function voiceTileFor(peer) {
   const status = isSharing
     ? mine ? "Sharing screen · 1080p60" : "Sharing screen"
     : peer.muted ? "Muted" : mine ? "You" : "In call";
-  let media;
-  if (stream) {
-    media = document.createElement("video");
-    media.className = "voice-screen";
-    media.autoplay = true;
-    media.playsInline = true;
-    media.muted = true;
-    media.srcObject = stream;
-  } else {
-    media = avatarNode({ ...peer, id: peer.userId }, "avatar lg");
+  if (!stream) {
+    return el("div", {
+      class: mine ? "voice-tile me" : "voice-tile",
+      "data-sharing": null,
+    }, [
+      avatarNode({ ...peer, id: peer.userId }, "avatar lg"),
+      el("strong", {}, [text(peer.displayName)]),
+      el("span", { class: "voice-tile-status" }, [text(status)]),
+    ]);
   }
+
+  const video = document.createElement("video");
+  video.className = "voice-screen";
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = true;
+  video.srcObject = stream;
+  const zoomLabel = el("span", { class: "screen-zoom-label" }, [text("100%")]);
+  const viewport = el("div", {
+    class: "voice-screen-viewport",
+    title: "Scroll to zoom · drag to pan · double-click to expand",
+  }, [video]);
+  const controls = attachScreenZoom(viewport, video, peer.userId, zoomLabel);
+  viewport.addEventListener("dblclick", () => openScreenViewer(peer, stream));
+
   return el("div", {
     class: mine ? "voice-tile me" : "voice-tile",
-    "data-sharing": isSharing ? "1" : null,
+    "data-sharing": "1",
   }, [
-    media,
-    el("strong", {}, [text(peer.displayName)]),
+    viewport,
+    el("div", { class: "voice-screen-toolbar" }, [
+      el("strong", {}, [text(peer.displayName)]),
+      el("div", { class: "voice-screen-zoom" }, [
+        el("button", { class: "ghost", type: "button", title: "Zoom out", onclick: () => controls.zoomOut() }, [text("−")]),
+        zoomLabel,
+        el("button", { class: "ghost", type: "button", title: "Zoom in", onclick: () => controls.zoomIn() }, [text("+")]),
+        el("button", { class: "ghost", type: "button", title: "Reset zoom", onclick: () => controls.reset() }, [text("Reset")]),
+        el("button", {
+          class: "ghost",
+          type: "button",
+          title: "Expand",
+          onclick: () => openScreenViewer(peer, stream),
+        }, [text("Expand")]),
+      ]),
+    ]),
     el("span", { class: "voice-tile-status" }, [text(status)]),
   ]);
 }

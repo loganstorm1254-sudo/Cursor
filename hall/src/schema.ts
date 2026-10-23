@@ -96,21 +96,48 @@ async function bootstrapOwner(env: Env): Promise<void> {
     )
       .bind(existing.id, now)
       .run();
-    return;
+  } else {
+    const userId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, avatar_key, role)
+         VALUES (?, ?, ?, ?, ?, '', NULL, 'owner')`,
+      ).bind(userId, PLATFORM_OWNER_USERNAME, PLATFORM_OWNER_DISPLAY, passwordHash, now),
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
+         VALUES ('lobby', ?, ?)`,
+      ).bind(userId, now),
+    ]);
+    console.log(JSON.stringify({ event: "owner_bootstrapped", username: PLATFORM_OWNER_USERNAME }));
   }
 
-  const userId = crypto.randomUUID();
+  await env.DB.prepare(`UPDATE users SET role = 'user' WHERE role = 'owner' AND username != ?`)
+    .bind(PLATFORM_OWNER_USERNAME)
+    .run();
+}
+
+/** Remove the old Rogue1254 owner account left over from earlier deploys. */
+async function removeLegacyOwners(env: Env): Promise<void> {
+  const legacy = await env.DB.prepare("SELECT id FROM users WHERE username = ?")
+    .bind("rogue1254")
+    .first<{ id: string }>();
+  if (!legacy) return;
+
+  const owner = await env.DB.prepare("SELECT id FROM users WHERE username = ?")
+    .bind(PLATFORM_OWNER_USERNAME)
+    .first<{ id: string }>();
+  if (owner && owner.id === legacy.id) return;
+
+  if (owner) {
+    await env.DB.prepare("UPDATE servers SET owner_id = ? WHERE owner_id = ?").bind(owner.id, legacy.id).run();
+  }
+
   await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, avatar_key, role)
-       VALUES (?, ?, ?, ?, ?, '', NULL, 'owner')`,
-    ).bind(userId, PLATFORM_OWNER_USERNAME, PLATFORM_OWNER_DISPLAY, passwordHash, now),
-    env.DB.prepare(
-      `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
-       VALUES ('lobby', ?, ?)`,
-    ).bind(userId, now),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(legacy.id),
+    env.DB.prepare("DELETE FROM memberships WHERE user_id = ?").bind(legacy.id),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(legacy.id),
   ]);
-  console.log(JSON.stringify({ event: "owner_bootstrapped", username: PLATFORM_OWNER_USERNAME }));
+  console.log(JSON.stringify({ event: "legacy_owner_removed", username: "rogue1254" }));
 }
 
 async function init(env: Env): Promise<void> {
@@ -135,6 +162,7 @@ async function init(env: Env): Promise<void> {
     ),
   ]);
   await bootstrapOwner(env);
+  await removeLegacyOwners(env);
 }
 
 export async function ensureReady(env: Env): Promise<void> {
@@ -145,4 +173,6 @@ export async function ensureReady(env: Env): Promise<void> {
     ready = null;
     throw error;
   }
+  // Runs every request so a leftover Rogue1254 disappears even if init already ran.
+  await removeLegacyOwners(env);
 }

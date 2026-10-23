@@ -523,6 +523,16 @@ export default {
       return new Response("Not found", { status: 404 });
     }
     if (request.method === "GET" && url.pathname === "/api/health") {
+      try {
+        await ensureReady(env);
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: "health_init_failed",
+            message: error instanceof Error ? error.message : "unknown",
+          }),
+        );
+      }
       return json({ ok: true, name: "Hall" });
     }
     try {

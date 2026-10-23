@@ -181,6 +181,17 @@ describe("Hall", () => {
     const avatar = await exports.default.fetch(`http://hall.test${uploadedBody.user.avatarUrl}`);
     expect(avatar.status).toBe(200);
     expect(avatar.headers.get("content-type")).toMatch(/image\/png/);
+
+    await env.DB.prepare(
+      `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, role)
+       VALUES ('legacy-rogue', 'rogue1254', 'Rogue1254', 'disabled', 1, '', 'owner')`,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO memberships (server_id, user_id, joined_at) VALUES ('lobby', 'legacy-rogue', 1)`,
+    ).run();
+    await exports.default.fetch("http://hall.test/api/health");
+    const leftover = await env.DB.prepare("SELECT id FROM users WHERE username = 'rogue1254'").first();
+    expect(leftover).toBeNull();
   });
 
   it("lets the owner add a channel and keeps strangers out until they use the invite", async () => {

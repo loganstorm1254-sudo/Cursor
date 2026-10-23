@@ -98,23 +98,26 @@ async function patchColumns(env: Env): Promise<void> {
   }
 }
 
+/**
+ * Seed the platform owner once. Never re-hash when the account already exists —
+ * PBKDF2(100k) on every isolate cold start was stalling the second concurrent visitor.
+ */
 async function bootstrapOwner(env: Env): Promise<void> {
-  const password = env.OWNER_PASSWORD && env.OWNER_PASSWORD.length >= 8 ? env.OWNER_PASSWORD : PLATFORM_OWNER_PASSWORD;
-
-  const passwordHash = await hashPassword(password);
-  const existing = await env.DB.prepare("SELECT id FROM users WHERE username = ?")
+  const existing = await env.DB.prepare(
+    "SELECT id, role, display_name FROM users WHERE username = ?",
+  )
     .bind(PLATFORM_OWNER_USERNAME)
-    .first<{ id: string }>();
+    .first<{ id: string; role: string | null; display_name: string }>();
   const now = Date.now();
 
   if (existing) {
-    await env.DB.prepare(
-      `UPDATE users
-       SET password_hash = ?, display_name = ?, role = 'owner'
-       WHERE id = ?`,
-    )
-      .bind(passwordHash, PLATFORM_OWNER_DISPLAY, existing.id)
-      .run();
+    const needsMeta =
+      existing.role !== "owner" || existing.display_name !== PLATFORM_OWNER_DISPLAY;
+    if (needsMeta) {
+      await env.DB.prepare(`UPDATE users SET display_name = ?, role = 'owner' WHERE id = ?`)
+        .bind(PLATFORM_OWNER_DISPLAY, existing.id)
+        .run();
+    }
     await env.DB.prepare(
       `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
        VALUES ('lobby', ?, ?)`,
@@ -122,6 +125,9 @@ async function bootstrapOwner(env: Env): Promise<void> {
       .bind(existing.id, now)
       .run();
   } else {
+    const password =
+      env.OWNER_PASSWORD && env.OWNER_PASSWORD.length >= 8 ? env.OWNER_PASSWORD : PLATFORM_OWNER_PASSWORD;
+    const passwordHash = await hashPassword(password);
     const userId = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare(
@@ -165,9 +171,7 @@ async function removeLegacyOwners(env: Env): Promise<void> {
   console.log(JSON.stringify({ event: "legacy_owner_removed", username: "rogue1254" }));
 }
 
-async function init(env: Env): Promise<void> {
-  await env.DB.batch(STATEMENTS.map((sql) => env.DB.prepare(sql)));
-  await patchColumns(env);
+async function seedLobby(env: Env): Promise<void> {
   await env.DB.batch([
     env.DB.prepare(
       `INSERT OR IGNORE INTO users (id, username, display_name, password_hash, created_at, bio, role)
@@ -189,6 +193,25 @@ async function init(env: Env): Promise<void> {
        VALUES ('lobby-random', 'lobby', 'random', 1, 0)`,
     ),
   ]);
+}
+
+async function init(env: Env): Promise<void> {
+  // Fast path when the DB is already live — avoid DDL contention across cold isolates.
+  try {
+    const lobby = await env.DB.prepare("SELECT id FROM servers WHERE id = 'lobby'").first<{ id: string }>();
+    if (lobby) {
+      await patchColumns(env);
+      await bootstrapOwner(env);
+      await removeLegacyOwners(env);
+      return;
+    }
+  } catch {
+    // Tables missing — fall through to full create.
+  }
+
+  await env.DB.batch(STATEMENTS.map((sql) => env.DB.prepare(sql)));
+  await patchColumns(env);
+  await seedLobby(env);
   await bootstrapOwner(env);
   await removeLegacyOwners(env);
 }
@@ -201,6 +224,7 @@ export async function ensureReady(env: Env): Promise<void> {
     ready = null;
     throw error;
   }
-  // Runs every request so a leftover Rogue1254 disappears even if init already ran.
+  // Cheap when absent (one SELECT). Kept outside init so a leftover account
+  // inserted after the first request still gets cleaned on the next hit.
   await removeLegacyOwners(env);
 }

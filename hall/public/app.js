@@ -175,9 +175,33 @@ function text(value) {
 }
 
 async function api(path, options = {}) {
-  const headers = new Headers(options.headers);
-  if (options.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
+  const { timeoutMs = 15_000, signal: outerSignal, headers: rawHeaders, ...fetchOptions } = options;
+  const headers = new Headers(rawHeaders);
+  if (fetchOptions.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (outerSignal) {
+    if (outerSignal.aborted) controller.abort();
+    else outerSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  let response;
+  try {
+    response = await fetch(path, {
+      ...fetchOptions,
+      headers,
+      credentials: "same-origin",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    if (error?.name === "AbortError") {
+      const timedOut = new Error("Hall took too long to respond. Refresh and try again.");
+      timedOut.status = 408;
+      throw timedOut;
+    }
+    throw error;
+  }
+  clearTimeout(timer);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(data.error || "Request failed");
@@ -1831,7 +1855,7 @@ async function bootApp() {
   const inviteCode = pendingInviteCode();
   if (inviteCode && boot.querySelector("p")) boot.querySelector("p").textContent = "Opening invite…";
   try {
-    const data = await api("/api/me");
+    const data = await api("/api/me", { timeoutMs: 12_000 });
     state.me = data.user;
     await enterApp();
   } catch (error) {
@@ -1846,7 +1870,7 @@ async function bootApp() {
     } else {
       setAuthMode("login");
       showAuth();
-      authError.textContent = error.message;
+      authError.textContent = error.message || "Could not reach Hall. Refresh and try again.";
     }
   }
 }

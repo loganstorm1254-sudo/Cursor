@@ -408,8 +408,8 @@ function renderRail() {
       "aria-current": !state.home && server.id === state.activeServerId ? "true" : null,
       onclick: async () => {
         await openServer(server.id);
-        closeDrawers();
-        openDrawer("channels");
+        if (isMobileNav()) openDrawer("menu");
+        else closeDrawers();
       },
     }, [icon]);
     const wrap = el("div", { class: "server-slot" }, [
@@ -455,20 +455,52 @@ function closeDrawers() {
   channelsEl.classList.remove("open");
   membersEl.classList.remove("open");
   rail.classList.remove("open");
+  shell?.classList.remove("nav-open", "people-open");
   if (backdrop) {
     backdrop.classList.remove("show");
     backdrop.hidden = true;
   }
+  syncMobileNav();
 }
 
 function openDrawer(which) {
   closeDrawers();
-  if (which === "channels") channelsEl.classList.add("open");
-  if (which === "members") membersEl.classList.add("open");
-  if (which === "servers") rail.classList.add("open");
+  if (which === "menu" || which === "channels" || which === "servers") {
+    // Mobile: servers + channels together. Desktop/tablet: open the matching panel.
+    if (isMobileNav()) {
+      rail.classList.add("open");
+      channelsEl.classList.add("open");
+      shell?.classList.add("nav-open");
+    } else if (which === "servers") {
+      rail.classList.add("open");
+    } else {
+      channelsEl.classList.add("open");
+    }
+  }
+  if (which === "members") {
+    membersEl.classList.add("open");
+    shell?.classList.add("people-open");
+  }
   if (backdrop && which) {
     backdrop.hidden = false;
     backdrop.classList.add("show");
+  }
+  syncMobileNav(which === "menu" || which === "channels" || which === "servers" ? "menu" : which);
+}
+
+function isMobileNav() {
+  return window.matchMedia("(max-width: 800px)").matches;
+}
+
+function syncMobileNav(active) {
+  const nav = document.querySelector("#mobile-nav");
+  if (!nav) return;
+  const current = active
+    || (membersEl.classList.contains("open") ? "people" : null)
+    || (channelsEl.classList.contains("open") || rail.classList.contains("open") ? "menu" : null)
+    || (state.home ? "home" : "chat");
+  for (const button of nav.querySelectorAll("[data-nav]")) {
+    button.classList.toggle("active", button.dataset.nav === current);
   }
 }
 
@@ -688,19 +720,18 @@ function renderTopbar() {
   topbar.replaceChildren(
     el("div", { class: "topbar-actions" }, [
       el("button", {
-        class: "ghost servers-button",
-        type: "button",
-        "aria-label": "Servers",
-        onclick: () => openDrawer("servers"),
-      }, [text("Srv")]),
-      el("button", {
         class: "ghost menu-button",
         type: "button",
-        "aria-label": state.home ? "Friends" : "Channels",
-        onclick: () => openDrawer("channels"),
-      }, [text(state.home ? "Home" : "#")]),
+        "aria-label": "Open menu",
+        onclick: () => openDrawer("menu"),
+      }, [text("Menu")]),
     ]),
-    el("div", { class: "topbar-title" }, [
+    el("button", {
+      class: "topbar-title linkish",
+      type: "button",
+      title: "Open menu",
+      onclick: () => openDrawer("menu"),
+    }, [
       el("h2", {}, [text(title)]),
       el("p", {}, [text(isDm ? "Direct message" : state.home ? "Friends & DMs" : state.server ? state.server.name : "No server")]),
     ]),
@@ -711,10 +742,15 @@ function renderTopbar() {
             type: "button",
             "aria-label": inThisVoice ? "Leave call" : isDm ? "Start call" : "Join voice",
             onclick: () => toggleVoice(),
-          }, [text(inThisVoice ? `In call · ${voiceCount}` : isDm ? "Call" : "Voice")])
+          }, [text(inThisVoice ? `Call · ${voiceCount}` : isDm ? "Call" : "Voice")])
         : null,
       state.home
-        ? null
+        ? el("button", {
+            class: "ghost people-button",
+            type: "button",
+            "aria-label": "Friends menu",
+            onclick: () => openDrawer("menu"),
+          }, [text("Friends")])
         : el("button", {
             class: "ghost people-button",
             type: "button",
@@ -723,6 +759,7 @@ function renderTopbar() {
           }, [text("People")]),
     ]),
   );
+  syncMobileNav();
 }
 
 function renderVoiceStage() {
@@ -1775,6 +1812,33 @@ if (backdrop) {
 }
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeDrawers();
+});
+
+document.querySelector("#mobile-nav")?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-nav]");
+  if (!button) return;
+  const nav = button.dataset.nav;
+  if (nav === "menu") {
+    openDrawer("menu");
+    return;
+  }
+  if (nav === "home") {
+    await openHome();
+    openDrawer("menu");
+    return;
+  }
+  if (nav === "chat") {
+    closeDrawers();
+    syncMobileNav("chat");
+    return;
+  }
+  if (nav === "people") {
+    if (state.home) {
+      openDrawer("menu");
+      return;
+    }
+    openDrawer("members");
+  }
 });
 
 if ("serviceWorker" in navigator) {

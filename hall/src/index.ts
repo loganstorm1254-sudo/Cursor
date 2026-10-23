@@ -59,6 +59,7 @@ function publicServer(row: ServerRow, userId: string, user?: PublicUser) {
     name: row.name,
     iconLetter: row.icon_letter,
     inviteCode: row.invite_code,
+    inviteUrl: `https://hallchat.lopro.cc/invite/${encodeURIComponent(row.invite_code)}`,
     ownerId: row.owner_id,
     bio: row.bio ?? "",
     avatarUrl: row.avatar_key ? `/api/avatars/${encodeURIComponent(row.avatar_key)}` : null,

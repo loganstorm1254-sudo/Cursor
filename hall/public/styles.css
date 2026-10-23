@@ -255,14 +255,20 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
 .hash { color: var(--faint); }
 .side-foot { margin-top: auto; padding: 12px; display: grid; gap: 8px; border-top: 1px solid var(--line); }
 .invite {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
   gap: 8px;
-  align-items: center;
   color: var(--muted);
   font-size: 13px;
 }
-.invite code { color: var(--ink); font-family: ui-monospace, monospace; }
+.invite-label { font-weight: 600; color: var(--ink); }
+.invite code, .invite-link {
+  color: var(--ink);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.invite .ghost { justify-self: start; }
 
 .chat { background: var(--chat); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; }
 .topbar p { margin: 0; color: var(--faint); font-size: 13px; font-weight: 400; }

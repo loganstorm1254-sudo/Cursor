@@ -24,7 +24,9 @@ const modalForm = document.querySelector("#modal-form");
 const emojiButton = document.querySelector("#emoji-button");
 const emojiPanel = document.querySelector("#emoji-panel");
 
+const PUBLIC_ORIGIN = "https://hallchat.lopro.cc";
 const POLL_PREFIX = "§HALLPOLL§";
+const INVITE_PENDING_KEY = "hall.pendingInvite";
 const EMOJI_SHORTCODES = {
   smile: "😄",
   grin: "😁",
@@ -195,12 +197,55 @@ authForm.addEventListener("submit", async (event) => {
   }
 });
 
+function inviteLink(code) {
+  return `${PUBLIC_ORIGIN}/invite/${encodeURIComponent(String(code || "").trim().toLowerCase())}`;
+}
+
+function extractInviteCode(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw, PUBLIC_ORIGIN);
+    const match = url.pathname.match(/^\/invite\/([a-z0-9-]{2,32})\/?$/i);
+    if (match?.[1]) return match[1].toLowerCase();
+  } catch {
+    // Fall through to bare codes.
+  }
+  const bare = raw.replace(/^@/, "").toLowerCase();
+  if (/^[a-z0-9-]{2,32}$/.test(bare)) return bare;
+  return "";
+}
+
+function captureInviteFromLocation() {
+  const match = location.pathname.match(/^\/invite\/([a-z0-9-]{2,32})\/?$/i);
+  if (!match?.[1]) return;
+  sessionStorage.setItem(INVITE_PENDING_KEY, match[1].toLowerCase());
+  history.replaceState({}, "", "/");
+}
+
+async function consumePendingInvite() {
+  const code = sessionStorage.getItem(INVITE_PENDING_KEY);
+  if (!code) return null;
+  sessionStorage.removeItem(INVITE_PENDING_KEY);
+  try {
+    const data = await api("/api/join", { method: "POST", body: JSON.stringify({ code }) });
+    return data.server?.id ?? null;
+  } catch (error) {
+    openModal("Invite", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not use that invite.")]));
+    });
+    return null;
+  }
+}
+
 async function enterApp() {
   showApp();
+  const invitedServerId = await consumePendingInvite();
   const listed = await api("/api/servers");
   state.servers = listed.servers;
   renderRail();
   const preferred =
+    state.servers.find((server) => server.id === invitedServerId) ??
     state.servers.find((server) => server.id === state.activeServerId) ??
     state.servers[0];
   if (!preferred) {
@@ -389,11 +434,12 @@ function renderChannels() {
     list.append(el("li", { class: manage ? "channel-row manage" : "channel-row" }, row));
   });
   const foot = el("div", { class: "side-foot" });
+  const link = inviteLink(server.inviteCode);
   const invite = el("div", { class: "invite" }, [
-    text("Invite "),
-    el("code", {}, [text(server.inviteCode)]),
+    el("div", { class: "invite-label" }, [text("Invite link")]),
+    el("code", { class: "invite-link" }, [text(link)]),
   ]);
-  invite.append(el("button", { class: "ghost", type: "button", onclick: copyInvite }, [text("Copy")]));
+  invite.append(el("button", { class: "ghost", type: "button", onclick: copyInvite }, [text("Copy link")]));
   foot.append(invite);
   if (manage) {
     foot.append(el("button", { class: "ghost", type: "button", onclick: openCreateChannel }, [text("Add channel")]));
@@ -956,7 +1002,8 @@ function openServerSettings() {
       el("div", { class: "profile-card" }, [preview, el("div", {}, [el("h3", {}, [text(server.name)])])]),
       el("label", {}, [text("Name"), name]),
       el("label", {}, [text("Bio"), bio]),
-      el("label", {}, [text("Invite code"), invite]),
+      el("label", {}, [text("Invite link code (hallchat.lopro.cc/invite/…)"), invite]),
+      el("p", { class: "lede" }, [text(inviteLink(server.inviteCode))]),
       el("label", {}, [text("Icon / pfp"), file]),
       status,
       error,
@@ -1027,7 +1074,7 @@ function openAddMenu() {
       el("div", { class: "actions" }, [
         el("button", { type: "submit" }, [text("Create server")]),
       ]),
-      el("label", {}, [text("Or join with an invite"), code]),
+      el("label", {}, [text("Or paste invite link / code"), code]),
       el("div", { class: "actions" }, [
         el("button", {
           class: "ghost",
@@ -1059,7 +1106,9 @@ function openAddMenu() {
 }
 
 async function joinWith(code) {
-  const data = await api("/api/join", { method: "POST", body: JSON.stringify({ code }) });
+  const extracted = extractInviteCode(code);
+  if (!extracted) throw new Error("Paste an invite link or code");
+  const data = await api("/api/join", { method: "POST", body: JSON.stringify({ code: extracted }) });
   modal.close();
   await refreshAndOpen(data.server.id);
 }
@@ -1100,9 +1149,10 @@ function openModal(title, fill) {
 }
 
 async function copyInvite() {
-  if (!state.server || !navigator.clipboard) return;
+  if (!state.server) return;
+  const link = inviteLink(state.server.inviteCode);
   try {
-    await navigator.clipboard.writeText(state.server.inviteCode);
+    if (navigator.clipboard) await navigator.clipboard.writeText(link);
   } catch {
     // The invite stays visible if the browser blocks the clipboard.
   }
@@ -1147,14 +1197,18 @@ async function refreshAndOpen(serverId) {
 }
 
 async function bootApp() {
+  captureInviteFromLocation();
   try {
     const data = await api("/api/me");
     state.me = data.user;
     await enterApp();
   } catch (error) {
     if (error.status === 401) {
-      setAuthMode("login");
+      setAuthMode(sessionStorage.getItem(INVITE_PENDING_KEY) ? "register" : "login");
       showAuth();
+      if (sessionStorage.getItem(INVITE_PENDING_KEY)) {
+        authLede.textContent = "Create an account or sign in to join that server.";
+      }
     } else {
       setAuthMode("login");
       showAuth();

@@ -26,7 +26,7 @@
     {
       "binding": "DB",
       "database_name": "hall",
-      "database_id": "00000000-0000-0000-0000-000000000001",
+      "database_id": "2621fc47-571a-4e0d-8570-0a48c7ecb7cb",
       "migrations_dir": "migrations"
     }
   ],

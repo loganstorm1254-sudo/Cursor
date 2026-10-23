@@ -41,6 +41,10 @@
       {
         "name": "CHANNELS",
         "class_name": "ChannelRoom"
+      },
+      {
+        "name": "SERVERS",
+        "class_name": "ServerHub"
       }
     ]
   },
@@ -48,6 +52,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["ChannelRoom"]
+    },
+    {
+      "tag": "v2",
+      "new_classes": ["ServerHub"]
     }
   ]
 }

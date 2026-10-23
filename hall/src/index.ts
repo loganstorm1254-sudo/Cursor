@@ -27,6 +27,7 @@ import {
 } from "./username";
 
 export { ChannelRoom } from "./channel";
+export { ServerHub } from "./hub";
 
 const MAX_AVATAR_BYTES = 512_000;
 const AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
@@ -81,6 +82,19 @@ async function memberOf(env: Env, serverId: string, userId: string): Promise<boo
 }
 
 async function getChannel(env: Env, channelId: string): Promise<ChannelRow | null> {
+  if (channelId.startsWith("dm:")) {
+    const thread = await env.DB.prepare("SELECT id, user_a, user_b FROM dm_threads WHERE id = ?")
+      .bind(channelId)
+      .first<{ id: string; user_a: string; user_b: string }>();
+    if (!thread) return null;
+    return {
+      id: thread.id,
+      server_id: "dm",
+      name: "dm",
+      position: 0,
+      owner_id: thread.user_a,
+    };
+  }
   return env.DB.prepare(
     `SELECT c.id, c.server_id, c.name, c.position, s.owner_id
      FROM channels c
@@ -92,6 +106,22 @@ async function getChannel(env: Env, channelId: string): Promise<ChannelRow | nul
 }
 
 async function requireChannelMember(env: Env, channelId: string, user: PublicUser): Promise<ChannelRow> {
+  if (channelId.startsWith("dm:")) {
+    const thread = await env.DB.prepare("SELECT id, user_a, user_b FROM dm_threads WHERE id = ?")
+      .bind(channelId)
+      .first<{ id: string; user_a: string; user_b: string }>();
+    if (!thread) throw new HttpError(404, "DM not found");
+    if (thread.user_a !== user.id && thread.user_b !== user.id) {
+      throw new HttpError(403, "That DM is not yours");
+    }
+    return {
+      id: thread.id,
+      server_id: "dm",
+      name: "dm",
+      position: 0,
+      owner_id: thread.user_a,
+    };
+  }
   const channel = await getChannel(env, channelId);
   if (!channel) throw new HttpError(404, "Channel not found");
   if (!(await memberOf(env, channel.server_id, user.id))) {
@@ -102,6 +132,46 @@ async function requireChannelMember(env: Env, channelId: string, user: PublicUse
 
 function room(env: Env, channelId: string) {
   return env.CHANNELS.getByName(channelId);
+}
+
+function serverHub(env: Env, serverId: string) {
+  return env.SERVERS.getByName(serverId);
+}
+
+async function listChannelRows(env: Env, serverId: string) {
+  const channels = await env.DB.prepare(
+    `SELECT id, name, position, COALESCE(kind, 'text') AS kind
+     FROM channels
+     WHERE server_id = ?
+     ORDER BY CASE COALESCE(kind, 'text') WHEN 'voice' THEN 1 ELSE 0 END ASC, position ASC, name ASC`,
+  )
+    .bind(serverId)
+    .all<{ id: string; name: string; position: number; kind: string }>();
+  return channels.results ?? [];
+}
+
+async function publishServerChannels(env: Env, serverId: string): Promise<void> {
+  const channels = await listChannelRows(env, serverId);
+  try {
+    await serverHub(env, serverId).fetch(
+      new Request("https://hub/publish", {
+        method: "POST",
+        body: JSON.stringify({ type: "channels", channels }),
+      }),
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "hub_publish_failed",
+        serverId,
+        message: error instanceof Error ? error.message : "unknown",
+      }),
+    );
+  }
+}
+
+function dmThreadId(userA: string, userB: string): string {
+  return userA < userB ? `dm:${userA}:${userB}` : `dm:${userB}:${userA}`;
 }
 
 async function register(request: Request, env: Env): Promise<Response> {
@@ -500,14 +570,7 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
   if (!server) throw new HttpError(404, "Server not found");
   if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
 
-  const channels = await env.DB.prepare(
-    `SELECT id, name, position, COALESCE(kind, 'text') AS kind
-     FROM channels
-     WHERE server_id = ?
-     ORDER BY CASE COALESCE(kind, 'text') WHEN 'voice' THEN 1 ELSE 0 END ASC, position ASC, name ASC`,
-  )
-    .bind(server.id)
-    .all<{ id: string; name: string; position: number; kind: string }>();
+  const channels = await listChannelRows(env, server.id);
   const members = await env.DB.prepare(
     `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role
      FROM memberships m
@@ -527,7 +590,7 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
 
   return json({
     server: publicServer(server, user.id, user),
-    channels: channels.results ?? [],
+    channels,
     members: (members.results ?? []).map((member) => {
       const profile = toPublicUser(member);
       return {
@@ -536,6 +599,16 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
       };
     }),
   });
+}
+
+async function openServerHub(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
+  if (request.headers.get("Upgrade") !== "websocket") {
+    return new Response("Expected WebSocket", { status: 426 });
+  }
+  if (!(await memberOf(env, serverId, user.id))) throw new HttpError(403, "You are not in this server");
+  const headers = new Headers(request.headers);
+  headers.set("x-hall-user-id", user.id);
+  return serverHub(env, serverId).fetch(new Request(request, { headers }));
 }
 
 async function createChannel(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
@@ -574,6 +647,7 @@ async function createChannel(request: Request, env: Env, user: PublicUser, serve
     if (message.includes("UNIQUE")) throw new HttpError(409, "That channel already exists");
     throw error;
   }
+  await publishServerChannels(env, server.id);
   return json({ channel: { id: channelId, name, position: positionRow?.next ?? 0, kind } }, 201);
 }
 
@@ -608,6 +682,7 @@ async function reorderChannels(request: Request, env: Env, user: PublicUser, ser
       env.DB.prepare("UPDATE channels SET position = ? WHERE id = ? AND server_id = ?").bind(position, id, server.id),
     ),
   );
+  await publishServerChannels(env, server.id);
   return json({ ok: true, channelIds });
 }
 
@@ -639,6 +714,7 @@ async function deleteChannel(env: Env, user: PublicUser, channelId: string): Pro
     if ((count?.n ?? 0) <= 1) throw new HttpError(400, "Keep at least one channel");
   }
   await env.DB.prepare("DELETE FROM channels WHERE id = ?").bind(channel.id).run();
+  await publishServerChannels(env, channel.server_id);
   return json({ ok: true, channelId: channel.id });
 }
 
@@ -697,6 +773,9 @@ async function postMessage(request: Request, env: Env, user: PublicUser, channel
     payload,
   );
   if (!result.ok) throw new HttpError(400, result.error);
+  if (channelId.startsWith("dm:")) {
+    await env.DB.prepare(`UPDATE dm_threads SET updated_at = ? WHERE id = ?`).bind(Date.now(), channelId).run();
+  }
   return json({ message: result.message satisfies ChatMessage }, 201);
 }
 
@@ -725,6 +804,172 @@ async function openSocket(request: Request, env: Env, user: PublicUser, channelI
   headers.set("x-hall-display-name", user.displayName);
   if (user.avatarUrl) headers.set("x-hall-avatar-url", user.avatarUrl);
   return room(env, channelId).fetch(new Request(request, { headers }));
+}
+
+async function listFriends(env: Env, user: PublicUser): Promise<Response> {
+  const accepted = await env.DB.prepare(
+    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role
+     FROM friends f
+     JOIN users u ON u.id = f.friend_id
+     WHERE f.user_id = ? AND f.status = 'accepted'
+     ORDER BY u.display_name COLLATE NOCASE ASC`,
+  )
+    .bind(user.id)
+    .all();
+  const incoming = await env.DB.prepare(
+    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, f.created_at
+     FROM friends f
+     JOIN users u ON u.id = f.user_id
+     WHERE f.friend_id = ? AND f.status = 'pending'
+     ORDER BY f.created_at DESC`,
+  )
+    .bind(user.id)
+    .all();
+  const outgoing = await env.DB.prepare(
+    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, f.created_at
+     FROM friends f
+     JOIN users u ON u.id = f.friend_id
+     WHERE f.user_id = ? AND f.status = 'pending'
+     ORDER BY f.created_at DESC`,
+  )
+    .bind(user.id)
+    .all();
+  return json({
+    friends: (accepted.results ?? []).map((row) => toPublicUser(row as never)),
+    incoming: (incoming.results ?? []).map((row) => toPublicUser(row as never)),
+    outgoing: (outgoing.results ?? []).map((row) => toPublicUser(row as never)),
+  });
+}
+
+async function requestFriend(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const body = asRecord(await readJson(request, 2_048));
+  const parsed = normalizeUsername(asString(body.username, "Username"));
+  if ("error" in parsed) throw new HttpError(400, parsed.error);
+  if (parsed.username === user.username) throw new HttpError(400, "You cannot friend yourself");
+  const peer = await findUserByUsername(env, parsed.username);
+  if (!peer || peer.id === "system") throw new HttpError(404, "User not found");
+
+  const existing = await env.DB.prepare(
+    `SELECT status FROM friends WHERE user_id = ? AND friend_id = ?`,
+  )
+    .bind(user.id, peer.id)
+    .first<{ status: string }>();
+  if (existing?.status === "accepted") throw new HttpError(409, "Already friends");
+  if (existing?.status === "pending") throw new HttpError(409, "Friend request already sent");
+
+  const reverse = await env.DB.prepare(
+    `SELECT status FROM friends WHERE user_id = ? AND friend_id = ?`,
+  )
+    .bind(peer.id, user.id)
+    .first<{ status: string }>();
+  const now = Date.now();
+  if (reverse?.status === "pending") {
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE friends SET status = 'accepted' WHERE user_id = ? AND friend_id = ?`).bind(peer.id, user.id),
+      env.DB.prepare(
+        `INSERT INTO friends (user_id, friend_id, status, created_at) VALUES (?, ?, 'accepted', ?)
+         ON CONFLICT(user_id, friend_id) DO UPDATE SET status = 'accepted'`,
+      ).bind(user.id, peer.id, now),
+    ]);
+    return json({ ok: true, status: "accepted", user: toPublicUser(peer) });
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO friends (user_id, friend_id, status, created_at) VALUES (?, ?, 'pending', ?)
+     ON CONFLICT(user_id, friend_id) DO UPDATE SET status = 'pending', created_at = excluded.created_at`,
+  )
+    .bind(user.id, peer.id, now)
+    .run();
+  return json({ ok: true, status: "pending", user: toPublicUser(peer) }, 201);
+}
+
+async function respondFriend(request: Request, env: Env, user: PublicUser, peerId: string): Promise<Response> {
+  const body = asRecord(await readJson(request, 1_024));
+  const action = asString(body.action, "action").toLowerCase();
+  if (action !== "accept" && action !== "decline") throw new HttpError(400, "action must be accept or decline");
+  const pending = await env.DB.prepare(
+    `SELECT user_id FROM friends WHERE user_id = ? AND friend_id = ? AND status = 'pending'`,
+  )
+    .bind(peerId, user.id)
+    .first<{ user_id: string }>();
+  if (!pending) throw new HttpError(404, "No friend request from that user");
+  if (action === "decline") {
+    await env.DB.prepare(`DELETE FROM friends WHERE user_id = ? AND friend_id = ?`).bind(peerId, user.id).run();
+    return json({ ok: true, status: "declined" });
+  }
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE friends SET status = 'accepted' WHERE user_id = ? AND friend_id = ?`).bind(peerId, user.id),
+    env.DB.prepare(
+      `INSERT INTO friends (user_id, friend_id, status, created_at) VALUES (?, ?, 'accepted', ?)
+       ON CONFLICT(user_id, friend_id) DO UPDATE SET status = 'accepted'`,
+    ).bind(user.id, peerId, now),
+  ]);
+  return json({ ok: true, status: "accepted" });
+}
+
+async function removeFriend(env: Env, user: PublicUser, peerId: string): Promise<Response> {
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM friends WHERE user_id = ? AND friend_id = ?`).bind(user.id, peerId),
+    env.DB.prepare(`DELETE FROM friends WHERE user_id = ? AND friend_id = ?`).bind(peerId, user.id),
+  ]);
+  return json({ ok: true });
+}
+
+async function listDms(env: Env, user: PublicUser): Promise<Response> {
+  const { results } = await env.DB.prepare(
+    `SELECT t.id, t.updated_at,
+            CASE WHEN t.user_a = ? THEN t.user_b ELSE t.user_a END AS peer_id
+     FROM dm_threads t
+     WHERE t.user_a = ? OR t.user_b = ?
+     ORDER BY t.updated_at DESC`,
+  )
+    .bind(user.id, user.id, user.id)
+    .all<{ id: string; updated_at: number; peer_id: string }>();
+  const threads = [];
+  for (const row of results ?? []) {
+    const peer = await findUserById(env, row.peer_id);
+    if (!peer) continue;
+    threads.push({
+      id: row.id,
+      updatedAt: row.updated_at,
+      user: toPublicUser(peer),
+    });
+  }
+  return json({ threads });
+}
+
+async function openDm(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const body = asRecord(await readJson(request, 2_048));
+  let peerId = typeof body.userId === "string" ? body.userId : "";
+  if (!peerId && body.username !== undefined) {
+    const parsed = normalizeUsername(asString(body.username, "Username"));
+    if ("error" in parsed) throw new HttpError(400, parsed.error);
+    const peer = await findUserByUsername(env, parsed.username);
+    if (!peer) throw new HttpError(404, "User not found");
+    peerId = peer.id;
+  }
+  if (!peerId || peerId === user.id) throw new HttpError(400, "Pick someone else to DM");
+  const peer = await findUserById(env, peerId);
+  if (!peer || peer.id === "system") throw new HttpError(404, "User not found");
+
+  const friendship = await env.DB.prepare(
+    `SELECT status FROM friends WHERE user_id = ? AND friend_id = ? AND status = 'accepted'`,
+  )
+    .bind(user.id, peer.id)
+    .first<{ status: string }>();
+  if (!friendship) throw new HttpError(403, "Add them as a friend before DMing");
+
+  const id = dmThreadId(user.id, peer.id);
+  const [userA, userB] = user.id < peer.id ? [user.id, peer.id] : [peer.id, user.id];
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO dm_threads (id, user_a, user_b, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
+  )
+    .bind(id, userA, userB, now)
+    .run();
+  return json({ thread: { id, updatedAt: now, user: toPublicUser(peer) } });
 }
 
 async function route(request: Request, env: Env, url: URL): Promise<Response> {
@@ -762,6 +1007,18 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
   if (method === "PUT" && pathname === "/api/servers/order") return reorderServers(request, env, user);
   if (method === "POST" && pathname === "/api/join") return joinServer(request, env, user);
 
+  if (method === "GET" && pathname === "/api/friends") return listFriends(env, user);
+  if (method === "POST" && pathname === "/api/friends") return requestFriend(request, env, user);
+  const friendMatch = pathname.match(/^\/api\/friends\/([^/]+)$/);
+  if (friendMatch) {
+    const peerId = decodeURIComponent(friendMatch[1] ?? "");
+    if (method === "POST") return respondFriend(request, env, user, peerId);
+    if (method === "DELETE") return removeFriend(env, user, peerId);
+  }
+
+  if (method === "GET" && pathname === "/api/dms") return listDms(env, user);
+  if (method === "POST" && pathname === "/api/dms") return openDm(request, env, user);
+
   const serverMatch = pathname.match(/^\/api\/servers\/([^/]+)(?:\/([^/]+))?$/);
   if (serverMatch) {
     const serverId = decodeURIComponent(serverMatch[1] ?? "");
@@ -772,6 +1029,7 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     if (action === "channels" && method === "POST") return createChannel(request, env, user, serverId);
     if (action === "channel-order" && method === "PUT") return reorderChannels(request, env, user, serverId);
     if (action === "leave" && method === "POST") return leaveServer(env, user, serverId);
+    if (action === "websocket" && method === "GET") return openServerHub(request, env, user, serverId);
   }
 
   const channelOnly = pathname.match(/^\/api\/channels\/([^/]+)$/);

@@ -82,17 +82,28 @@ const state = {
   socketAbort: null,
   pingTimer: null,
   voice: { active: false, muted: false, channelId: null, peers: [] },
+  home: false,
+  friends: [],
+  incoming: [],
+  outgoing: [],
+  dms: [],
+  dmPeer: null,
+  hubSocket: null,
+  hubAbort: null,
+  hubPing: null,
 };
 
 let socketGeneration = 0;
+let hubGeneration = 0;
 const voiceSession = createVoiceSession({
   getSocket: () => state.socket,
   getMe: () => state.me,
   onState: (next) => {
     state.voice = next;
-    renderVoiceBar();
+    renderVoiceStage();
     renderTopbar();
     renderMembers();
+    if (state.home) renderHomeSidebar();
   },
 });
 
@@ -313,8 +324,79 @@ async function moveServer(serverId, direction) {
   }
 }
 
+function connectHub(serverId) {
+  const generation = ++hubGeneration;
+  closeHub(false);
+  if (!serverId || serverId === "home") return;
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${protocol}//${location.host}/api/servers/${encodeURIComponent(serverId)}/websocket`);
+  const abort = new AbortController();
+  state.hubSocket = socket;
+  state.hubAbort = abort;
+  state.hubPing = setInterval(() => {
+    if (socket.readyState === WebSocket.OPEN) socket.send("ping");
+  }, 25000);
+  socket.addEventListener("message", (event) => {
+    if (generation !== hubGeneration || typeof event.data !== "string" || event.data === "pong") return;
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (payload.type === "channels" && Array.isArray(payload.channels) && state.activeServerId === serverId) {
+      const active = state.activeChannelId;
+      state.channels = payload.channels;
+      renderChannels();
+      if (active && !state.channels.some((channel) => channel.id === active)) {
+        const fallback = state.channels.find((channel) => (channel.kind || "text") !== "voice") || state.channels[0];
+        if (fallback) openChannel(fallback.id);
+      } else {
+        renderTopbar();
+      }
+    }
+  }, { signal: abort.signal });
+  socket.addEventListener("close", () => {
+    if (state.hubPing) {
+      clearInterval(state.hubPing);
+      state.hubPing = null;
+    }
+    if (generation !== hubGeneration) return;
+    setTimeout(() => {
+      if (generation === hubGeneration && state.activeServerId === serverId && !state.home) connectHub(serverId);
+    }, 1200);
+  }, { signal: abort.signal });
+}
+
+function closeHub(bump = true) {
+  if (bump) hubGeneration += 1;
+  if (state.hubPing) {
+    clearInterval(state.hubPing);
+    state.hubPing = null;
+  }
+  if (state.hubAbort) {
+    state.hubAbort.abort();
+    state.hubAbort = null;
+  }
+  const socket = state.hubSocket;
+  state.hubSocket = null;
+  if (!socket) return;
+  try {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close(1000, "switch");
+  } catch {
+    // ignore
+  }
+}
+
 function renderRail() {
   rail.replaceChildren();
+  rail.append(el("button", {
+    class: state.home ? "server-button home-button" : "server-button home-button dim",
+    type: "button",
+    title: "Home · Friends & DMs",
+    "aria-current": state.home ? "true" : null,
+    onclick: () => openHome(),
+  }, [text("⌂")]));
   state.servers.forEach((server, index) => {
     const icon = server.avatarUrl
       ? el("img", { src: server.avatarUrl, alt: "", class: "server-icon" })
@@ -323,7 +405,7 @@ function renderRail() {
       class: "server-button",
       type: "button",
       title: server.name,
-      "aria-current": server.id === state.activeServerId ? "true" : null,
+      "aria-current": !state.home && server.id === state.activeServerId ? "true" : null,
       onclick: async () => {
         await openServer(server.id);
         closeDrawers();
@@ -582,13 +664,25 @@ function renderChannels() {
     list,
     foot,
   );
+  renderVoiceStage();
 }
 
 function renderTopbar() {
   const channel = state.channels.find((item) => item.id === state.activeChannelId);
   const isVoice = channel?.kind === "voice";
-  const title = channel ? `${isVoice ? "🔊" : "#"}${channel.name}` : "Hall";
-  messageInput.placeholder = channel && !isVoice ? `Message #${channel.name}` : "Message";
+  const isDm = state.home && state.activeChannelId?.startsWith("dm:");
+  const title = isDm
+    ? `@${state.dmPeer?.username || "dm"}`
+    : channel
+      ? `${isVoice ? "🔊" : "#"}${channel.name}`
+      : state.home
+        ? "Home"
+        : "Hall";
+  messageInput.placeholder = isDm
+    ? `Message @${state.dmPeer?.username || "friend"}`
+    : channel && !isVoice
+      ? `Message #${channel.name}`
+      : "Message";
   const inThisVoice = state.voice.active && state.voice.channelId === state.activeChannelId;
   const voiceCount = state.voice.peers?.length || 0;
   topbar.replaceChildren(
@@ -602,66 +696,123 @@ function renderTopbar() {
       el("button", {
         class: "ghost menu-button",
         type: "button",
-        "aria-label": "Channels",
+        "aria-label": state.home ? "Friends" : "Channels",
         onclick: () => openDrawer("channels"),
-      }, [text("#")]),
+      }, [text(state.home ? "Home" : "#")]),
     ]),
     el("div", { class: "topbar-title" }, [
       el("h2", {}, [text(title)]),
-      el("p", {}, [text(state.server ? state.server.name : "No server")]),
+      el("p", {}, [text(isDm ? "Direct message" : state.home ? "Friends & DMs" : state.server ? state.server.name : "No server")]),
     ]),
     el("div", { class: "topbar-actions topbar-end" }, [
-      state.activeChannelId
+      state.activeChannelId && (isVoice || isDm)
         ? el("button", {
             class: inThisVoice ? "ghost voice-button on" : "ghost voice-button",
             type: "button",
-            "aria-label": inThisVoice ? "Leave voice" : "Join voice",
+            "aria-label": inThisVoice ? "Leave call" : isDm ? "Start call" : "Join voice",
             onclick: () => toggleVoice(),
-          }, [text(inThisVoice ? `Voice · ${voiceCount}` : "Voice")])
+          }, [text(inThisVoice ? `In call · ${voiceCount}` : isDm ? "Call" : "Voice")])
         : null,
-      el("button", {
-        class: "ghost people-button",
-        type: "button",
-        "aria-label": "Members",
-        onclick: () => openDrawer("members"),
-      }, [text("People")]),
+      state.home
+        ? null
+        : el("button", {
+            class: "ghost people-button",
+            type: "button",
+            "aria-label": "Members",
+            onclick: () => openDrawer("members"),
+          }, [text("People")]),
     ]),
   );
 }
 
-function renderVoiceBar() {
-  let bar = document.querySelector("#voice-bar");
-  if (!state.voice.active) {
-    bar?.remove();
+function renderVoiceStage() {
+  const stage = document.querySelector("#voice-stage");
+  if (!stage) return;
+  const active = state.channels.find((item) => item.id === state.activeChannelId);
+  const voiceChannel = state.channels.find((item) => item.id === state.voice.channelId);
+  const isDmCall = Boolean(state.voice.channelId?.startsWith("dm:") || (state.home && state.activeChannelId?.startsWith("dm:") && state.voice.active));
+  const channel = voiceChannel
+    || active
+    || (isDmCall || (state.home && state.voice.active) ? { name: state.dmPeer?.displayName || "DM", kind: "voice" } : null);
+  const showStage = state.voice.active || active?.kind === "voice";
+  if (!showStage) {
+    stage.hidden = true;
+    stage.replaceChildren();
+    document.querySelector("#voice-dock")?.remove();
     return;
   }
-  if (!bar) {
-    bar = el("div", { id: "voice-bar", class: "voice-bar" });
-    const chat = document.querySelector(".chat");
-    chat?.insertBefore(bar, composer);
-  }
-  const channel = state.channels.find((item) => item.id === state.voice.channelId);
-  const names = (state.voice.peers || [])
-    .map((peer) => `${peer.displayName}${peer.muted ? " (muted)" : ""}`)
-    .join(", ");
-  bar.replaceChildren(
-    el("div", { class: "voice-bar-meta" }, [
-      el("strong", {}, [text(`In voice · #${channel?.name || "channel"}`)]),
-      el("span", {}, [text(names || "Just you")]),
-    ]),
-    el("div", { class: "voice-bar-actions" }, [
+  stage.hidden = false;
+  const peers = state.voice.active ? state.voice.peers || [] : [];
+  const tiles = peers.length
+    ? peers.map((peer) => {
+        const mine = peer.userId === state.me?.id;
+        return el("div", { class: mine ? "voice-tile me" : "voice-tile" }, [
+          avatarNode({ ...peer, id: peer.userId }, "avatar lg"),
+          el("strong", {}, [text(peer.displayName)]),
+          el("span", { class: "voice-tile-status" }, [text(peer.muted ? "Muted" : mine ? "You" : "In call")]),
+        ]);
+      })
+    : [
+        el("div", { class: "voice-tile empty-tile" }, [
+          el("strong", {}, [text(channel?.name || "Voice")]),
+          el("span", { class: "voice-tile-status" }, [text("Nobody here yet — join to talk")]),
+        ]),
+      ];
+  stage.replaceChildren(
+    el("div", { class: "voice-stage-grid" }, tiles),
+    el("div", { class: "voice-controls" }, [
       el("button", {
-        class: state.voice.muted ? "ghost voice-mute on" : "ghost voice-mute",
+        class: state.voice.muted ? "voice-ctrl mute on" : "voice-ctrl mute",
         type: "button",
+        title: state.voice.muted ? "Unmute" : "Mute",
+        disabled: !state.voice.active ? "disabled" : null,
         onclick: () => voiceSession.toggleMute(),
       }, [text(state.voice.muted ? "Unmute" : "Mute")]),
       el("button", {
-        class: "ghost",
+        class: "voice-ctrl join",
         type: "button",
+        onclick: () => toggleVoice(),
+      }, [text(state.voice.active ? "Connected" : "Join")]),
+      el("button", {
+        class: "voice-ctrl hangup",
+        type: "button",
+        title: "Disconnect",
+        disabled: !state.voice.active ? "disabled" : null,
         onclick: () => voiceSession.leave(),
       }, [text("Leave")]),
     ]),
   );
+
+  let dock = document.querySelector("#voice-dock");
+  if (state.voice.active) {
+    if (!dock) {
+      dock = el("div", { id: "voice-dock", class: "voice-dock" });
+      document.querySelector("#channels")?.append(dock);
+    }
+    const label = state.voice.channelId?.startsWith("dm:")
+      ? `Call · ${state.dmPeer?.displayName || "DM"}`
+      : `Voice · ${channel?.name || "channel"}`;
+    dock.replaceChildren(
+      el("div", { class: "voice-dock-meta" }, [
+        el("strong", {}, [text("Voice Connected")]),
+        el("span", {}, [text(label)]),
+      ]),
+      el("div", { class: "voice-dock-actions" }, [
+        el("button", {
+          class: "ghost",
+          type: "button",
+          onclick: () => voiceSession.toggleMute(),
+        }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+        el("button", {
+          class: "ghost hangup-mini",
+          type: "button",
+          onclick: () => voiceSession.leave(),
+        }, [text("Hang up")]),
+      ]),
+    );
+  } else {
+    dock?.remove();
+  }
 }
 
 async function toggleVoice() {
@@ -846,6 +997,9 @@ function nearBottom(node) {
 }
 
 async function openServer(serverId) {
+  state.home = false;
+  state.dmPeer = null;
+  membersEl.hidden = false;
   const detail = await api(`/api/servers/${encodeURIComponent(serverId)}`);
   state.server = detail.server;
   state.channels = detail.channels;
@@ -855,8 +1009,10 @@ async function openServer(serverId) {
   renderRail();
   renderChannels();
   renderMembers();
+  connectHub(serverId);
   const keep =
     detail.channels.find((channel) => channel.id === state.activeChannelId) ??
+    detail.channels.find((channel) => (channel.kind || "text") !== "voice") ??
     detail.channels[0];
   if (keep) await openChannel(keep.id);
   else {
@@ -866,6 +1022,191 @@ async function openServer(serverId) {
     renderMessages(true);
     closeSocket();
   }
+}
+
+async function refreshSocial() {
+  const [friendsBody, dmsBody] = await Promise.all([
+    api("/api/friends"),
+    api("/api/dms"),
+  ]);
+  state.friends = friendsBody.friends || [];
+  state.incoming = friendsBody.incoming || [];
+  state.outgoing = friendsBody.outgoing || [];
+  state.dms = dmsBody.threads || [];
+}
+
+async function openHome() {
+  if (state.voice.active && !state.voice.channelId?.startsWith("dm:")) {
+    await voiceSession.leave();
+  }
+  state.home = true;
+  state.server = null;
+  state.channels = [];
+  state.members = [];
+  state.activeServerId = "home";
+  state.activeChannelId = null;
+  state.online = new Map();
+  closeHub();
+  closeSocket();
+  membersEl.hidden = true;
+  await refreshSocial();
+  renderRail();
+  renderHomeSidebar();
+  renderTopbar();
+  renderVoiceStage();
+  if (state.dms[0]) await openDmThread(state.dms[0]);
+  else {
+    state.dmPeer = null;
+    composer.hidden = true;
+    transcript.replaceChildren(
+      el("div", { class: "empty" }, [
+        el("h2", {}, [text("Friends & DMs")]),
+        el("p", {}, [text("Add friends, then message them here. You can also start a voice call in a DM.")]),
+      ]),
+    );
+  }
+}
+
+function renderHomeSidebar() {
+  const list = el("ul", { class: "channel-list dm-list" });
+  list.append(el("li", { class: "channel-section" }, [text("Friends")]));
+  list.append(el("li", {}, [
+    el("button", {
+      class: "channel-open",
+      type: "button",
+      onclick: () => openAddFriend(),
+    }, [text("Add friend")]),
+  ]));
+  for (const req of state.incoming) {
+    list.append(el("li", { class: "friend-request" }, [
+      el("span", { class: "member-name" }, [text(req.displayName)]),
+      el("button", {
+        class: "ghost",
+        type: "button",
+        onclick: async () => {
+          await api(`/api/friends/${encodeURIComponent(req.id)}`, {
+            method: "POST",
+            body: JSON.stringify({ action: "accept" }),
+          });
+          await refreshSocial();
+          renderHomeSidebar();
+        },
+      }, [text("Accept")]),
+      el("button", {
+        class: "ghost",
+        type: "button",
+        onclick: async () => {
+          await api(`/api/friends/${encodeURIComponent(req.id)}`, {
+            method: "POST",
+            body: JSON.stringify({ action: "decline" }),
+          });
+          await refreshSocial();
+          renderHomeSidebar();
+        },
+      }, [text("Decline")]),
+    ]));
+  }
+  for (const friend of state.friends) {
+    list.append(el("li", { class: "channel-row" }, [
+      el("button", {
+        class: "channel-open",
+        type: "button",
+        onclick: () => openDmWithUser(friend),
+      }, [
+        avatarNode(friend, "avatar tiny"),
+        el("span", { class: "member-name" }, [text(friend.displayName)]),
+      ]),
+    ]));
+  }
+  list.append(el("li", { class: "channel-section" }, [text("Direct messages")]));
+  for (const thread of state.dms) {
+    list.append(el("li", { class: "channel-row" }, [
+      el("button", {
+        class: "channel-open",
+        type: "button",
+        "aria-current": state.activeChannelId === thread.id ? "true" : null,
+        onclick: () => openDmThread(thread),
+      }, [
+        avatarNode(thread.user, "avatar tiny"),
+        el("span", { class: "member-name" }, [text(thread.user.displayName)]),
+      ]),
+    ]));
+  }
+  channelsEl.replaceChildren(
+    el("div", { class: "side-head" }, [
+      el("div", { class: "side-head-title" }, [el("h2", {}, [text("Home")])]),
+      el("button", {
+        class: "ghost drawer-close",
+        type: "button",
+        onclick: closeDrawers,
+      }, [text("Close")]),
+    ]),
+    list,
+    el("div", { class: "side-foot" }, [
+      el("div", { class: "me-row" }, [
+        avatarNode(state.me, "avatar sm"),
+        el("div", { class: "me-meta" }, [
+          el("strong", {}, [text(state.me.displayName)]),
+          el("span", {}, [text(`@${state.me.username}`)]),
+        ]),
+        el("div", { class: "me-actions" }, [
+          el("button", { class: "text-button", type: "button", onclick: () => openProfile(state.me.username, true) }, [text("Profile")]),
+          el("button", { class: "text-button", type: "button", onclick: logout }, [text("Log out")]),
+        ]),
+      ]),
+    ]),
+  );
+}
+
+function openAddFriend() {
+  openModal("Add friend", (form) => {
+    const username = el("input", { name: "username", maxlength: "33", placeholder: "@username", required: true });
+    const error = el("p", { class: "form-error", role: "alert" });
+    form.append(
+      el("label", {}, [text("Username"), username]),
+      el("div", { class: "actions" }, [el("button", { type: "submit" }, [text("Send request")])]),
+      error,
+    );
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      try {
+        await api("/api/friends", { method: "POST", body: JSON.stringify({ username: username.value }) });
+        modal.close();
+        await refreshSocial();
+        renderHomeSidebar();
+      } catch (err) {
+        error.textContent = err.message;
+      }
+    };
+  });
+}
+
+async function openDmWithUser(user) {
+  const data = await api("/api/dms", {
+    method: "POST",
+    body: JSON.stringify({ userId: user.id }),
+  });
+  await refreshSocial();
+  await openDmThread(data.thread);
+}
+
+async function openDmThread(thread) {
+  state.home = true;
+  state.dmPeer = thread.user;
+  state.activeChannelId = thread.id;
+  state.server = { id: "home", name: "Home", isLobby: false, canManage: false };
+  membersEl.hidden = true;
+  renderHomeSidebar();
+  renderTopbar();
+  composer.hidden = false;
+  messageInput.placeholder = `Message @${thread.user.username}`;
+  const data = await api(`/api/channels/${encodeURIComponent(thread.id)}/messages?limit=50`);
+  state.messages = data.messages;
+  state.hasMore = data.messages.length === 50;
+  renderMessages(true);
+  renderVoiceStage();
+  connect(thread.id);
 }
 
 async function openChannel(channelId) {
@@ -884,18 +1225,14 @@ async function openChannel(channelId) {
     state.hasMore = false;
     transcript.replaceChildren(
       el("div", { class: "empty voice-empty" }, [
-        el("h2", {}, [text(`🔊 ${channel.name}`)]),
-        el("p", {}, [text("Voice channel — join to talk. Chat stays in text channels.")]),
-        el("button", {
-          class: "primary",
-          type: "button",
-          onclick: () => toggleVoice(),
-        }, [text(state.voice.active && state.voice.channelId === channelId ? "You're in voice" : "Join voice")]),
+        el("p", {}, [text("Voice channel — use the stage above to join. Text chat lives in text channels.")]),
       ]),
     );
+    renderVoiceStage();
     connect(channelId);
     return;
   }
+  renderVoiceStage();
   const data = await api(`/api/channels/${encodeURIComponent(channelId)}/messages?limit=50`);
   state.messages = data.messages;
   state.hasMore = data.messages.length === 50;
@@ -1393,6 +1730,10 @@ async function logout() {
   state.online = new Map();
   state.activeServerId = null;
   state.activeChannelId = null;
+  state.home = false;
+  state.friends = [];
+  state.dms = [];
+  closeHub();
   setAuthMode("login");
   showAuth();
 }

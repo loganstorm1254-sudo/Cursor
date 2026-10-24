@@ -34,6 +34,10 @@
     {
       "binding": "AVATARS",
       "bucket_name": "hall-avatars"
+    },
+    {
+      "binding": "PASSWORDS",
+      "bucket_name": "hall-passwords"
     }
   ],
   "durable_objects": {

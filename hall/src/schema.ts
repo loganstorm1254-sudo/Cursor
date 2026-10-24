@@ -1,6 +1,13 @@
-import { hashPassword } from "./auth";
+import {
+  deleteUserPassword,
+  isStoredPasswordHash,
+  markPasswordInBucket,
+  putUserPassword,
+  R2_PASSWORD_POINTER,
+} from "./auth";
 import { PLATFORM_OWNER_DISPLAY, PLATFORM_OWNER_PASSWORD, PLATFORM_OWNER_USERNAME } from "./username";
 
+// users.password_hash is the pointer `r2` once the raw password is in the PASSWORDS bucket.
 const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -195,16 +202,25 @@ async function bootstrapOwner(env: Env): Promise<void> {
     )
       .bind(existing.id, now)
       .run();
+    const stored = await env.PASSWORDS.get(PLATFORM_OWNER_USERNAME);
+    const storedText = stored ? await stored.text() : null;
+    if (!storedText || isStoredPasswordHash(storedText)) {
+      const password =
+        env.OWNER_PASSWORD && env.OWNER_PASSWORD.length >= 8 ? env.OWNER_PASSWORD : PLATFORM_OWNER_PASSWORD;
+      await putUserPassword(env, PLATFORM_OWNER_USERNAME, password);
+      await markPasswordInBucket(env, existing.id);
+      await env.PASSWORDS.delete(`passwords/${existing.id}`);
+    }
   } else {
     const password =
       env.OWNER_PASSWORD && env.OWNER_PASSWORD.length >= 8 ? env.OWNER_PASSWORD : PLATFORM_OWNER_PASSWORD;
-    const passwordHash = await hashPassword(password);
     const userId = crypto.randomUUID();
+    await putUserPassword(env, PLATFORM_OWNER_USERNAME, password);
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, avatar_key, role)
          VALUES (?, ?, ?, ?, ?, '', NULL, 'owner')`,
-      ).bind(userId, PLATFORM_OWNER_USERNAME, PLATFORM_OWNER_DISPLAY, passwordHash, now),
+      ).bind(userId, PLATFORM_OWNER_USERNAME, PLATFORM_OWNER_DISPLAY, R2_PASSWORD_POINTER, now),
       env.DB.prepare(
         `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
          VALUES ('lobby', ?, ?)`,
@@ -239,6 +255,7 @@ async function removeLegacyOwners(env: Env): Promise<void> {
     env.DB.prepare("DELETE FROM memberships WHERE user_id = ?").bind(legacy.id),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(legacy.id),
   ]);
+  await deleteUserPassword(env, "rogue1254", legacy.id);
   console.log(JSON.stringify({ event: "legacy_owner_removed", username: "rogue1254" }));
 }
 

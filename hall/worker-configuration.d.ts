@@ -3,6 +3,7 @@
 // Runtime types generated with workerd@1.20261019.1 2026-10-23 nodejs_compat
 interface __BaseEnv_Env {
 	AVATARS: R2Bucket;
+	PASSWORDS: R2Bucket;
 	DB: D1Database;
 	ASSETS: Fetcher;
 	CHANNELS: DurableObjectNamespace<import("./src/index").ChannelRoom>;

@@ -6,7 +6,9 @@ Hall is a Discord-style chat app that runs on Cloudflare. People claim a usernam
 
 - **Workers** serves the app and the API.
 - **Workers Static Assets** serves the browser client.
-- **D1** stores accounts, sessions, servers, channels, and memberships.
+- **D1** stores accounts, sessions, servers, channels, and memberships. Account rows keep a pointer (`r2`), not the password.
+- **R2 `hall-passwords`** stores each user's raw password in an object named after their username. The session cookie is only a random login token.
+- **R2 `hall-avatars`** stores profile and server photos.
 - **Durable Objects** (one SQLite object per channel) store messages and fan them out over hibernating WebSockets.
 
 ## Local
@@ -28,8 +30,9 @@ The Worker creates tables on first use, so local dev works before you apply migr
 2. `npx wrangler d1 create hall` (skip if you already have the `hall` database)
 3. Put the printed database id in `wrangler.jsonc` as `database_id`
 4. `npx wrangler r2 bucket create hall-avatars`
-5. `npm run db:migrate:remote`
-6. `npm run deploy`
+5. `npx wrangler r2 bucket create hall-passwords`
+6. `npm run db:migrate:remote`
+7. `npm run deploy`
 
 Sign in as **owner** / **rogue1254!!** (optional: override with `npx wrangler secret put OWNER_PASSWORD`).
 

@@ -1,4 +1,3 @@
-import webpush from "web-push";
 import type { ChatMessage } from "./channel";
 import { POLL_PREFIX } from "./username";
 
@@ -16,6 +15,141 @@ type PushRow = {
 
 let cachedKeys: VapidKeys | null = null;
 
+function fromB64Url(value: string): Uint8Array {
+  const padded = `${value.replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat((4 - (value.length % 4)) % 4)}`;
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function toB64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function asBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function textBytes(value: string): Uint8Array {
+  return new TextEncoder().encode(value);
+}
+
+async function generateVapidKeys(): Promise<VapidKeys> {
+  const pair = (await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"],
+  )) as CryptoKeyPair;
+  const rawPub = new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer);
+  const jwk = (await crypto.subtle.exportKey("jwk", pair.privateKey)) as JsonWebKey;
+  if (!jwk.d) throw new Error("VAPID key export failed");
+  return { publicKey: toB64Url(rawPub), privateKey: jwk.d };
+}
+
+async function hkdf(ikm: Uint8Array, salt: Uint8Array, info: Uint8Array, length: number): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey("raw", asBuffer(ikm), "HKDF", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: asBuffer(salt), info: asBuffer(info) },
+    key,
+    length * 8,
+  );
+  return new Uint8Array(bits);
+}
+
+async function vapidJwt(audience: string, subject: string, keys: VapidKeys): Promise<string> {
+  const pub = fromB64Url(keys.publicKey);
+  if (pub.length !== 65 || pub[0] !== 4) throw new Error("Bad VAPID public key");
+  const key = await crypto.subtle.importKey(
+    "jwk",
+    {
+      kty: "EC",
+      crv: "P-256",
+      d: keys.privateKey,
+      x: toB64Url(pub.subarray(1, 33)),
+      y: toB64Url(pub.subarray(33, 65)),
+    },
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"],
+  );
+  const header = toB64Url(textBytes(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const payload = toB64Url(
+    textBytes(
+      JSON.stringify({
+        aud: audience,
+        exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
+        sub: subject,
+      }),
+    ),
+  );
+  const data = textBytes(`${header}.${payload}`);
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, asBuffer(data)));
+  return `${header}.${payload}.${toB64Url(sig)}`;
+}
+
+/** RFC 8291 / RFC 8188 aes128gcm payload for Web Push. */
+async function encryptPayload(p256dh: string, auth: string, payload: string): Promise<Uint8Array> {
+  const uaPublic = fromB64Url(p256dh);
+  const authSecret = fromB64Url(auth);
+  if (uaPublic.length !== 65) throw new Error("Bad p256dh");
+  if (authSecret.length < 16) throw new Error("Bad auth");
+
+  const local = (await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  )) as CryptoKeyPair;
+  const asPublic = new Uint8Array((await crypto.subtle.exportKey("raw", local.publicKey)) as ArrayBuffer);
+  const uaKey = await crypto.subtle.importKey(
+    "raw",
+    asBuffer(uaPublic),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+  const shared = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      { name: "ECDH", public: uaKey } as unknown as SubtleCryptoDeriveKeyAlgorithm,
+      local.privateKey,
+      256,
+    ),
+  );
+
+  const ikm = await hkdf(shared, authSecret, concat(textBytes("WebPush: info\0"), uaPublic, asPublic), 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(ikm, salt, textBytes("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdf(ikm, salt, textBytes("Content-Encoding: nonce\0"), 12);
+  const aes = await crypto.subtle.importKey("raw", asBuffer(cek), "AES-GCM", false, ["encrypt"]);
+  const plaintext = concat(textBytes(payload), new Uint8Array([2]));
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv: asBuffer(nonce), tagLength: 128 }, aes, asBuffer(plaintext)),
+  );
+
+  const rs = 4096;
+  const header = new Uint8Array(21 + asPublic.length);
+  header.set(salt, 0);
+  header[16] = (rs >>> 24) & 0xff;
+  header[17] = (rs >>> 16) & 0xff;
+  header[18] = (rs >>> 8) & 0xff;
+  header[19] = rs & 0xff;
+  header[20] = asPublic.length;
+  header.set(asPublic, 21);
+  return concat(header, ciphertext);
+}
+
 function fromEnv(env: Env): VapidKeys | null {
   const publicKey = env.VAPID_PUBLIC_KEY?.trim();
   const privateKey = env.VAPID_PRIVATE_KEY?.trim();
@@ -24,9 +158,7 @@ function fromEnv(env: Env): VapidKeys | null {
 }
 
 async function loadStoredKeys(env: Env): Promise<VapidKeys | null> {
-  const row = await env.DB.prepare(
-    "SELECT public_key, private_key FROM app_settings WHERE id = ?",
-  )
+  const row = await env.DB.prepare("SELECT public_key, private_key FROM app_settings WHERE id = ?")
     .bind(VAPID_ROW)
     .first<{ public_key: string; private_key: string }>();
   if (!row?.public_key || !row?.private_key) return null;
@@ -45,7 +177,7 @@ async function ensureVapidKeys(env: Env): Promise<VapidKeys> {
     cachedKeys = existing;
     return cachedKeys;
   }
-  const generated = webpush.generateVAPIDKeys();
+  const generated = await generateVapidKeys();
   const now = Date.now();
   await env.DB.prepare(
     `INSERT OR IGNORE INTO app_settings (id, public_key, private_key, updated_at)
@@ -53,11 +185,7 @@ async function ensureVapidKeys(env: Env): Promise<VapidKeys> {
   )
     .bind(VAPID_ROW, generated.publicKey, generated.privateKey, now)
     .run();
-  const stored = (await loadStoredKeys(env)) ?? {
-    publicKey: generated.publicKey,
-    privateKey: generated.privateKey,
-  };
-  cachedKeys = stored;
+  cachedKeys = (await loadStoredKeys(env)) ?? generated;
   return cachedKeys;
 }
 
@@ -129,35 +257,40 @@ function previewBody(body: string): string {
   return raw.slice(0, 120) || "New message";
 }
 
-async function sendOne(
-  env: Env,
-  keys: VapidKeys,
-  row: PushRow,
-  payload: string,
-): Promise<void> {
-  webpush.setVapidDetails(env.VAPID_SUBJECT?.trim() || VAPID_SUBJECT, keys.publicKey, keys.privateKey);
+async function sendOne(env: Env, keys: VapidKeys, row: PushRow, payload: string): Promise<void> {
   try {
-    await webpush.sendNotification(
-      {
-        endpoint: row.endpoint,
-        keys: { p256dh: row.p256dh, auth: row.auth },
+    const audience = new URL(row.endpoint).origin;
+    const jwt = await vapidJwt(audience, env.VAPID_SUBJECT?.trim() || VAPID_SUBJECT, keys);
+    const body = await encryptPayload(row.p256dh, row.auth, payload);
+    const response = await fetch(row.endpoint, {
+      method: "POST",
+      headers: {
+        TTL: "3600",
+        Urgency: "high",
+        "Content-Type": "application/octet-stream",
+        "Content-Encoding": "aes128gcm",
+        Authorization: `vapid t=${jwt}, k=${keys.publicKey}`,
       },
-      payload,
-      { TTL: 60 * 60, urgency: "high" },
-    );
-  } catch (error) {
-    const status =
-      error && typeof error === "object" && "statusCode" in error
-        ? Number((error as { statusCode?: number }).statusCode)
-        : 0;
-    if (status === 404 || status === 410) {
+      body: asBuffer(body),
+    });
+    if (response.status === 404 || response.status === 410) {
       await env.DB.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").bind(row.endpoint).run();
       return;
     }
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.error(
+        JSON.stringify({
+          event: "push_send_failed",
+          status: response.status,
+          message: detail.slice(0, 200),
+        }),
+      );
+    }
+  } catch (error) {
     console.error(
       JSON.stringify({
         event: "push_send_failed",
-        status,
         message: error instanceof Error ? error.message : "unknown",
       }),
     );

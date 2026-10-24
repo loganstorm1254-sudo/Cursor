@@ -14,12 +14,8 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
     "@types/node": "^26.6.5",
-    "@types/web-push": "^3.6.4",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0",
     "wrangler": "^4.45.0"
-  },
-  "dependencies": {
-    "web-push": "^3.6.7"
   }
 }

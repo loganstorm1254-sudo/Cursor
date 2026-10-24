@@ -778,13 +778,17 @@ function canDeleteMessage(message) {
   return canManageActiveServer();
 }
 
+function canAssignBeta() {
+  return Boolean(state.me?.isPlatformOwner || state.me?.username === "owner");
+}
+
 function betaBadge(user) {
   if (!user?.isBetaTester) return null;
   return el("span", { class: "beta-badge", title: "Beta tester" }, [text("β")]);
 }
 
 function betaCheckbox(user) {
-  if (!state.me?.isPlatformOwner || !user?.username) return betaBadge(user);
+  if (!canAssignBeta() || !user?.username) return betaBadge(user);
   const box = el("input", {
     type: "checkbox",
     class: "beta-check",
@@ -797,8 +801,8 @@ function betaCheckbox(user) {
     },
   });
   return el("label", {
-    class: "beta-check-wrap",
-    title: "Beta tester",
+    class: user.isBetaTester ? "beta-check-wrap on" : "beta-check-wrap",
+    title: "Mark as beta tester",
     onclick: (event) => event.stopPropagation(),
   }, [box, text("β")]);
 }
@@ -1921,7 +1925,8 @@ function renderMessages(stick) {
           class: "author linkish",
           type: "button",
           onclick: () => openProfile(message.username, message.userId === state.me?.id),
-        }, displayNameNodes({ ...message, isBetaTester: isBeta })),
+        }, [text(message.displayName)]),
+        betaCheckbox({ ...message, isBetaTester: isBeta }),
         el("span", { class: "handle" }, [text(`@${message.username}`)]),
         el("time", { class: "time", datetime: formatTimeIso(message.createdAt) }, [text(formatTime(message.createdAt))]),
       ]);

@@ -324,7 +324,23 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
 }
 .invite .ghost { justify-self: start; }
 
-.chat { background: var(--chat); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; }
+.chat {
+  background: var(--chat);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.chat > .topbar,
+.chat > .voice-stage,
+.chat > .voice-mini,
+.chat > .composer {
+  flex: none;
+}
+.chat > .transcript {
+  flex: 1 1 auto;
+}
 .topbar p { margin: 0; color: var(--faint); font-size: 13px; font-weight: 400; }
 .topbar-actions { display: none; }
 .menu-button, .people-button, .servers-button { display: none; }
@@ -344,15 +360,39 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
 }
 .topbar-title.linkish:hover { background: rgba(246, 241, 231, 0.05); }
 .mobile-nav { display: none; }
-.transcript { overflow: auto; padding: 18px 16px 8px; }
-.message { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; padding: 2px 8px; }
+.transcript {
+  overflow: auto;
+  overflow-x: hidden;
+  padding: 18px 16px 8px;
+  min-width: 0;
+  min-height: 0;
+}
+.message {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 12px;
+  padding: 2px 8px;
+  min-width: 0;
+}
 .message.grouped { grid-template-columns: 40px minmax(0, 1fr); padding-top: 1px; }
-.message header { display: flex; gap: 8px; align-items: baseline; }
+.message header { display: flex; gap: 8px; align-items: baseline; min-width: 0; flex-wrap: wrap; }
+.message > div { min-width: 0; overflow: hidden; }
 .author { font-weight: 600; }
 .handle { color: var(--faint); font-size: 12px; }
 .time { color: var(--faint); font-size: 12px; }
-.body { margin: 2px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
-.body a { color: var(--brass); }
+.body {
+  margin: 2px 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.45;
+  max-width: 100%;
+}
+.body a {
+  color: var(--brass);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
 .avatar {
   width: 40px;
   height: 40px;
@@ -420,11 +460,53 @@ button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
 .voice-stage {
   position: relative;
   min-height: 220px;
+  max-height: min(48vh, 520px);
+  overflow: auto;
   padding: 18px 16px 72px;
   border-bottom: 1px solid var(--line);
   background:
     radial-gradient(700px 240px at 50% 0%, rgba(226, 177, 90, 0.12), transparent 70%),
     #171820;
+}
+.voice-mini {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, #0a3d2a 55%, var(--chat));
+  min-width: 0;
+}
+.voice-mini[hidden] { display: none !important; }
+.voice-mini-meta {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.voice-mini-meta strong {
+  color: var(--good);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-mini-meta span {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-mini-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.voice-mini-actions .ghost {
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 12px;
 }
 .voice-stage-grid {
   display: grid;
@@ -630,7 +712,11 @@ video.voice-screen-sink {
   justify-content: space-between;
   gap: 8px;
   align-items: center;
+  flex: none;
+  order: 98;
 }
+.channels .side-foot { order: 99; }
+.channels .channel-list, .channels .dm-list { order: 1; flex: 1; min-height: 0; }
 .voice-dock-meta { display: grid; gap: 2px; min-width: 0; }
 .voice-dock-meta strong { color: var(--good); font-size: 12px; }
 .voice-dock-meta span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -995,6 +1081,9 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
   }
   .avatar { width: 34px; height: 34px; border-radius: 12px; }
   .handle { display: none; }
+  .chat {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  }
   .composer {
     gap: 8px;
     padding: 10px 10px 10px;
@@ -1004,6 +1093,9 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
     border-radius: 14px;
   }
   .side-foot { padding-bottom: 12px; }
+  .voice-stage {
+    max-height: min(36vh, 280px);
+  }
   .mobile-nav {
     display: grid;
     grid-template-columns: repeat(4, 1fr);

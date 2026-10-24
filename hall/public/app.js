@@ -118,7 +118,7 @@ function scheduleVoiceUi(full = false) {
     const fullPass = state._voiceUiFull;
     state._voiceUiFull = false;
     try {
-      renderVoiceStage();
+      // Channels/home first — they replaceChildren and would wipe the voice dock.
       if (fullPass) {
         renderTopbar();
         renderMembers();
@@ -127,6 +127,7 @@ function scheduleVoiceUi(full = false) {
       } else {
         renderTopbar();
       }
+      renderVoiceStage();
     } catch (error) {
       console.error(JSON.stringify({ event: "voice_ui_render_failed", message: error?.message || "unknown" }));
     }
@@ -1131,20 +1132,111 @@ function renderVoiceStage() {
   }
 }
 
+function voiceCallLabel() {
+  if (state.voice.channelId?.startsWith("dm:")) {
+    return `Call · ${state.dmPeer?.displayName || "DM"}`;
+  }
+  const voiceChannel = state.channels.find((item) => item.id === state.voice.channelId);
+  return `Voice · ${voiceChannel?.name || "channel"}`;
+}
+
+function placeVoiceDock(dock) {
+  const channels = document.querySelector("#channels");
+  if (!channels) return;
+  const foot = channels.querySelector(".side-foot");
+  if (foot) channels.insertBefore(dock, foot);
+  else channels.append(dock);
+}
+
+function renderVoiceChrome(minimized) {
+  const label = voiceCallLabel();
+  const title = state.voice.sharing ? "Sharing screen" : "Voice Connected";
+  const detail = state.voice.sharing ? `${label} · 1080p60` : label;
+
+  let dock = document.querySelector("#voice-dock");
+  if (state.voice.active) {
+    if (!dock) {
+      dock = el("div", { id: "voice-dock", class: "voice-dock" });
+      placeVoiceDock(dock);
+    } else if (!dock.isConnected) {
+      placeVoiceDock(dock);
+    }
+    dock.replaceChildren(
+      el("div", { class: "voice-dock-meta" }, [
+        el("strong", {}, [text(title)]),
+        el("span", {}, [text(detail)]),
+      ]),
+      el("div", { class: "voice-dock-actions" }, [
+        el("button", {
+          class: "ghost",
+          type: "button",
+          onclick: () => voiceSession.toggleMute(),
+        }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+        el("button", {
+          class: state.voice.sharing ? "ghost share-mini on" : "ghost share-mini",
+          type: "button",
+          onclick: () => toggleScreenShare(),
+        }, [text(state.voice.sharing ? "Stop share" : "Share")]),
+        el("button", {
+          class: "ghost hangup-mini",
+          type: "button",
+          onclick: () => voiceSession.leave(),
+        }, [text("Hang up")]),
+      ]),
+    );
+  } else {
+    dock?.remove();
+  }
+
+  const mini = document.querySelector("#voice-mini");
+  if (!mini) return;
+  if (state.voice.active && minimized) {
+    mini.hidden = false;
+    mini.replaceChildren(
+      el("div", { class: "voice-mini-meta" }, [
+        el("strong", {}, [text(title)]),
+        el("span", {}, [text(detail)]),
+      ]),
+      el("div", { class: "voice-mini-actions" }, [
+        el("button", {
+          class: "ghost",
+          type: "button",
+          onclick: () => voiceSession.toggleMute(),
+        }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+        el("button", {
+          class: "ghost hangup-mini",
+          type: "button",
+          onclick: () => voiceSession.leave(),
+        }, [text("Leave")]),
+      ]),
+    );
+  } else {
+    mini.hidden = true;
+    mini.replaceChildren();
+  }
+}
+
 function renderVoiceStageInner(stage) {
   const active = state.channels.find((item) => item.id === state.activeChannelId);
   const voiceChannel = state.channels.find((item) => item.id === state.voice.channelId);
-  const isDmCall = Boolean(state.voice.channelId?.startsWith("dm:") || (state.home && state.activeChannelId?.startsWith("dm:") && state.voice.active));
+  const viewingOwnCall = Boolean(
+    state.voice.active &&
+      (state.voice.channelId === state.activeChannelId ||
+        (state.home && state.voice.channelId?.startsWith("dm:") && state.activeChannelId?.startsWith("dm:"))),
+  );
+  // Full stage only on the VC / DM call you’re in. Text chats keep a minimized bar + profile dock.
+  const showStage = Boolean(active?.kind === "voice" || viewingOwnCall);
   const channel = voiceChannel
     || active
-    || (isDmCall || (state.home && state.voice.active) ? { name: state.dmPeer?.displayName || "DM", kind: "voice" } : null);
-  const showStage = state.voice.active || active?.kind === "voice";
+    || (state.voice.active ? { name: state.dmPeer?.displayName || "Voice", kind: "voice" } : null);
+
   if (!showStage) {
     stage.hidden = true;
     stage.replaceChildren();
-    document.querySelector("#voice-dock")?.remove();
+    renderVoiceChrome(true);
     return;
   }
+
   stage.hidden = false;
   const rosterChannelId = state.voice.active ? state.voice.channelId : state.activeChannelId;
   const peers = voiceRosterFor(rosterChannelId);
@@ -1189,41 +1281,7 @@ function renderVoiceStageInner(stage) {
     ]),
   );
 
-  let dock = document.querySelector("#voice-dock");
-  if (state.voice.active) {
-    if (!dock) {
-      dock = el("div", { id: "voice-dock", class: "voice-dock" });
-      document.querySelector("#channels")?.append(dock);
-    }
-    const label = state.voice.channelId?.startsWith("dm:")
-      ? `Call · ${state.dmPeer?.displayName || "DM"}`
-      : `Voice · ${channel?.name || "channel"}`;
-    dock.replaceChildren(
-      el("div", { class: "voice-dock-meta" }, [
-        el("strong", {}, [text(state.voice.sharing ? "Sharing screen" : "Voice Connected")]),
-        el("span", {}, [text(state.voice.sharing ? `${label} · 1080p60` : label)]),
-      ]),
-      el("div", { class: "voice-dock-actions" }, [
-        el("button", {
-          class: "ghost",
-          type: "button",
-          onclick: () => voiceSession.toggleMute(),
-        }, [text(state.voice.muted ? "Unmute" : "Mute")]),
-        el("button", {
-          class: state.voice.sharing ? "ghost share-mini on" : "ghost share-mini",
-          type: "button",
-          onclick: () => toggleScreenShare(),
-        }, [text(state.voice.sharing ? "Stop share" : "Share")]),
-        el("button", {
-          class: "ghost hangup-mini",
-          type: "button",
-          onclick: () => voiceSession.leave(),
-        }, [text("Hang up")]),
-      ]),
-    );
-  } else {
-    dock?.remove();
-  }
+  renderVoiceChrome(false);
 }
 
 function releaseVoiceSocket() {

@@ -1,4 +1,4 @@
-/* Hall — SW for install + notification clicks. */
+/* Hall — SW for install + Web Push + notification clicks. v2 */
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
 });
@@ -9,6 +9,29 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   event.respondWith(fetch(event.request));
+});
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    try {
+      data = { body: event.data?.text() || "New message" };
+    } catch {
+      data = {};
+    }
+  }
+  const title = data.title || "Hall";
+  const options = {
+    body: data.body || "New message",
+    tag: data.tag || "hall",
+    icon: data.icon || "/icons/icon-192.png",
+    badge: data.badge || "/icons/icon-192.png",
+    renotify: Boolean(data.renotify),
+    data: data.data || { url: "/" },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener("notificationclick", (event) => {

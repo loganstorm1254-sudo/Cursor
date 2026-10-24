@@ -277,14 +277,76 @@ function isPhoneClient() {
 }
 
 let notificationPromptArmed = false;
+let pushSubscribeInFlight = null;
+
+function urlBase64ToUint8Array(base64url) {
+  const padded = `${base64url}${"=".repeat((4 - (base64url.length % 4)) % 4)}`;
+  const binary = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function ensureServiceWorker() {
+  if (!("serviceWorker" in navigator)) return null;
+  try {
+    const existing = await navigator.serviceWorker.getRegistration();
+    if (existing) return existing;
+    return await navigator.serviceWorker.register("/sw.js");
+  } catch {
+    return null;
+  }
+}
+
+async function subscribeHallPush() {
+  if (!state.me) return false;
+  if (!("Notification" in window) || !("PushManager" in window)) return false;
+  if (Notification.permission !== "granted") return false;
+  if (pushSubscribeInFlight) return pushSubscribeInFlight;
+  pushSubscribeInFlight = (async () => {
+    try {
+      const reg = await ensureServiceWorker();
+      if (!reg) return false;
+      await navigator.serviceWorker.ready;
+      const { publicKey } = await api("/api/push/vapid-key");
+      if (!publicKey) return false;
+      let subscription = await reg.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        });
+      }
+      const json = subscription.toJSON();
+      if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return false;
+      await api("/api/push/subscribe", {
+        method: "POST",
+        body: JSON.stringify({
+          endpoint: json.endpoint,
+          keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+        }),
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      pushSubscribeInFlight = null;
+    }
+  })();
+  return pushSubscribeInFlight;
+}
 
 async function requestHallNotifications() {
   if (!("Notification" in window)) return false;
   try {
-    if (Notification.permission === "granted") return true;
+    let granted = Notification.permission === "granted";
     if (Notification.permission === "denied") return false;
-    const result = await Notification.requestPermission();
-    return result === "granted";
+    if (!granted) {
+      const result = await Notification.requestPermission();
+      granted = result === "granted";
+    }
+    if (granted) await subscribeHallPush();
+    return granted;
   } catch {
     return false;
   }
@@ -292,11 +354,12 @@ async function requestHallNotifications() {
 
 /** Browsers often ignore permission prompts without a tap — arm one on first interaction. */
 function armNotificationPrompt() {
-  if (!isPhoneClient() || !("Notification" in window)) return;
-  if (Notification.permission !== "default" || notificationPromptArmed) {
-    requestHallNotifications();
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    subscribeHallPush();
     return;
   }
+  if (Notification.permission !== "default" || notificationPromptArmed) return;
   notificationPromptArmed = true;
   const ask = () => {
     document.removeEventListener("pointerdown", ask, true);
@@ -307,6 +370,7 @@ function armNotificationPrompt() {
 
 async function maybeNotifyMessage(message) {
   if (!message || message.userId === state.me?.id) return;
+  if (state.server?.notificationsMuted) return;
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   // Fire when backgrounded, or when Hall is open but you’re not looking at this tab.
   if (!document.hidden && document.hasFocus()) return;
@@ -339,6 +403,24 @@ async function maybeNotifyMessage(message) {
     };
   } catch {
     // Permission can flip mid-session.
+  }
+}
+
+async function toggleServerNotifications() {
+  if (!state.server || state.home) return;
+  const next = !state.server.notificationsMuted;
+  try {
+    const data = await api(`/api/servers/${encodeURIComponent(state.server.id)}/notifications`, {
+      method: "PUT",
+      body: JSON.stringify({ muted: next }),
+    });
+    state.server = { ...state.server, notificationsMuted: Boolean(data.muted) };
+    renderChannels();
+    renderTopbar();
+  } catch (error) {
+    openModal("Notifications", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not update")]));
+    });
   }
 }
 
@@ -864,6 +946,19 @@ function renderChannels() {
   ]);
   foot.append(me);
   const headActions = [];
+  headActions.push(el("button", {
+    class: server.notificationsMuted ? "ghost mute-notifs on" : "ghost mute-notifs",
+    type: "button",
+    title: server.notificationsMuted ? "Unmute notifications" : "Mute notifications for this server",
+    onclick: () => toggleServerNotifications(),
+  }, [text(server.notificationsMuted ? "Unmute" : "Mute")]));
+  if (!server.isLobby && !server.unleavable) {
+    headActions.push(el("button", {
+      class: "ghost leave-server-btn mobile-leave-btn",
+      type: "button",
+      onclick: () => confirmLeaveOrDeleteServer(Boolean(server.isOwner)),
+    }, [text(server.isOwner ? "Delete" : "Leave")]));
+  }
   if (canManageActiveServer()) {
     headActions.push(el("button", {
       class: "ghost",
@@ -909,6 +1004,7 @@ function renderTopbar() {
       : "Message";
   const inThisVoice = state.voice.active && state.voice.channelId === state.activeChannelId;
   const voiceCount = voiceRosterFor(state.activeChannelId).length;
+  const canLeave = Boolean(state.server && !state.home && !state.server.isLobby && !state.server.unleavable);
   topbar.replaceChildren(
     el("div", { class: "topbar-actions" }, [
       el("button", {
@@ -928,6 +1024,22 @@ function renderTopbar() {
       el("p", {}, [text(isDm ? "Direct message" : state.home ? "Friends & DMs" : state.server ? state.server.name : "No server")]),
     ]),
     el("div", { class: "topbar-actions topbar-end" }, [
+      canLeave
+        ? el("button", {
+            class: "ghost leave-server-btn mobile-leave-top",
+            type: "button",
+            "aria-label": state.server.isOwner ? "Delete server" : "Leave server",
+            onclick: () => confirmLeaveOrDeleteServer(Boolean(state.server.isOwner)),
+          }, [text(state.server.isOwner ? "Delete" : "Leave")])
+        : null,
+      !state.home && state.server
+        ? el("button", {
+            class: state.server.notificationsMuted ? "ghost mute-notifs on mobile-mute-top" : "ghost mute-notifs mobile-mute-top",
+            type: "button",
+            "aria-label": state.server.notificationsMuted ? "Unmute notifications" : "Mute notifications",
+            onclick: () => toggleServerNotifications(),
+          }, [text(state.server.notificationsMuted ? "Unmute" : "Mute")])
+        : null,
       state.activeChannelId && (isVoice || isDm)
         ? el("button", {
             class: inThisVoice ? "ghost voice-button on" : "ghost voice-button",
@@ -2496,12 +2608,27 @@ function confirmLeaveOrDeleteServer(asOwner) {
   const name = state.server.name || "this server";
   openModal(asOwner ? "Delete server" : "Leave server", (form) => {
     const error = el("p", { class: "form-error", role: "alert" });
+    const confirmInput = asOwner
+      ? el("input", {
+          name: "confirmName",
+          maxlength: "80",
+          placeholder: name,
+          autocomplete: "off",
+          required: true,
+        })
+      : null;
     form.append(
       el("p", { class: "lede" }, [
         text(asOwner
           ? `Delete ${name}? Channels and memberships are removed. This cannot be undone.`
           : `Leave ${name}? You can rejoin later with an invite.`),
       ]),
+      asOwner
+        ? el("label", {}, [
+            text(`Type “${name}” to confirm`),
+            confirmInput,
+          ])
+        : null,
       error,
       el("div", { class: "actions" }, [
         el("button", { class: "ghost", type: "button", onclick: () => modal.close() }, [text("Cancel")]),
@@ -2516,7 +2643,15 @@ function confirmLeaveOrDeleteServer(asOwner) {
       error.textContent = "";
       try {
         if (asOwner) {
-          await api(`/api/servers/${encodeURIComponent(state.server.id)}`, { method: "DELETE" });
+          const typed = (confirmInput?.value || "").trim();
+          if (typed !== name) {
+            error.textContent = "Type the exact server name to delete it";
+            return;
+          }
+          await api(`/api/servers/${encodeURIComponent(state.server.id)}`, {
+            method: "DELETE",
+            body: JSON.stringify({ confirmName: typed }),
+          });
         } else {
           await api(`/api/servers/${encodeURIComponent(state.server.id)}/leave`, { method: "POST" });
         }
@@ -2627,7 +2762,9 @@ document.querySelector("#mobile-nav")?.addEventListener("click", async (event) =
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker.register("/sw.js").then(() => {
+      if (Notification?.permission === "granted" && state.me) subscribeHallPush();
+    }).catch(() => {});
   });
 }
 

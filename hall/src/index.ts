@@ -13,6 +13,14 @@ import {
 } from "./auth";
 import { type ChatMessage } from "./channel";
 import { HttpError, asRecord, asString, json, readJson } from "./http";
+import {
+  getVapidPublicKey,
+  isServerMuted,
+  notifyChannelMessage,
+  removePushSubscription,
+  savePushSubscription,
+  setServerMuted,
+} from "./push";
 import { ensureReady } from "./schema";
 import {
   iconLetter,
@@ -588,8 +596,9 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
       role: string | null;
     }>();
 
+  const notificationsMuted = await isServerMuted(env, user.id, server.id);
   return json({
-    server: publicServer(server, user.id, user),
+    server: { ...publicServer(server, user.id, user), notificationsMuted },
     channels,
     members: (members.results ?? []).map((member) => {
       const profile = toPublicUser(member);
@@ -727,23 +736,40 @@ async function leaveServer(env: Env, user: PublicUser, serverId: string): Promis
   if (server.owner_id === user.id) {
     throw new HttpError(400, "Owners must delete the server instead of leaving");
   }
-  await env.DB.prepare("DELETE FROM memberships WHERE server_id = ? AND user_id = ?").bind(server.id, user.id).run();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM server_notification_mutes WHERE server_id = ? AND user_id = ?").bind(
+      server.id,
+      user.id,
+    ),
+    env.DB.prepare("DELETE FROM memberships WHERE server_id = ? AND user_id = ?").bind(server.id, user.id),
+  ]);
   return json({ ok: true });
 }
 
-async function deleteServer(env: Env, user: PublicUser, serverId: string): Promise<Response> {
-  const server = await env.DB.prepare("SELECT id, owner_id FROM servers WHERE id = ?")
+async function deleteServer(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
+  const server = await env.DB.prepare("SELECT id, name, owner_id FROM servers WHERE id = ?")
     .bind(serverId)
-    .first<{ id: string; owner_id: string }>();
+    .first<{ id: string; name: string; owner_id: string }>();
   if (!server) throw new HttpError(404, "Server not found");
   if (server.id === "lobby") throw new HttpError(400, "Hall Official cannot be deleted");
   if (server.owner_id !== user.id && !user.isPlatformOwner) {
     throw new HttpError(403, "Only the owner can delete this server");
   }
+  let confirmName = "";
+  try {
+    const body = asRecord(await readJson(request, 1_024));
+    confirmName = typeof body.confirmName === "string" ? body.confirmName.trim() : "";
+  } catch {
+    confirmName = "";
+  }
+  if (confirmName !== server.name) {
+    throw new HttpError(400, "Type the exact server name to delete it");
+  }
   const channels = await env.DB.prepare("SELECT id FROM channels WHERE server_id = ?")
     .bind(server.id)
     .all<{ id: string }>();
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM server_notification_mutes WHERE server_id = ?").bind(server.id),
     env.DB.prepare("DELETE FROM memberships WHERE server_id = ?").bind(server.id),
     env.DB.prepare("DELETE FROM channels WHERE server_id = ?").bind(server.id),
     env.DB.prepare("DELETE FROM servers WHERE id = ?").bind(server.id),
@@ -781,7 +807,13 @@ function parsePollCommand(raw: string): { question: string; options: string[] } 
   return { question, options };
 }
 
-async function postMessage(request: Request, env: Env, user: PublicUser, channelId: string): Promise<Response> {
+async function postMessage(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  user: PublicUser,
+  channelId: string,
+): Promise<Response> {
   await requireChannelMember(env, channelId, user);
   const body = asRecord(await readJson(request, 8_192));
   const text = asString(body.body, "Message");
@@ -797,10 +829,76 @@ async function postMessage(request: Request, env: Env, user: PublicUser, channel
     payload,
   );
   if (!result.ok) throw new HttpError(400, result.error);
+  const channel = await getChannel(env, channelId);
   if (channelId.startsWith("dm:")) {
     await env.DB.prepare(`UPDATE dm_threads SET updated_at = ? WHERE id = ?`).bind(Date.now(), channelId).run();
   }
+  const serverId = channel?.server_id ?? (channelId.startsWith("dm:") ? "dm" : "");
+  if (serverId) {
+    let serverName: string | null = null;
+    if (serverId !== "dm") {
+      const server = await env.DB.prepare("SELECT name FROM servers WHERE id = ?")
+        .bind(serverId)
+        .first<{ name: string }>();
+      serverName = server?.name ?? null;
+    }
+    ctx.waitUntil(
+      notifyChannelMessage(env, {
+        channelId,
+        serverId,
+        message: result.message,
+        channelName: channel?.name ?? null,
+        serverName,
+      }),
+    );
+  }
   return json({ message: result.message satisfies ChatMessage }, 201);
+}
+
+async function pushVapidKey(env: Env): Promise<Response> {
+  const publicKey = await getVapidPublicKey(env);
+  return json({ publicKey });
+}
+
+async function subscribePush(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const body = asRecord(await readJson(request, 4_096));
+  const endpoint = asString(body.endpoint, "endpoint");
+  const keys = asRecord(body.keys ?? {});
+  const p256dh = asString(keys.p256dh, "keys.p256dh");
+  const auth = asString(keys.auth, "keys.auth");
+  try {
+    await savePushSubscription(env, user.id, { endpoint, keys: { p256dh, auth } });
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : "Invalid subscription");
+  }
+  return json({ ok: true });
+}
+
+async function unsubscribePush(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const body = asRecord(await readJson(request, 2_048));
+  const endpoint = asString(body.endpoint, "endpoint");
+  await removePushSubscription(env, user.id, endpoint);
+  return json({ ok: true });
+}
+
+async function getServerNotifications(env: Env, user: PublicUser, serverId: string): Promise<Response> {
+  if (!(await memberOf(env, serverId, user.id))) throw new HttpError(403, "You are not in this server");
+  const muted = await isServerMuted(env, user.id, serverId);
+  return json({ muted });
+}
+
+async function updateServerNotifications(
+  request: Request,
+  env: Env,
+  user: PublicUser,
+  serverId: string,
+): Promise<Response> {
+  if (serverId === "dm") throw new HttpError(400, "Direct messages cannot be muted this way");
+  if (!(await memberOf(env, serverId, user.id))) throw new HttpError(403, "You are not in this server");
+  const body = asRecord(await readJson(request, 1_024));
+  const muted = Boolean(body.muted);
+  await setServerMuted(env, user.id, serverId, muted);
+  return json({ muted });
 }
 
 async function votePoll(request: Request, env: Env, user: PublicUser, channelId: string): Promise<Response> {
@@ -1009,7 +1107,7 @@ function hasSessionCookie(request: Request): boolean {
   return header.split(";").some((part) => part.trim().startsWith("hall_session="));
 }
 
-async function route(request: Request, env: Env, url: URL): Promise<Response> {
+async function route(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
   const { pathname } = url;
   const method = request.method;
 
@@ -1043,6 +1141,10 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
   if (pathname === "/api/me/avatar" && method === "PUT") return uploadAvatar(request, env, user);
   if (pathname === "/api/me/avatar" && method === "DELETE") return clearAvatar(env, user);
 
+  if (pathname === "/api/push/vapid-key" && method === "GET") return pushVapidKey(env);
+  if (pathname === "/api/push/subscribe" && method === "POST") return subscribePush(request, env, user);
+  if (pathname === "/api/push/subscribe" && method === "DELETE") return unsubscribePush(request, env, user);
+
   const profileMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
   if (profileMatch && method === "GET") return getProfile(env, decodeURIComponent(profileMatch[1] ?? ""));
 
@@ -1069,11 +1171,15 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     const action = serverMatch[2];
     if (!action && method === "GET") return serverDetail(env, user, serverId);
     if (!action && method === "PATCH") return updateServer(request, env, user, serverId);
-    if (!action && method === "DELETE") return deleteServer(env, user, serverId);
+    if (!action && method === "DELETE") return deleteServer(request, env, user, serverId);
     if (action === "avatar" && method === "PUT") return uploadServerAvatar(request, env, user, serverId);
     if (action === "channels" && method === "POST") return createChannel(request, env, user, serverId);
     if (action === "channel-order" && method === "PUT") return reorderChannels(request, env, user, serverId);
     if (action === "leave" && method === "POST") return leaveServer(env, user, serverId);
+    if (action === "notifications" && method === "GET") return getServerNotifications(env, user, serverId);
+    if (action === "notifications" && method === "PUT") {
+      return updateServerNotifications(request, env, user, serverId);
+    }
     if (action === "websocket" && method === "GET") return openServerHub(request, env, user, serverId);
   }
 
@@ -1087,7 +1193,7 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     const channelId = decodeURIComponent(channelMatch[1] ?? "");
     const action = channelMatch[2];
     if (action === "messages" && method === "GET") return listMessages(url, env, user, channelId);
-    if (action === "messages" && method === "POST") return postMessage(request, env, user, channelId);
+    if (action === "messages" && method === "POST") return postMessage(request, env, ctx, user, channelId);
     if (action === "poll-vote" && method === "POST") return votePoll(request, env, user, channelId);
     if (action === "websocket" && method === "GET") return openSocket(request, env, user, channelId);
   }
@@ -1096,7 +1202,7 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) {
       return new Response("Not found", { status: 404 });
@@ -1115,7 +1221,7 @@ export default {
       return json({ ok: true, name: "Hall" });
     }
     try {
-      return await route(request, env, url);
+      return await route(request, env, ctx, url);
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.message }, error.status);
       console.error(

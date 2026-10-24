@@ -696,6 +696,11 @@ video.voice-screen-sink {
   min-height: 40px;
   justify-self: start;
 }
+.mute-notifs.on { color: var(--brass) !important; }
+.mobile-leave-top, .mobile-mute-top { display: none; }
+.side-head-actions .mobile-leave-btn {
+  display: inline-flex;
+}
 .voice-dock {
   margin-top: auto;
   padding: 10px 12px;
@@ -1090,6 +1095,22 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
   .side-foot { padding-bottom: 12px; }
   .voice-stage {
     max-height: min(36vh, 280px);
+  }
+  .mobile-leave-top, .mobile-mute-top {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    min-width: 40px;
+    padding: 8px 10px;
+  }
+  .side-head-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .side-head-actions .mobile-leave-btn {
+    min-height: 40px;
+    padding: 8px 12px;
   }
   .mobile-nav {
     display: grid;

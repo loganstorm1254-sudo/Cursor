@@ -268,6 +268,48 @@ function showApp() {
   boot.removeAttribute("aria-busy");
   auth.hidden = true;
   shell.hidden = false;
+  requestHallNotifications();
+}
+
+function isPhoneClient() {
+  return window.matchMedia("(max-width: 800px), (pointer: coarse)").matches
+    || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+}
+
+async function requestHallNotifications() {
+  if (!("Notification" in window) || !isPhoneClient()) return;
+  try {
+    if (Notification.permission === "default") {
+      await Notification.requestPermission();
+    }
+  } catch {
+    // Some WebViews block the prompt.
+  }
+}
+
+function maybeNotifyMessage(message) {
+  if (!message || message.userId === state.me?.id) return;
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  if (!document.hidden && document.hasFocus()) return;
+  const title = message.displayName || message.username || "Hall";
+  const body = String(message.body || "")
+    .replace(/^§HALLPOLL§/, "Poll: ")
+    .slice(0, 120);
+  try {
+    const note = new Notification(title, {
+      body: body || "New message",
+      tag: `hall-msg-${message.id}`,
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      renotify: false,
+    });
+    note.onclick = () => {
+      window.focus();
+      note.close();
+    };
+  } catch {
+    // Ignore — permission can flip mid-session.
+  }
 }
 
 function setAuthMode(mode) {
@@ -2038,6 +2080,7 @@ function addMessage(message) {
     state.hasMore = true;
   }
   renderMessages(true);
+  maybeNotifyMessage(message);
 }
 
 let composerSending = false;
@@ -2510,8 +2553,14 @@ document.querySelector("#mobile-nav")?.addEventListener("click", async (event) =
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
+    // Ask early on phones so chats can notify when Hall is in the background.
+    if (document.visibilityState === "visible") requestHallNotifications();
   });
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") requestHallNotifications();
+});
 
 if (emojiPanel && emojiButton) {
   for (const emoji of EMOJI_PICKER) {

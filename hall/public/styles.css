@@ -690,19 +690,6 @@ video.voice-screen-sink {
 .voice-ctrl.hangup { background: #c24b3c; color: #fff7f5; }
 .voice-ctrl:disabled { opacity: 0.45; cursor: default; }
 .share-mini.on { color: var(--good) !important; }
-.seekara-watermark {
-  position: fixed;
-  right: max(10px, env(safe-area-inset-right, 0px));
-  bottom: max(10px, env(safe-area-inset-bottom, 0px));
-  width: min(112px, 22vw);
-  height: auto;
-  opacity: 0.42;
-  pointer-events: none;
-  user-select: none;
-  z-index: 30;
-  border-radius: 10px;
-  mix-blend-mode: screen;
-}
 .voice-dock {
   margin-top: auto;
   padding: 10px 12px;
@@ -1082,11 +1069,12 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
   .avatar { width: 34px; height: 34px; border-radius: 12px; }
   .handle { display: none; }
   .chat {
-    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    /* Sit just above the bottom nav — was leaving a large gap under the composer. */
+    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
   }
   .composer {
     gap: 8px;
-    padding: 10px 10px 10px;
+    padding: 8px 10px 6px;
   }
   .composer textarea {
     min-height: 44px;
@@ -1104,15 +1092,10 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
     right: 0;
     bottom: 0;
     z-index: 8;
-    min-height: calc(64px + env(safe-area-inset-bottom, 0px));
-    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+    min-height: calc(56px + env(safe-area-inset-bottom, 0px));
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
     background: color-mix(in srgb, var(--rail) 92%, black);
     border-top: 1px solid var(--line);
-  }
-  .seekara-watermark {
-    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-    width: min(88px, 28vw);
-    opacity: 0.36;
   }
   .mobile-nav-btn {
     border: 0;

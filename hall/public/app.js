@@ -783,8 +783,28 @@ function betaBadge(user) {
   return el("span", { class: "beta-badge", title: "Beta tester" }, [text("β")]);
 }
 
-function displayNameNodes(user) {
-  return [text(user?.displayName || user?.username || "Hall"), betaBadge(user)];
+function betaCheckbox(user) {
+  if (!state.me?.isPlatformOwner || !user?.username) return betaBadge(user);
+  const box = el("input", {
+    type: "checkbox",
+    class: "beta-check",
+    checked: Boolean(user.isBetaTester) || null,
+    title: "Beta tester",
+    onclick: (event) => event.stopPropagation(),
+    onchange: (event) => {
+      event.stopPropagation();
+      toggleBeta(user, event.target.checked);
+    },
+  });
+  return el("label", {
+    class: "beta-check-wrap",
+    title: "Beta tester",
+    onclick: (event) => event.stopPropagation(),
+  }, [box, text("β")]);
+}
+
+function displayNameNodes(user, editable = false) {
+  return [text(user?.displayName || user?.username || "Hall"), editable ? betaCheckbox(user) : betaBadge(user)];
 }
 
 function hideContextMenu() {
@@ -941,13 +961,6 @@ function showContextMenu(event, opts) {
           items.push({ label: "Make admin", run: () => toggleAdmin(member, true) });
         }
       }
-    }
-    if (state.me?.isPlatformOwner && user.username) {
-      const member = state.members.find((item) => item.username === user.username) || user;
-      items.push({
-        label: member.isBetaTester ? "Remove beta" : "Add beta",
-        run: () => toggleBeta(member, !member.isBetaTester),
-      });
     }
   }
   if (items.length === 0) return;
@@ -1979,7 +1992,7 @@ function renderMembers() {
     }, [
       el("span", { class: online ? "dot on" : "dot" }),
       avatarNode(member, "avatar tiny"),
-      el("span", { class: "member-name" }, displayNameNodes(member)),
+      el("span", { class: "member-name" }, displayNameNodes(member, true)),
       voice ? el("span", { class: "role voice-tag" }, [text(voice.muted ? "muted" : "voice")]) : null,
       roleLabel ? el("span", { class: "role" }, [text(roleLabel)]) : null,
     ]);
@@ -2616,10 +2629,9 @@ async function openProfile(username, editable = false) {
       el("div", { class: "profile-card" }, [
         avatarNode(profile, "avatar lg"),
         el("div", {}, [
-          el("h3", {}, [text(profile.displayName)]),
+          el("h3", {}, displayNameNodes(profile, true)),
           el("p", { class: "handle" }, [text(`@${profile.username}`)]),
           profile.isPlatformOwner ? el("p", { class: "role-pill" }, [text("Hall owner")]) : null,
-          profile.isBetaTester ? el("p", { class: "role-pill beta" }, [text("Beta tester")]) : null,
         ]),
       ]),
       el("p", { class: "bio" }, [text(profile.bio || "No bio yet.")]),

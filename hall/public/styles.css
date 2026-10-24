@@ -849,13 +849,14 @@ video.voice-screen-sink {
 }
 .reply-preview.gone { opacity: 0.6; cursor: default; }
 .message.flash { outline: 1px solid var(--brass); }
-.beta-badge {
+.beta-badge, .beta-check-wrap {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 3px;
   min-width: 16px;
   height: 16px;
-  margin-left: 4px;
+  margin-left: 6px;
   padding: 0 4px;
   border-radius: 999px;
   background: #3d2a12;
@@ -863,6 +864,15 @@ video.voice-screen-sink {
   font-size: 11px;
   font-weight: 700;
   vertical-align: middle;
+  cursor: default;
+}
+.beta-check-wrap { cursor: pointer; height: 18px; padding: 0 5px; }
+.beta-check {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--brass);
+  cursor: pointer;
 }
 .role-pill.beta { color: var(--brass); }
 .admin-list { display: grid; gap: 8px; }

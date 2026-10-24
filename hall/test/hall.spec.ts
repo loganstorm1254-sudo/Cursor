@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 
 type UserBody = { user: { id: string; username: string; displayName: string } };
 type ErrorBody = { error: string };
-type ServerBody = { servers: Array<{ id: string; name: string; inviteCode: string }> };
+type ServerBody = {
+  servers: Array<{ id: string; name: string; inviteCode: string; unleavable?: boolean; canManage?: boolean }>;
+};
 type DetailBody = {
   server: { id: string; inviteCode: string; isOwner: boolean };
   channels: Array<{ id: string; name: string }>;
@@ -205,7 +207,10 @@ describe("Hall", () => {
       body: JSON.stringify({ name: "Ada Hall" }),
     });
     expect(created.status).toBe(201);
-    const createdBody = (await created.json()) as { server: { id: string; inviteCode: string }; channel: { id: string } };
+    const createdBody = (await created.json()) as {
+      server: { id: string; name: string; inviteCode: string };
+      channel: { id: string };
+    };
 
     const blocked = await authed(grace.cookie, `/api/channels/${createdBody.channel.id}/messages`);
     expect(blocked.status).toBe(403);
@@ -253,6 +258,22 @@ describe("Hall", () => {
     expect(left.status).toBe(200);
     const blockedAgain = await authed(grace.cookie, `/api/channels/${createdBody.channel.id}/messages`);
     expect(blockedAgain.status).toBe(403);
+
+    const deletedWrong = await authed(ada.cookie, `/api/servers/${createdBody.server.id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmName: "wrong name" }),
+    });
+    expect(deletedWrong.status).toBe(400);
+
+    const deleted = await authed(ada.cookie, `/api/servers/${createdBody.server.id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmName: createdBody.server.name }),
+    });
+    expect(deleted.status).toBe(200);
+    const gone = await authed(ada.cookie, `/api/servers/${createdBody.server.id}`);
+    expect(gone.status).toBe(404);
   });
 
   it("supports server reorder, server profile edits, and /poll votes", async () => {
@@ -307,6 +328,45 @@ describe("Hall", () => {
     expect(vote.status).toBe(200);
     const voted = (await vote.json()) as { message: { body: string } };
     expect(voted.message.body).toContain('"1"');
+  });
+
+  it("exposes VAPID keys and per-server notification mutes", async () => {
+    const ada = await register("ada_push");
+    const vapid = await authed(ada.cookie, "/api/push/vapid-key");
+    expect(vapid.status).toBe(200);
+    const vapidBody = (await vapid.json()) as { publicKey: string };
+    expect(vapidBody.publicKey.length).toBeGreaterThan(20);
+
+    const created = await authed(ada.cookie, "/api/servers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Quiet Room" }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { server: { id: string } };
+
+    const muted = await authed(ada.cookie, `/api/servers/${createdBody.server.id}/notifications`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ muted: true }),
+    });
+    expect(muted.status).toBe(200);
+    expect(((await muted.json()) as { muted: boolean }).muted).toBe(true);
+
+    const detail = await authed(ada.cookie, `/api/servers/${createdBody.server.id}`);
+    expect(detail.status).toBe(200);
+    const detailBody = (await detail.json()) as { server: { notificationsMuted: boolean } };
+    expect(detailBody.server.notificationsMuted).toBe(true);
+
+    const sub = await authed(ada.cookie, "/api/push/subscribe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        endpoint: "https://example.com/push/ada",
+        keys: { p256dh: "dGVzdC1wMjU2ZGg", auth: "dGVzdC1hdXRo" },
+      }),
+    });
+    expect(sub.status).toBe(200);
   });
 
   it("serves two concurrent visitors without hanging on boot", async () => {

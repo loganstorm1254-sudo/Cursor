@@ -26,11 +26,13 @@ export type PresenceUser = {
 
 export type VoiceUser = PresenceUser & {
   muted: boolean;
+  sharing: boolean;
 };
 
 type Attachment = PresenceUser & {
   inVoice?: boolean;
   voiceMuted?: boolean;
+  voiceSharing?: boolean;
   serverId?: string;
   channelId?: string;
 };
@@ -41,6 +43,7 @@ type VoiceSignal = {
   to?: string;
   signal?: { kind?: string; sdp?: unknown; candidate?: unknown };
   muted?: boolean;
+  sharing?: boolean;
   messageId?: string;
   optionIndex?: number;
 };
@@ -198,6 +201,7 @@ export class ChannelRoom extends DurableObject<Env> {
       avatarUrl: avatarUrl && avatarUrl.length > 0 ? avatarUrl : null,
       inVoice: false,
       voiceMuted: false,
+      voiceSharing: false,
       serverId,
       channelId,
     };
@@ -237,6 +241,7 @@ export class ChannelRoom extends DurableObject<Env> {
       }
       attachment.inVoice = true;
       attachment.voiceMuted = false;
+      attachment.voiceSharing = false;
       ws.serializeAttachment(attachment);
       this.broadcastVoice();
       return;
@@ -244,12 +249,20 @@ export class ChannelRoom extends DurableObject<Env> {
     if (parsed.type === "voice_leave") {
       attachment.inVoice = false;
       attachment.voiceMuted = false;
+      attachment.voiceSharing = false;
       ws.serializeAttachment(attachment);
       this.broadcastVoice();
       return;
     }
     if (parsed.type === "voice_mute") {
       attachment.voiceMuted = Boolean(parsed.muted);
+      ws.serializeAttachment(attachment);
+      this.broadcastVoice();
+      return;
+    }
+    if (parsed.type === "voice_share") {
+      if (!attachment.inVoice) return;
+      attachment.voiceSharing = Boolean(parsed.sharing);
       ws.serializeAttachment(attachment);
       this.broadcastVoice();
       return;
@@ -269,6 +282,7 @@ export class ChannelRoom extends DurableObject<Env> {
               displayName: attachment.displayName,
               avatarUrl: attachment.avatarUrl,
               muted: Boolean(attachment.voiceMuted),
+              sharing: Boolean(attachment.voiceSharing),
             },
             signal: parsed.signal,
           }),
@@ -371,6 +385,7 @@ export class ChannelRoom extends DurableObject<Env> {
         displayName: attachment.displayName,
         avatarUrl: attachment.avatarUrl,
         muted: Boolean(attachment.voiceMuted),
+        sharing: Boolean(attachment.voiceSharing),
       });
     }
     return [...seen.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));

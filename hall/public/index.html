@@ -63,6 +63,7 @@
       <main class="chat">
         <header id="topbar" class="topbar"></header>
         <section id="voice-stage" class="voice-stage" hidden></section>
+        <div id="voice-mini" class="voice-mini" hidden></div>
         <div id="transcript" class="transcript" aria-live="polite"></div>
         <form id="composer" class="composer">
           <label class="sr-only" for="message">Message</label>
@@ -99,16 +100,6 @@
       <span class="mark" aria-hidden="true"></span>
       <p>Hall</p>
     </div>
-
-    <img
-      class="seekara-watermark"
-      src="/seekara-watermark.webp"
-      alt=""
-      width="120"
-      height="120"
-      decoding="async"
-      aria-hidden="true"
-    />
 
     <dialog id="modal">
       <form id="modal-form" method="dialog"></form>

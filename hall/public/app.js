@@ -84,7 +84,15 @@ const state = {
   voiceSocket: null,
   voiceSocketAbort: null,
   voicePingTimer: null,
-  voice: { active: false, muted: false, channelId: null, peers: [] },
+  voice: {
+    active: false,
+    muted: false,
+    sharing: false,
+    channelId: null,
+    peers: [],
+    localScreenStream: null,
+    remoteScreens: {},
+  },
   voiceRoster: {},
   home: false,
   friends: [],
@@ -100,21 +108,51 @@ const state = {
 let socketGeneration = 0;
 let voiceSocketGeneration = 0;
 let hubGeneration = 0;
+let voiceUiFrame = 0;
+function scheduleVoiceUi(full = false) {
+  // Coalesce WebRTC/roster thrash so typing + VC does not rebuild the whole shell every tick.
+  if (full) state._voiceUiFull = true;
+  if (voiceUiFrame) return;
+  voiceUiFrame = requestAnimationFrame(() => {
+    voiceUiFrame = 0;
+    const fullPass = state._voiceUiFull;
+    state._voiceUiFull = false;
+    try {
+      // Channels/home first — they replaceChildren and would wipe the voice dock.
+      if (fullPass) {
+        renderTopbar();
+        renderMembers();
+        if (!state.home) renderChannels();
+        else renderHomeSidebar();
+      } else {
+        renderTopbar();
+      }
+      renderVoiceStage();
+    } catch (error) {
+      console.error(JSON.stringify({ event: "voice_ui_render_failed", message: error?.message || "unknown" }));
+    }
+  });
+}
+
 const voiceSession = createVoiceSession({
   getSocket: () => state.voiceSocket || state.socket,
   getMe: () => state.me,
   onState: (next) => {
     const wasActive = state.voice.active;
+    const prev = state.voice;
     state.voice = next;
     if (next.channelId) {
       state.voiceRoster = { ...state.voiceRoster, [next.channelId]: next.peers || [] };
     }
     if (wasActive && !next.active) releaseVoiceSocket();
-    renderVoiceStage();
-    renderTopbar();
-    renderMembers();
-    if (!state.home) renderChannels();
-    if (state.home) renderHomeSidebar();
+    const rosterChanged =
+      prev.active !== next.active ||
+      prev.muted !== next.muted ||
+      prev.sharing !== next.sharing ||
+      prev.channelId !== next.channelId ||
+      (prev.peers?.length || 0) !== (next.peers?.length || 0) ||
+      JSON.stringify(prev.peers || []) !== JSON.stringify(next.peers || []);
+    scheduleVoiceUi(rosterChanged || !wasActive || !next.active);
   },
 });
 
@@ -126,14 +164,14 @@ function voiceRosterFor(channelId) {
 
 function applyVoiceRoster(channelId, voice) {
   if (!channelId) return;
-  state.voiceRoster = { ...state.voiceRoster, [channelId]: Array.isArray(voice) ? voice : [] };
+  const list = Array.isArray(voice) ? voice : [];
+  const prev = state.voiceRoster[channelId] || [];
+  state.voiceRoster = { ...state.voiceRoster, [channelId]: list };
   if (state.voice.active && state.voice.channelId === channelId) {
-    state.voice = { ...state.voice, peers: state.voiceRoster[channelId] };
+    state.voice = { ...state.voice, peers: list };
   }
-  renderVoiceStage();
-  renderTopbar();
-  renderMembers();
-  if (!state.home) renderChannels();
+  const changed = JSON.stringify(prev) !== JSON.stringify(list);
+  if (changed) scheduleVoiceUi(true);
 }
 
 function hue(name) {
@@ -230,6 +268,160 @@ function showApp() {
   boot.removeAttribute("aria-busy");
   auth.hidden = true;
   shell.hidden = false;
+  armNotificationPrompt();
+}
+
+function isPhoneClient() {
+  return window.matchMedia("(max-width: 800px), (pointer: coarse)").matches
+    || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+}
+
+let notificationPromptArmed = false;
+let pushSubscribeInFlight = null;
+
+function urlBase64ToUint8Array(base64url) {
+  const padded = `${base64url}${"=".repeat((4 - (base64url.length % 4)) % 4)}`;
+  const binary = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function ensureServiceWorker() {
+  if (!("serviceWorker" in navigator)) return null;
+  try {
+    const existing = await navigator.serviceWorker.getRegistration();
+    if (existing) return existing;
+    return await navigator.serviceWorker.register("/sw.js");
+  } catch {
+    return null;
+  }
+}
+
+async function subscribeHallPush() {
+  if (!state.me) return false;
+  if (!("Notification" in window) || !("PushManager" in window)) return false;
+  if (Notification.permission !== "granted") return false;
+  if (pushSubscribeInFlight) return pushSubscribeInFlight;
+  pushSubscribeInFlight = (async () => {
+    try {
+      const reg = await ensureServiceWorker();
+      if (!reg) return false;
+      await navigator.serviceWorker.ready;
+      const { publicKey } = await api("/api/push/vapid-key");
+      if (!publicKey) return false;
+      let subscription = await reg.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        });
+      }
+      const json = subscription.toJSON();
+      if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return false;
+      await api("/api/push/subscribe", {
+        method: "POST",
+        body: JSON.stringify({
+          endpoint: json.endpoint,
+          keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+        }),
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      pushSubscribeInFlight = null;
+    }
+  })();
+  return pushSubscribeInFlight;
+}
+
+async function requestHallNotifications() {
+  if (!("Notification" in window)) return false;
+  try {
+    let granted = Notification.permission === "granted";
+    if (Notification.permission === "denied") return false;
+    if (!granted) {
+      const result = await Notification.requestPermission();
+      granted = result === "granted";
+    }
+    if (granted) await subscribeHallPush();
+    return granted;
+  } catch {
+    return false;
+  }
+}
+
+/** Browsers often ignore permission prompts without a tap — arm one on first interaction. */
+function armNotificationPrompt() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    subscribeHallPush();
+    return;
+  }
+  if (Notification.permission !== "default" || notificationPromptArmed) return;
+  notificationPromptArmed = true;
+  const ask = () => {
+    document.removeEventListener("pointerdown", ask, true);
+    requestHallNotifications();
+  };
+  document.addEventListener("pointerdown", ask, true);
+}
+
+async function maybeNotifyMessage(message) {
+  if (!message || message.userId === state.me?.id) return;
+  if (state.server?.notificationsMuted) return;
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  // Fire when backgrounded, or when Hall is open but you’re not looking at this tab.
+  if (!document.hidden && document.hasFocus()) return;
+  const title = message.displayName || message.username || "Hall";
+  const body = String(message.body || "")
+    .replace(/^§HALLPOLL§/, "Poll: ")
+    .slice(0, 120) || "New message";
+  const options = {
+    body,
+    tag: `hall-msg-${message.id}`,
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    renotify: false,
+    data: { url: "/" },
+  };
+  try {
+    const reg = await navigator.serviceWorker?.ready;
+    if (reg?.showNotification) {
+      await reg.showNotification(title, options);
+      return;
+    }
+  } catch {
+    // Fall through to page Notification.
+  }
+  try {
+    const note = new Notification(title, options);
+    note.onclick = () => {
+      window.focus();
+      note.close();
+    };
+  } catch {
+    // Permission can flip mid-session.
+  }
+}
+
+async function toggleServerNotifications() {
+  if (!state.server || state.home) return;
+  const next = !state.server.notificationsMuted;
+  try {
+    const data = await api(`/api/servers/${encodeURIComponent(state.server.id)}/notifications`, {
+      method: "PUT",
+      body: JSON.stringify({ muted: next }),
+    });
+    state.server = { ...state.server, notificationsMuted: Boolean(data.muted) };
+    renderChannels();
+    renderTopbar();
+  } catch (error) {
+    openModal("Notifications", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not update")]));
+    });
+  }
 }
 
 function setAuthMode(mode) {
@@ -726,8 +918,20 @@ function renderChannels() {
     foot.append(el("button", { class: "ghost", type: "button", onclick: () => openCreateChannel("text") }, [text("Add text channel")]));
     foot.append(el("button", { class: "ghost", type: "button", onclick: () => openCreateChannel("voice") }, [text("Create VC")]));
   }
-  if (!server.isLobby && !server.isOwner && !server.unleavable) {
-    foot.append(el("button", { class: "text-button", type: "button", onclick: leaveServer }, [text("Leave server")]));
+  if (!server.isLobby && !server.unleavable) {
+    if (server.isOwner) {
+      foot.append(el("button", {
+        class: "text-button leave-server-btn",
+        type: "button",
+        onclick: () => confirmLeaveOrDeleteServer(true),
+      }, [text("Delete server")]));
+    } else {
+      foot.append(el("button", {
+        class: "text-button leave-server-btn",
+        type: "button",
+        onclick: () => confirmLeaveOrDeleteServer(false),
+      }, [text("Leave server")]));
+    }
   }
   const me = el("div", { class: "me-row" }, [
     avatarNode(state.me, "avatar sm"),
@@ -742,6 +946,19 @@ function renderChannels() {
   ]);
   foot.append(me);
   const headActions = [];
+  headActions.push(el("button", {
+    class: server.notificationsMuted ? "ghost mute-notifs on" : "ghost mute-notifs",
+    type: "button",
+    title: server.notificationsMuted ? "Unmute notifications" : "Mute notifications for this server",
+    onclick: () => toggleServerNotifications(),
+  }, [text(server.notificationsMuted ? "Unmute" : "Mute")]));
+  if (!server.isLobby && !server.unleavable) {
+    headActions.push(el("button", {
+      class: "ghost leave-server-btn mobile-leave-btn",
+      type: "button",
+      onclick: () => confirmLeaveOrDeleteServer(Boolean(server.isOwner)),
+    }, [text(server.isOwner ? "Delete" : "Leave")]));
+  }
   if (canManageActiveServer()) {
     headActions.push(el("button", {
       class: "ghost",
@@ -787,6 +1004,7 @@ function renderTopbar() {
       : "Message";
   const inThisVoice = state.voice.active && state.voice.channelId === state.activeChannelId;
   const voiceCount = voiceRosterFor(state.activeChannelId).length;
+  const canLeave = Boolean(state.server && !state.home && !state.server.isLobby && !state.server.unleavable);
   topbar.replaceChildren(
     el("div", { class: "topbar-actions" }, [
       el("button", {
@@ -806,6 +1024,22 @@ function renderTopbar() {
       el("p", {}, [text(isDm ? "Direct message" : state.home ? "Friends & DMs" : state.server ? state.server.name : "No server")]),
     ]),
     el("div", { class: "topbar-actions topbar-end" }, [
+      canLeave
+        ? el("button", {
+            class: "ghost leave-server-btn mobile-leave-top",
+            type: "button",
+            "aria-label": state.server.isOwner ? "Delete server" : "Leave server",
+            onclick: () => confirmLeaveOrDeleteServer(Boolean(state.server.isOwner)),
+          }, [text(state.server.isOwner ? "Delete" : "Leave")])
+        : null,
+      !state.home && state.server
+        ? el("button", {
+            class: state.server.notificationsMuted ? "ghost mute-notifs on mobile-mute-top" : "ghost mute-notifs mobile-mute-top",
+            type: "button",
+            "aria-label": state.server.notificationsMuted ? "Unmute notifications" : "Mute notifications",
+            onclick: () => toggleServerNotifications(),
+          }, [text(state.server.notificationsMuted ? "Unmute" : "Mute")])
+        : null,
       state.activeChannelId && (isVoice || isDm)
         ? el("button", {
             class: inThisVoice ? "ghost voice-button on" : "ghost voice-button",
@@ -832,78 +1066,301 @@ function renderTopbar() {
   syncMobileNav();
 }
 
+async function toggleScreenShare() {
+  try {
+    await voiceSession.toggleShare();
+  } catch (error) {
+    if (error?.name === "NotAllowedError") return;
+    openModal("Screen share", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not share screen")]));
+    });
+  }
+}
+
+function screenStreamFor(peer) {
+  if (peer.userId === state.me?.id) return state.voice.localScreenStream || null;
+  return state.voice.remoteScreens?.[peer.userId] || null;
+}
+
+/** Persist zoom/pan across voice-stage re-renders. */
+const screenZoom = new Map(); // userId -> { scale, x, y }
+
+function screenZoomState(userId) {
+  let next = screenZoom.get(userId);
+  if (!next) {
+    next = { scale: 1, x: 0, y: 0 };
+    screenZoom.set(userId, next);
+  }
+  return next;
+}
+
+function clampScreenZoom(view) {
+  view.scale = Math.min(6, Math.max(1, view.scale));
+  if (view.scale === 1) {
+    view.x = 0;
+    view.y = 0;
+  }
+}
+
+function applyScreenTransform(video, userId) {
+  const view = screenZoomState(userId);
+  clampScreenZoom(view);
+  video.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  video.classList.toggle("zoomed", view.scale > 1);
+}
+
+function attachScreenZoom(viewport, video, userId, labelEl) {
+  const syncLabel = () => {
+    if (!labelEl) return;
+    const view = screenZoomState(userId);
+    labelEl.textContent = view.scale === 1 ? "100%" : `${Math.round(view.scale * 100)}%`;
+  };
+  const paint = () => {
+    applyScreenTransform(video, userId);
+    syncLabel();
+    viewport.classList.toggle("is-zoomed", screenZoomState(userId).scale > 1);
+  };
+  paint();
+
+  viewport.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      const view = screenZoomState(userId);
+      const delta = event.deltaY > 0 ? -0.12 : 0.12;
+      view.scale += delta;
+      clampScreenZoom(view);
+      paint();
+    },
+    { passive: false },
+  );
+
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  viewport.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (screenZoomState(userId).scale <= 1) return;
+    dragging = true;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    viewport.setPointerCapture(event.pointerId);
+    viewport.classList.add("dragging");
+  });
+  viewport.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    const view = screenZoomState(userId);
+    view.x += event.clientX - lastX;
+    view.y += event.clientY - lastY;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    paint();
+  });
+  const endDrag = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    viewport.classList.remove("dragging");
+    try {
+      viewport.releasePointerCapture(event.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+  viewport.addEventListener("pointerup", endDrag);
+  viewport.addEventListener("pointercancel", endDrag);
+
+  return {
+    zoomIn: () => {
+      const view = screenZoomState(userId);
+      view.scale += 0.25;
+      paint();
+    },
+    zoomOut: () => {
+      const view = screenZoomState(userId);
+      view.scale -= 0.25;
+      paint();
+    },
+    reset: () => {
+      const view = screenZoomState(userId);
+      view.scale = 1;
+      view.x = 0;
+      view.y = 0;
+      paint();
+    },
+    paint,
+  };
+}
+
+function openScreenViewer(peer, stream) {
+  const existing = document.querySelector("#screen-viewer");
+  existing?.remove();
+  const video = document.createElement("video");
+  video.className = "screen-viewer-video";
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = true;
+  video.srcObject = stream;
+  const zoomLabel = el("span", { class: "screen-zoom-label" }, [text("100%")]);
+  const viewport = el("div", { class: "screen-viewer-viewport" }, [video]);
+  const controls = attachScreenZoom(viewport, video, `viewer:${peer.userId}`, zoomLabel);
+  const overlay = el("div", { id: "screen-viewer", class: "screen-viewer", role: "dialog", "aria-label": "Screen share" }, [
+    el("header", { class: "screen-viewer-bar" }, [
+      el("strong", {}, [text(`${peer.displayName}'s screen`)]),
+      el("div", { class: "screen-viewer-actions" }, [
+        el("button", { class: "ghost", type: "button", onclick: () => controls.zoomOut() }, [text("−")]),
+        zoomLabel,
+        el("button", { class: "ghost", type: "button", onclick: () => controls.zoomIn() }, [text("+")]),
+        el("button", { class: "ghost", type: "button", onclick: () => controls.reset() }, [text("Reset")]),
+        el("button", {
+          class: "ghost",
+          type: "button",
+          onclick: () => overlay.remove(),
+        }, [text("Close")]),
+      ]),
+    ]),
+    viewport,
+    el("p", { class: "screen-viewer-hint" }, [text("Scroll to zoom · drag to pan")]),
+  ]);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  const onKey = (event) => {
+    if (event.key === "Escape") {
+      overlay.remove();
+      window.removeEventListener("keydown", onKey);
+    }
+  };
+  window.addEventListener("keydown", onKey);
+  document.body.append(overlay);
+}
+
+function voiceTileFor(peer) {
+  const mine = peer.userId === state.me?.id;
+  const stream = screenStreamFor(peer);
+  // Prefer a live stream even if the roster flag lagged behind WebRTC.
+  const isSharing = Boolean(peer.sharing || (mine && state.voice.sharing) || stream);
+  const hasShareAudio = Boolean(stream?.getAudioTracks?.().length);
+  const status = isSharing
+    ? !stream
+      ? mine ? "Starting screen share…" : "Connecting to screen…"
+      : mine
+        ? hasShareAudio
+          ? "Sharing screen · 1080p60 · sound"
+          : "Sharing screen · 1080p60 — tick Share audio in the picker"
+        : "Sharing screen"
+    : peer.muted ? "Muted" : mine ? "You" : "In call";
+  if (!isSharing) {
+    return el("div", {
+      class: mine ? "voice-tile me" : "voice-tile",
+    }, [
+      avatarNode({ ...peer, id: peer.userId }, "avatar lg"),
+      el("strong", {}, [text(peer.displayName)]),
+      el("span", { class: "voice-tile-status" }, [text(status)]),
+    ]);
+  }
+  if (!stream) {
+    return el("div", {
+      class: mine ? "voice-tile me" : "voice-tile",
+      "data-sharing": "1",
+    }, [
+      el("div", { class: "voice-screen-viewport waiting" }, [
+        avatarNode({ ...peer, id: peer.userId }, "avatar lg"),
+        el("p", { class: "voice-screen-wait" }, [text(mine ? "Starting share…" : "Waiting for video…")]),
+      ]),
+      el("strong", {}, [text(peer.displayName)]),
+      el("span", { class: "voice-tile-status" }, [text(status)]),
+    ]);
+  }
+
+  // Reuse the live <video> so roster/WebRTC ticks do not black the share.
+  let video = document.querySelector(`video.voice-screen[data-peer-screen="${CSS.escape(peer.userId)}"]:not(.voice-screen-sink)`);
+  if (!video || video.srcObject !== stream) {
+    video = document.createElement("video");
+    video.className = "voice-screen";
+    video.dataset.peerScreen = peer.userId;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.srcObject = stream;
+  } else if (video.srcObject !== stream) {
+    video.srcObject = stream;
+  }
+  void video.play().catch(() => {});
+  const zoomLabel = el("span", { class: "screen-zoom-label" }, [text("100%")]);
+  const viewport = el("div", {
+    class: "voice-screen-viewport",
+    title: "Scroll to zoom · drag to pan · double-click to expand",
+  }, [video]);
+  const controls = attachScreenZoom(viewport, video, peer.userId, zoomLabel);
+  viewport.addEventListener("dblclick", () => openScreenViewer(peer, stream));
+
+  return el("div", {
+    class: mine ? "voice-tile me" : "voice-tile",
+    "data-sharing": "1",
+  }, [
+    viewport,
+    el("div", { class: "voice-screen-toolbar" }, [
+      el("strong", {}, [text(peer.displayName)]),
+      el("div", { class: "voice-screen-zoom" }, [
+        el("button", { class: "ghost", type: "button", title: "Zoom out", onclick: () => controls.zoomOut() }, [text("−")]),
+        zoomLabel,
+        el("button", { class: "ghost", type: "button", title: "Zoom in", onclick: () => controls.zoomIn() }, [text("+")]),
+        el("button", { class: "ghost", type: "button", title: "Reset zoom", onclick: () => controls.reset() }, [text("Reset")]),
+        el("button", {
+          class: "ghost",
+          type: "button",
+          title: "Expand",
+          onclick: () => openScreenViewer(peer, stream),
+        }, [text("Expand")]),
+      ]),
+    ]),
+    el("span", { class: "voice-tile-status" }, [text(status)]),
+  ]);
+}
+
 function renderVoiceStage() {
   const stage = document.querySelector("#voice-stage");
   if (!stage) return;
-  const active = state.channels.find((item) => item.id === state.activeChannelId);
-  const voiceChannel = state.channels.find((item) => item.id === state.voice.channelId);
-  const isDmCall = Boolean(state.voice.channelId?.startsWith("dm:") || (state.home && state.activeChannelId?.startsWith("dm:") && state.voice.active));
-  const channel = voiceChannel
-    || active
-    || (isDmCall || (state.home && state.voice.active) ? { name: state.dmPeer?.displayName || "DM", kind: "voice" } : null);
-  const showStage = state.voice.active || active?.kind === "voice";
-  if (!showStage) {
-    stage.hidden = true;
-    stage.replaceChildren();
-    document.querySelector("#voice-dock")?.remove();
-    return;
+  try {
+    renderVoiceStageInner(stage);
+  } catch (error) {
+    console.error(JSON.stringify({ event: "voice_stage_render_failed", message: error?.message || "unknown" }));
   }
-  stage.hidden = false;
-  const rosterChannelId = state.voice.active ? state.voice.channelId : state.activeChannelId;
-  const peers = voiceRosterFor(rosterChannelId);
-  const tiles = peers.length
-    ? peers.map((peer) => {
-        const mine = peer.userId === state.me?.id;
-        return el("div", { class: mine ? "voice-tile me" : "voice-tile" }, [
-          avatarNode({ ...peer, id: peer.userId }, "avatar lg"),
-          el("strong", {}, [text(peer.displayName)]),
-          el("span", { class: "voice-tile-status" }, [text(peer.muted ? "Muted" : mine ? "You" : "In call")]),
-        ]);
-      })
-    : [
-        el("div", { class: "voice-tile empty-tile" }, [
-          el("strong", {}, [text(channel?.name || "Voice")]),
-          el("span", { class: "voice-tile-status" }, [text("Nobody here yet — join to talk")]),
-        ]),
-      ];
-  stage.replaceChildren(
-    el("div", { class: "voice-stage-grid" }, tiles),
-    el("div", { class: "voice-controls" }, [
-      el("button", {
-        class: state.voice.muted ? "voice-ctrl mute on" : "voice-ctrl mute",
-        type: "button",
-        title: state.voice.muted ? "Unmute" : "Mute",
-        disabled: !state.voice.active ? "disabled" : null,
-        onclick: () => voiceSession.toggleMute(),
-      }, [text(state.voice.muted ? "Unmute" : "Mute")]),
-      el("button", {
-        class: "voice-ctrl join",
-        type: "button",
-        onclick: () => toggleVoice(),
-      }, [text(state.voice.active ? "Connected" : "Join")]),
-      el("button", {
-        class: "voice-ctrl hangup",
-        type: "button",
-        title: "Disconnect",
-        disabled: !state.voice.active ? "disabled" : null,
-        onclick: () => voiceSession.leave(),
-      }, [text("Leave")]),
-    ]),
-  );
+}
+
+function voiceCallLabel() {
+  if (state.voice.channelId?.startsWith("dm:")) {
+    return `Call · ${state.dmPeer?.displayName || "DM"}`;
+  }
+  const voiceChannel = state.channels.find((item) => item.id === state.voice.channelId);
+  return `Voice · ${voiceChannel?.name || "channel"}`;
+}
+
+function placeVoiceDock(dock) {
+  const channels = document.querySelector("#channels");
+  if (!channels) return;
+  const foot = channels.querySelector(".side-foot");
+  if (foot) channels.insertBefore(dock, foot);
+  else channels.append(dock);
+}
+
+function renderVoiceChrome(minimized) {
+  const label = voiceCallLabel();
+  const title = state.voice.sharing ? "Sharing screen" : "Voice Connected";
+  const detail = state.voice.sharing ? `${label} · 1080p60` : label;
 
   let dock = document.querySelector("#voice-dock");
   if (state.voice.active) {
     if (!dock) {
       dock = el("div", { id: "voice-dock", class: "voice-dock" });
-      document.querySelector("#channels")?.append(dock);
+      placeVoiceDock(dock);
+    } else if (!dock.isConnected) {
+      placeVoiceDock(dock);
     }
-    const label = state.voice.channelId?.startsWith("dm:")
-      ? `Call · ${state.dmPeer?.displayName || "DM"}`
-      : `Voice · ${channel?.name || "channel"}`;
     dock.replaceChildren(
       el("div", { class: "voice-dock-meta" }, [
-        el("strong", {}, [text("Voice Connected")]),
-        el("span", {}, [text(label)]),
+        el("strong", {}, [text(title)]),
+        el("span", {}, [text(detail)]),
       ]),
       el("div", { class: "voice-dock-actions" }, [
         el("button", {
@@ -911,6 +1368,11 @@ function renderVoiceStage() {
           type: "button",
           onclick: () => voiceSession.toggleMute(),
         }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+        el("button", {
+          class: state.voice.sharing ? "ghost share-mini on" : "ghost share-mini",
+          type: "button",
+          onclick: () => toggleScreenShare(),
+        }, [text(state.voice.sharing ? "Stop share" : "Share")]),
         el("button", {
           class: "ghost hangup-mini",
           type: "button",
@@ -921,6 +1383,101 @@ function renderVoiceStage() {
   } else {
     dock?.remove();
   }
+
+  const mini = document.querySelector("#voice-mini");
+  if (!mini) return;
+  if (state.voice.active && minimized) {
+    mini.hidden = false;
+    mini.replaceChildren(
+      el("div", { class: "voice-mini-meta" }, [
+        el("strong", {}, [text(title)]),
+        el("span", {}, [text(detail)]),
+      ]),
+      el("div", { class: "voice-mini-actions" }, [
+        el("button", {
+          class: "ghost",
+          type: "button",
+          onclick: () => voiceSession.toggleMute(),
+        }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+        el("button", {
+          class: "ghost hangup-mini",
+          type: "button",
+          onclick: () => voiceSession.leave(),
+        }, [text("Leave")]),
+      ]),
+    );
+  } else {
+    mini.hidden = true;
+    mini.replaceChildren();
+  }
+}
+
+function renderVoiceStageInner(stage) {
+  const active = state.channels.find((item) => item.id === state.activeChannelId);
+  const voiceChannel = state.channels.find((item) => item.id === state.voice.channelId);
+  const viewingOwnCall = Boolean(
+    state.voice.active &&
+      (state.voice.channelId === state.activeChannelId ||
+        (state.home && state.voice.channelId?.startsWith("dm:") && state.activeChannelId?.startsWith("dm:"))),
+  );
+  // Full stage only on the VC / DM call you’re in. Text chats keep a minimized bar + profile dock.
+  const showStage = Boolean(active?.kind === "voice" || viewingOwnCall);
+  const channel = voiceChannel
+    || active
+    || (state.voice.active ? { name: state.dmPeer?.displayName || "Voice", kind: "voice" } : null);
+
+  if (!showStage) {
+    stage.hidden = true;
+    stage.replaceChildren();
+    renderVoiceChrome(true);
+    return;
+  }
+
+  stage.hidden = false;
+  const rosterChannelId = state.voice.active ? state.voice.channelId : state.activeChannelId;
+  const peers = voiceRosterFor(rosterChannelId);
+  const anyoneSharing = peers.some((peer) => peer.sharing) || state.voice.sharing;
+  const tiles = peers.length
+    ? peers.map((peer) => voiceTileFor(peer))
+    : [
+        el("div", { class: "voice-tile empty-tile" }, [
+          el("strong", {}, [text(channel?.name || "Voice")]),
+          el("span", { class: "voice-tile-status" }, [text("Nobody here yet — join to talk")]),
+        ]),
+      ];
+  stage.replaceChildren(
+    el("div", { class: anyoneSharing ? "voice-stage-grid sharing" : "voice-stage-grid" }, tiles),
+    el("div", { class: "voice-controls" }, [
+      el("button", {
+        class: state.voice.muted ? "voice-ctrl mute on" : "voice-ctrl mute",
+        type: "button",
+        title: state.voice.muted ? "Unmute" : "Mute",
+        disabled: !state.voice.active ? "disabled" : null,
+        onclick: () => voiceSession.toggleMute(),
+      }, [text(state.voice.muted ? "Unmute" : "Mute")]),
+      el("button", {
+        class: state.voice.sharing ? "voice-ctrl share on" : "voice-ctrl share",
+        type: "button",
+        title: state.voice.sharing ? "Stop sharing" : "Share screen (1080p60 + sound)",
+        disabled: !state.voice.active ? "disabled" : null,
+        onclick: () => toggleScreenShare(),
+      }, [text(state.voice.sharing ? "Stop share" : "Share")]),
+      state.voice.active
+        ? el("button", {
+            class: "voice-ctrl hangup",
+            type: "button",
+            title: "Disconnect",
+            onclick: () => voiceSession.leave(),
+          }, [text("Leave")])
+        : el("button", {
+            class: "voice-ctrl join",
+            type: "button",
+            onclick: () => toggleVoice(),
+          }, [text("Join")]),
+    ]),
+  );
+
+  renderVoiceChrome(false);
 }
 
 function releaseVoiceSocket() {
@@ -1101,45 +1658,54 @@ async function toggleVoice() {
   }
 }
 
+const MAX_RENDERED_MESSAGES = 250;
+
 function renderMessages(stick) {
-  const wasNearBottom = stick || nearBottom(transcript);
-  const nodes = [];
-  if (state.hasMore) {
-    nodes.push(el("button", { class: "ghost load-older", type: "button", onclick: loadOlder }, [text("Load older")]));
+  try {
+    const wasNearBottom = stick || nearBottom(transcript);
+    const frag = document.createDocumentFragment();
+    if (state.hasMore || state.messages.length >= MAX_RENDERED_MESSAGES) {
+      frag.append(el("button", { class: "ghost load-older", type: "button", onclick: loadOlder }, [text("Load older")]));
+    }
+    if (state.messages.length === 0) {
+      frag.append(el("div", { class: "empty" }, [text("This channel is quiet. Say something.")]));
+    }
+    const visible = state.messages.length > MAX_RENDERED_MESSAGES
+      ? state.messages.slice(-MAX_RENDERED_MESSAGES)
+      : state.messages;
+    let previous = null;
+    for (const message of visible) {
+      const grouped = previous && previous.userId === message.userId && message.createdAt - previous.createdAt < 5 * 60 * 1000;
+      const avatar = avatarNode(message);
+      const header = el("header", {}, [
+        el("button", {
+          class: "author linkish",
+          type: "button",
+          onclick: () => openProfile(message.username, message.userId === state.me?.id),
+        }, [text(message.displayName)]),
+        el("span", { class: "handle" }, [text(`@${message.username}`)]),
+        el("time", { class: "time", datetime: formatTimeIso(message.createdAt) }, [text(formatTime(message.createdAt))]),
+      ]);
+      const poll = parsePollBody(message.body);
+      const body = poll
+        ? renderPoll(message, poll)
+        : (() => {
+            const node = el("p", { class: "body" });
+            appendRichText(node, message.body ?? "");
+            return node;
+          })();
+      const column = el("div", {}, grouped && !poll ? [body] : [header, body]);
+      frag.append(el("article", {
+        class: `${grouped && !poll ? "message grouped" : "message"}${poll ? " has-poll" : ""}`,
+        "data-message-id": message.id,
+      }, [avatar, column]));
+      previous = message;
+    }
+    transcript.replaceChildren(frag);
+    if (wasNearBottom) transcript.scrollTop = transcript.scrollHeight;
+  } catch (error) {
+    console.error(JSON.stringify({ event: "messages_render_failed", message: error?.message || "unknown" }));
   }
-  if (state.messages.length === 0) {
-    nodes.push(el("div", { class: "empty" }, [text("This channel is quiet. Say something.")]));
-  }
-  let previous = null;
-  for (const message of state.messages) {
-    const grouped = previous && previous.userId === message.userId && message.createdAt - previous.createdAt < 5 * 60 * 1000;
-    const avatar = avatarNode(message);
-    const header = el("header", {}, [
-      el("button", {
-        class: "author linkish",
-        type: "button",
-        onclick: () => openProfile(message.username, message.userId === state.me?.id),
-      }, [text(message.displayName)]),
-      el("span", { class: "handle" }, [text(`@${message.username}`)]),
-      el("time", { class: "time", datetime: new Date(message.createdAt).toISOString() }, [text(formatTime(message.createdAt))]),
-    ]);
-    const poll = parsePollBody(message.body);
-    const body = poll
-      ? renderPoll(message, poll)
-      : (() => {
-          const node = el("p", { class: "body" });
-          appendRichText(node, message.body);
-          return node;
-        })();
-    const column = el("div", {}, grouped && !poll ? [body] : [header, body]);
-    nodes.push(el("article", {
-      class: `${grouped && !poll ? "message grouped" : "message"}${poll ? " has-poll" : ""}`,
-      "data-message-id": message.id,
-    }, [avatar, column]));
-    previous = message;
-  }
-  transcript.replaceChildren(...nodes);
-  if (wasNearBottom) transcript.scrollTop = transcript.scrollHeight;
 }
 
 function renderMembers() {
@@ -1261,7 +1827,15 @@ function upsertMessage(message) {
 }
 
 function formatTime(timestamp) {
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(timestamp);
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function formatTimeIso(timestamp) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString();
 }
 
 function nearBottom(node) {
@@ -1651,16 +2225,24 @@ function closeSocket(bump = true) {
 }
 
 function addMessage(message) {
+  if (!message?.id) return;
   if (state.messages.some((item) => item.id === message.id)) return;
   state.messages.push(message);
   state.messages.sort((a, b) => a.createdAt - b.createdAt);
+  if (state.messages.length > MAX_RENDERED_MESSAGES * 2) {
+    state.messages = state.messages.slice(-MAX_RENDERED_MESSAGES);
+    state.hasMore = true;
+  }
   renderMessages(true);
+  maybeNotifyMessage(message);
 }
 
+let composerSending = false;
 composer.addEventListener("submit", async (event) => {
   event.preventDefault();
   const body = messageInput.value;
-  if (!body.trim() || !state.activeChannelId) return;
+  if (!body.trim() || !state.activeChannelId || composerSending) return;
+  composerSending = true;
   messageInput.disabled = true;
   try {
     const data = await api(`/api/channels/${encodeURIComponent(state.activeChannelId)}/messages`, {
@@ -1671,10 +2253,11 @@ composer.addEventListener("submit", async (event) => {
     messageInput.style.height = "auto";
     addMessage(data.message);
   } catch (error) {
-    messageInput.setCustomValidity(error.message);
+    messageInput.setCustomValidity(error.message || "Could not send");
     messageInput.reportValidity();
     setTimeout(() => messageInput.setCustomValidity(""), 2000);
   } finally {
+    composerSending = false;
     messageInput.disabled = false;
     messageInput.focus();
   }
@@ -1683,7 +2266,7 @@ composer.addEventListener("submit", async (event) => {
 messageInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    composer.requestSubmit();
+    if (!composerSending) composer.requestSubmit();
   }
 });
 
@@ -2020,16 +2603,72 @@ async function copyInvite() {
   }
 }
 
-async function leaveServer() {
+function confirmLeaveOrDeleteServer(asOwner) {
   if (!state.server || state.server.isLobby) return;
-  try {
-    await api(`/api/servers/${encodeURIComponent(state.server.id)}/leave`, { method: "POST" });
-    state.activeServerId = null;
-    state.activeChannelId = null;
-    await enterApp();
-  } catch (error) {
-    authError.textContent = error.message;
-  }
+  const name = state.server.name || "this server";
+  openModal(asOwner ? "Delete server" : "Leave server", (form) => {
+    const error = el("p", { class: "form-error", role: "alert" });
+    const confirmInput = asOwner
+      ? el("input", {
+          name: "confirmName",
+          maxlength: "80",
+          placeholder: name,
+          autocomplete: "off",
+          required: true,
+        })
+      : null;
+    form.append(
+      el("p", { class: "lede" }, [
+        text(asOwner
+          ? `Delete ${name}? Channels and memberships are removed. This cannot be undone.`
+          : `Leave ${name}? You can rejoin later with an invite.`),
+      ]),
+      asOwner
+        ? el("label", {}, [
+            text(`Type “${name}” to confirm`),
+            confirmInput,
+          ])
+        : null,
+      error,
+      el("div", { class: "actions" }, [
+        el("button", { class: "ghost", type: "button", onclick: () => modal.close() }, [text("Cancel")]),
+        el("button", {
+          type: "submit",
+          style: "background: var(--danger); color: #1a0d0a;",
+        }, [text(asOwner ? "Delete" : "Leave")]),
+      ]),
+    );
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      try {
+        if (asOwner) {
+          const typed = (confirmInput?.value || "").trim();
+          if (typed !== name) {
+            error.textContent = "Type the exact server name to delete it";
+            return;
+          }
+          await api(`/api/servers/${encodeURIComponent(state.server.id)}`, {
+            method: "DELETE",
+            body: JSON.stringify({ confirmName: typed }),
+          });
+        } else {
+          await api(`/api/servers/${encodeURIComponent(state.server.id)}/leave`, { method: "POST" });
+        }
+        modal.close();
+        state.activeServerId = null;
+        state.activeChannelId = null;
+        state.server = null;
+        await enterApp();
+      } catch (err) {
+        error.textContent = err.message || "Could not leave";
+      }
+    };
+  });
+}
+
+async function leaveServer() {
+  confirmLeaveOrDeleteServer(Boolean(state.server?.isOwner));
 }
 
 async function logout() {
@@ -2123,7 +2762,9 @@ document.querySelector("#mobile-nav")?.addEventListener("click", async (event) =
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker.register("/sw.js").then(() => {
+      if (Notification?.permission === "granted" && state.me) subscribeHallPush();
+    }).catch(() => {});
   });
 }
 

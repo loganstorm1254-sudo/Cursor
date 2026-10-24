@@ -672,6 +672,12 @@ function renderRail() {
         else closeDrawers();
       },
     }, [icon]);
+    if (server.canManage || canEditAnyPhotos()) {
+      button.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        pickServerIcon(server);
+      });
+    }
     const wrap = el("div", { class: "server-slot" }, [
       button,
       el("div", { class: "server-move" }, [
@@ -780,6 +786,19 @@ function canDeleteMessage(message) {
 
 function canAssignBeta() {
   return Boolean(state.me?.isPlatformOwner || state.me?.username === "owner");
+}
+
+function canEditAnyPhotos() {
+  return canAssignBeta();
+}
+
+function canManageServerAdmins() {
+  return Boolean(state.server && !state.server.isLobby && (state.server.isOwner || canEditAnyPhotos()));
+}
+
+function avatarUploadPath(username) {
+  if (!username || username === state.me?.username) return "/api/me/avatar";
+  return `/api/users/${encodeURIComponent(username)}/avatar`;
 }
 
 function betaBadge(user) {
@@ -956,7 +975,7 @@ function showContextMenu(event, opts) {
         items.push({ label: "Delete message", danger: true, run: () => deleteMessage(opts.message) });
       }
     }
-    if (state.server && !state.server.isLobby && state.server.isOwner && user.id && user.id !== state.me?.id) {
+    if (canManageServerAdmins() && user.id && user.id !== state.me?.id) {
       const member = state.members.find((item) => item.id === user.id) || user;
       if (!member.isOwner) {
         if (member.isAdmin) {
@@ -965,6 +984,9 @@ function showContextMenu(event, opts) {
           items.push({ label: "Make admin", run: () => toggleAdmin(member, true) });
         }
       }
+    }
+    if (canEditAnyPhotos() && user.username) {
+      items.push({ label: "Change photo", run: () => openEditProfile(user) });
     }
   }
   if (items.length === 0) return;
@@ -2640,15 +2662,58 @@ async function openProfile(username, editable = false) {
         ]),
       ]),
       el("p", { class: "bio" }, [text(profile.bio || "No bio yet.")]),
-      state.me?.username === profile.username
-        ? el("button", { class: "ghost", type: "button", onclick: () => openEditProfile(profile) }, [text("Edit profile")])
+      state.me?.username === profile.username || canEditAnyPhotos()
+        ? el("button", {
+            class: "ghost",
+            type: "button",
+            onclick: () => openEditProfile(profile),
+          }, [text(state.me?.username === profile.username ? "Edit profile" : "Change photo")])
         : null,
     );
   });
 }
 
+async function pickServerIcon(server) {
+  const file = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/gif" });
+  file.style.display = "none";
+  document.body.append(file);
+  file.addEventListener("change", async () => {
+    const picked = file.files?.[0];
+    file.remove();
+    if (!picked) return;
+    try {
+      const response = await fetch(`/api/servers/${encodeURIComponent(server.id)}/avatar`, {
+        method: "PUT",
+        headers: { "content-type": picked.type || "application/octet-stream" },
+        body: picked,
+        credentials: "same-origin",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Upload failed");
+      state.servers = state.servers.map((item) => (item.id === data.server.id ? { ...item, ...data.server } : item));
+      if (state.server?.id === data.server.id) state.server = { ...state.server, ...data.server };
+      renderRail();
+      renderChannels();
+    } catch (error) {
+      openModal("Server icon", (form) => {
+        form.append(el("p", { class: "form-error" }, [text(error.message || "Could not update icon")]));
+      });
+    }
+  }, { once: true });
+  file.click();
+}
+
+function applyUserPhoto(updated) {
+  if (updated.id === state.me?.id) state.me = { ...state.me, ...updated };
+  syncMember(updated);
+  renderChannels();
+  renderMembers();
+  renderMessages(false);
+}
+
 function openEditProfile(profile) {
-  openModal("Edit profile", (form) => {
+  const mine = profile.username === state.me?.username;
+  openModal(mine ? "Edit profile" : `Change photo · @${profile.username}`, (form) => {
     const previewWrap = el("div", {});
     previewWrap.append(avatarNode(profile, "avatar lg"));
     const bio = el("textarea", {
@@ -2670,7 +2735,7 @@ function openEditProfile(profile) {
         ]),
       ]),
       el("label", {}, [text("Photo"), file]),
-      el("label", {}, [text("Bio"), bio]),
+      mine ? el("label", {}, [text("Bio"), bio]) : el("p", { class: "lede" }, [text("Hall owner can replace this photo.")]),
       status,
       error,
       el("div", { class: "actions" }, [
@@ -2680,19 +2745,15 @@ function openEditProfile(profile) {
           onclick: async () => {
             error.textContent = "";
             try {
-              const data = await api("/api/me/avatar", { method: "DELETE" });
-              state.me = data.user;
-              syncMember(data.user);
+              const data = await api(avatarUploadPath(profile.username), { method: "DELETE" });
+              applyUserPhoto(data.user);
               modal.close();
-              renderChannels();
-              renderMembers();
-              renderMessages(false);
             } catch (err) {
               error.textContent = err.message;
             }
           },
         }, [text("Remove photo")]),
-        el("button", { type: "submit" }, [text("Save")]),
+        mine ? el("button", { type: "submit" }, [text("Save")]) : el("button", { class: "ghost", type: "button", onclick: () => modal.close() }, [text("Done")]),
       ]),
     );
     file.addEventListener("change", async () => {
@@ -2701,7 +2762,7 @@ function openEditProfile(profile) {
       error.textContent = "";
       status.textContent = "Uploading…";
       try {
-        const response = await fetch("/api/me/avatar", {
+        const response = await fetch(avatarUploadPath(profile.username), {
           method: "PUT",
           headers: { "content-type": picked.type || "application/octet-stream" },
           body: picked,
@@ -2709,13 +2770,9 @@ function openEditProfile(profile) {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || "Upload failed");
-        state.me = data.user;
-        syncMember(data.user);
+        applyUserPhoto(data.user);
         previewWrap.replaceChildren(avatarNode(data.user, "avatar lg"));
         status.textContent = "Photo updated.";
-        renderChannels();
-        renderMembers();
-        renderMessages(false);
       } catch (err) {
         error.textContent = err.message;
         status.textContent = "";
@@ -2725,6 +2782,10 @@ function openEditProfile(profile) {
     });
     form.onsubmit = async (event) => {
       event.preventDefault();
+      if (!mine) {
+        modal.close();
+        return;
+      }
       error.textContent = "";
       try {
         const data = await api("/api/me", {
@@ -2782,7 +2843,7 @@ function openServerSettings() {
       status,
       error,
     );
-    if (server.isOwner && !server.isLobby) {
+    if ((server.isOwner || canEditAnyPhotos()) && !server.isLobby) {
       const adminBox = el("div", { class: "admin-list" }, [
         el("p", { class: "lede" }, [text("Admins can edit the server, channels, and delete any message.")]),
       ]);

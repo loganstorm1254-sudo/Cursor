@@ -454,6 +454,23 @@ describe("Hall", () => {
       body: JSON.stringify({ beta: false }),
     });
     expect(blockedBeta.status).toBe(403);
+
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+    const ownerPhoto = await authed(ownerCookie, "/api/users/grace_admin/avatar", {
+      method: "PUT",
+      headers: { "content-type": "image/png" },
+      body: png,
+    });
+    expect(ownerPhoto.status).toBe(200);
+    const photoBody = (await ownerPhoto.json()) as { user: { avatarUrl: string | null } };
+    expect(photoBody.user.avatarUrl).toMatch(/^\/api\/avatars\//);
+
+    const strangerPhoto = await authed(ada.cookie, "/api/users/grace_admin/avatar", {
+      method: "PUT",
+      headers: { "content-type": "image/png" },
+      body: png,
+    });
+    expect(strangerPhoto.status).toBe(403);
   });
 
   it("serves two concurrent visitors without hanging on boot", async () => {

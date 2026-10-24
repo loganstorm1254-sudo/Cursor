@@ -63,7 +63,7 @@ function publicServer(row: ServerRow, userId: string, user?: PublicUser, extras?
   const isLobby = row.id === "lobby";
   const isOwner = row.owner_id === userId;
   const isAdmin = Boolean(extras?.isAdmin) && !isOwner;
-  const canManage = isLobby ? Boolean(user?.isPlatformOwner) : isOwner || Boolean(extras?.isAdmin);
+  const canManage = Boolean(user?.isPlatformOwner) || (!isLobby && (isOwner || Boolean(extras?.isAdmin)));
   return {
     id: row.id,
     name: row.name,
@@ -104,7 +104,8 @@ async function adminServerIdsForUser(env: Env, userId: string): Promise<Set<stri
 }
 
 async function userCanManage(env: Env, server: { id: string; owner_id: string }, user: PublicUser): Promise<boolean> {
-  if (server.id === "lobby") return user.isPlatformOwner;
+  if (user.isPlatformOwner) return true;
+  if (server.id === "lobby") return false;
   if (server.owner_id === user.id) return true;
   return isServerAdmin(env, server.id, user.id);
 }
@@ -298,20 +299,13 @@ async function updateProfile(request: Request, env: Env, user: PublicUser): Prom
   return json({ user: toPublicUser(row) });
 }
 
-async function uploadAvatar(request: Request, env: Env, user: PublicUser): Promise<Response> {
-  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
-  if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength === 0) throw new HttpError(400, "Empty image");
-  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(413, "Image must be under 512KB");
-
-  const key = `${user.id}/${crypto.randomUUID()}`;
+async function storeUserAvatar(env: Env, targetId: string, bytes: ArrayBuffer, type: string) {
+  const key = `${targetId}/${crypto.randomUUID()}`;
   await env.AVATARS.put(key, bytes, {
     httpMetadata: { contentType: type, cacheControl: "public, max-age=31536000, immutable" },
   });
-
-  const previous = await findUserById(env, user.id);
-  await env.DB.prepare(`UPDATE users SET avatar_key = ? WHERE id = ?`).bind(key, user.id).run();
+  const previous = await findUserById(env, targetId);
+  await env.DB.prepare(`UPDATE users SET avatar_key = ? WHERE id = ?`).bind(key, targetId).run();
   if (previous?.avatar_key && previous.avatar_key !== key) {
     try {
       await env.AVATARS.delete(previous.avatar_key);
@@ -319,15 +313,23 @@ async function uploadAvatar(request: Request, env: Env, user: PublicUser): Promi
       // Best-effort cleanup.
     }
   }
-
-  const row = await findUserById(env, user.id);
+  const row = await findUserById(env, targetId);
   if (!row) throw new HttpError(404, "User not found");
-  return json({ user: toPublicUser(row) });
+  return toPublicUser(row);
 }
 
-async function clearAvatar(env: Env, user: PublicUser): Promise<Response> {
-  const previous = await findUserById(env, user.id);
-  await env.DB.prepare(`UPDATE users SET avatar_key = NULL WHERE id = ?`).bind(user.id).run();
+async function uploadAvatar(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) throw new HttpError(400, "Empty image");
+  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(413, "Image must be under 512KB");
+  return json({ user: await storeUserAvatar(env, user.id, bytes, type) });
+}
+
+async function clearAvatar(env: Env, user: PublicUser, targetId = user.id): Promise<Response> {
+  const previous = await findUserById(env, targetId);
+  await env.DB.prepare(`UPDATE users SET avatar_key = NULL WHERE id = ?`).bind(targetId).run();
   if (previous?.avatar_key) {
     try {
       await env.AVATARS.delete(previous.avatar_key);
@@ -335,9 +337,37 @@ async function clearAvatar(env: Env, user: PublicUser): Promise<Response> {
       // Best-effort cleanup.
     }
   }
-  const row = await findUserById(env, user.id);
+  const row = await findUserById(env, targetId);
   if (!row) throw new HttpError(404, "User not found");
   return json({ user: toPublicUser(row) });
+}
+
+async function uploadUserAvatar(
+  request: Request,
+  env: Env,
+  actor: PublicUser,
+  usernameRaw: string,
+): Promise<Response> {
+  if (!actor.isPlatformOwner) throw new HttpError(403, "Only the Hall owner can change someone else's photo");
+  const parsed = normalizeUsername(usernameRaw);
+  if ("error" in parsed) throw new HttpError(400, parsed.error);
+  const target = await findUserByUsername(env, parsed.username);
+  if (!target || target.id === "system") throw new HttpError(404, "User not found");
+  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) throw new HttpError(400, "Empty image");
+  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(413, "Image must be under 512KB");
+  return json({ user: await storeUserAvatar(env, target.id, bytes, type) });
+}
+
+async function clearUserAvatar(env: Env, actor: PublicUser, usernameRaw: string): Promise<Response> {
+  if (!actor.isPlatformOwner) throw new HttpError(403, "Only the Hall owner can change someone else's photo");
+  const parsed = normalizeUsername(usernameRaw);
+  if ("error" in parsed) throw new HttpError(400, parsed.error);
+  const target = await findUserByUsername(env, parsed.username);
+  if (!target || target.id === "system") throw new HttpError(404, "User not found");
+  return clearAvatar(env, actor, target.id);
 }
 
 async function getAvatar(env: Env, keyPath: string): Promise<Response> {
@@ -410,7 +440,9 @@ async function updateServer(request: Request, env: Env, user: PublicUser, server
     .bind(serverId)
     .first<ServerRow>();
   if (!server) throw new HttpError(404, "Server not found");
-  if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
+  if (!user.isPlatformOwner && !(await memberOf(env, server.id, user.id))) {
+    throw new HttpError(403, "You are not in this server");
+  }
   if (!(await userCanManage(env, server, user))) {
     throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner or an admin can edit this server");
   }
@@ -476,7 +508,9 @@ async function uploadServerAvatar(request: Request, env: Env, user: PublicUser, 
     .bind(serverId)
     .first<ServerRow>();
   if (!server) throw new HttpError(404, "Server not found");
-  if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
+  if (!user.isPlatformOwner && !(await memberOf(env, server.id, user.id))) {
+    throw new HttpError(403, "You are not in this server");
+  }
   if (!(await userCanManage(env, server, user))) throw new HttpError(403, "Only the server owner or an admin can change the icon");
 
   const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
@@ -1285,6 +1319,13 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, url: URL
   if (profileMatch && method === "GET") return getProfile(env, decodeURIComponent(profileMatch[1] ?? ""));
   const betaMatch = pathname.match(/^\/api\/users\/([^/]+)\/beta$/);
   if (betaMatch && method === "PUT") return setBetaTester(request, env, user, decodeURIComponent(betaMatch[1] ?? ""));
+  const userAvatarMatch = pathname.match(/^\/api\/users\/([^/]+)\/avatar$/);
+  if (userAvatarMatch && method === "PUT") {
+    return uploadUserAvatar(request, env, user, decodeURIComponent(userAvatarMatch[1] ?? ""));
+  }
+  if (userAvatarMatch && method === "DELETE") {
+    return clearUserAvatar(env, user, decodeURIComponent(userAvatarMatch[1] ?? ""));
+  }
 
   if (method === "GET" && pathname === "/api/servers") return listServers(env, user);
   if (method === "POST" && pathname === "/api/servers") return createServer(request, env, user);

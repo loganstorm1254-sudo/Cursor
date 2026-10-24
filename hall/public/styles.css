@@ -690,6 +690,12 @@ video.voice-screen-sink {
 .voice-ctrl.hangup { background: #c24b3c; color: #fff7f5; }
 .voice-ctrl:disabled { opacity: 0.45; cursor: default; }
 .share-mini.on { color: var(--good) !important; }
+.leave-server-btn {
+  color: var(--danger) !important;
+  font-weight: 600;
+  min-height: 40px;
+  justify-self: start;
+}
 .voice-dock {
   margin-top: auto;
   padding: 10px 12px;
@@ -959,13 +965,14 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
   .shell {
     grid-template-columns: minmax(0, 1fr);
     position: relative;
-    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    /* Single bottom inset for the nav — do not also pad .chat or the composer floats too high. */
+    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
   }
   .rail {
     position: fixed;
     top: 0;
     left: 0;
-    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
     width: 72px;
     z-index: 6;
     transform: translateX(-105%);
@@ -980,7 +987,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
     position: fixed;
     top: 0;
     left: 72px;
-    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
     width: min(280px, calc(100vw - 72px));
     z-index: 6;
     display: flex;
@@ -993,7 +1000,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
   .shell.nav-open .channels { transform: translateX(0); }
   .server-move { display: none; }
   .members {
-    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
     width: min(320px, 92vw);
   }
 
@@ -1045,7 +1052,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
     display: block;
     position: fixed;
     inset: 0;
-    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
     z-index: 4;
     border: 0;
     background: rgba(0, 0, 0, 0.55);
@@ -1069,12 +1076,12 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
   .avatar { width: 34px; height: 34px; border-radius: 12px; }
   .handle { display: none; }
   .chat {
-    /* Sit just above the bottom nav — was leaving a large gap under the composer. */
-    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    /* Bottom space comes from .shell only — extra padding here made the composer float. */
+    padding-bottom: 0;
   }
   .composer {
     gap: 8px;
-    padding: 8px 10px 6px;
+    padding: 8px 10px 4px;
   }
   .composer textarea {
     min-height: 44px;

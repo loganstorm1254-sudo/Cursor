@@ -253,6 +253,11 @@ describe("Hall", () => {
     expect(left.status).toBe(200);
     const blockedAgain = await authed(grace.cookie, `/api/channels/${createdBody.channel.id}/messages`);
     expect(blockedAgain.status).toBe(403);
+
+    const deleted = await authed(ada.cookie, `/api/servers/${createdBody.server.id}`, { method: "DELETE" });
+    expect(deleted.status).toBe(200);
+    const gone = await authed(ada.cookie, `/api/servers/${createdBody.server.id}`);
+    expect(gone.status).toBe(404);
   });
 
   it("supports server reorder, server profile edits, and /poll votes", async () => {

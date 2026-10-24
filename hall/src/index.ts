@@ -724,9 +724,33 @@ async function leaveServer(env: Env, user: PublicUser, serverId: string): Promis
     .first<{ id: string; owner_id: string }>();
   if (!server) throw new HttpError(404, "Server not found");
   if (server.id === "lobby") throw new HttpError(400, "Hall Official cannot be left");
-  if (server.owner_id === user.id) throw new HttpError(400, "The server owner stays with the server");
+  if (server.owner_id === user.id) {
+    throw new HttpError(400, "Owners must delete the server instead of leaving");
+  }
   await env.DB.prepare("DELETE FROM memberships WHERE server_id = ? AND user_id = ?").bind(server.id, user.id).run();
   return json({ ok: true });
+}
+
+async function deleteServer(env: Env, user: PublicUser, serverId: string): Promise<Response> {
+  const server = await env.DB.prepare("SELECT id, owner_id FROM servers WHERE id = ?")
+    .bind(serverId)
+    .first<{ id: string; owner_id: string }>();
+  if (!server) throw new HttpError(404, "Server not found");
+  if (server.id === "lobby") throw new HttpError(400, "Hall Official cannot be deleted");
+  if (server.owner_id !== user.id && !user.isPlatformOwner) {
+    throw new HttpError(403, "Only the owner can delete this server");
+  }
+  const channels = await env.DB.prepare("SELECT id FROM channels WHERE server_id = ?")
+    .bind(server.id)
+    .all<{ id: string }>();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM memberships WHERE server_id = ?").bind(server.id),
+    env.DB.prepare("DELETE FROM channels WHERE server_id = ?").bind(server.id),
+    env.DB.prepare("DELETE FROM servers WHERE id = ?").bind(server.id),
+  ]);
+  // Best-effort: drop Durable Object message history is tied to channel ids; unused rooms expire.
+  void channels;
+  return json({ ok: true, serverId: server.id });
 }
 
 async function listMessages(url: URL, env: Env, user: PublicUser, channelId: string): Promise<Response> {
@@ -1045,6 +1069,7 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
     const action = serverMatch[2];
     if (!action && method === "GET") return serverDetail(env, user, serverId);
     if (!action && method === "PATCH") return updateServer(request, env, user, serverId);
+    if (!action && method === "DELETE") return deleteServer(env, user, serverId);
     if (action === "avatar" && method === "PUT") return uploadServerAvatar(request, env, user, serverId);
     if (action === "channels" && method === "POST") return createChannel(request, env, user, serverId);
     if (action === "channel-order" && method === "PUT") return reorderChannels(request, env, user, serverId);

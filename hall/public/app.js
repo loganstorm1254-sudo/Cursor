@@ -268,7 +268,7 @@ function showApp() {
   boot.removeAttribute("aria-busy");
   auth.hidden = true;
   shell.hidden = false;
-  requestHallNotifications();
+  armNotificationPrompt();
 }
 
 function isPhoneClient() {
@@ -276,39 +276,69 @@ function isPhoneClient() {
     || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
 }
 
+let notificationPromptArmed = false;
+
 async function requestHallNotifications() {
-  if (!("Notification" in window) || !isPhoneClient()) return;
+  if (!("Notification" in window)) return false;
   try {
-    if (Notification.permission === "default") {
-      await Notification.requestPermission();
-    }
+    if (Notification.permission === "granted") return true;
+    if (Notification.permission === "denied") return false;
+    const result = await Notification.requestPermission();
+    return result === "granted";
   } catch {
-    // Some WebViews block the prompt.
+    return false;
   }
 }
 
-function maybeNotifyMessage(message) {
+/** Browsers often ignore permission prompts without a tap — arm one on first interaction. */
+function armNotificationPrompt() {
+  if (!isPhoneClient() || !("Notification" in window)) return;
+  if (Notification.permission !== "default" || notificationPromptArmed) {
+    requestHallNotifications();
+    return;
+  }
+  notificationPromptArmed = true;
+  const ask = () => {
+    document.removeEventListener("pointerdown", ask, true);
+    requestHallNotifications();
+  };
+  document.addEventListener("pointerdown", ask, true);
+}
+
+async function maybeNotifyMessage(message) {
   if (!message || message.userId === state.me?.id) return;
   if (!("Notification" in window) || Notification.permission !== "granted") return;
+  // Fire when backgrounded, or when Hall is open but you’re not looking at this tab.
   if (!document.hidden && document.hasFocus()) return;
   const title = message.displayName || message.username || "Hall";
   const body = String(message.body || "")
     .replace(/^§HALLPOLL§/, "Poll: ")
-    .slice(0, 120);
+    .slice(0, 120) || "New message";
+  const options = {
+    body,
+    tag: `hall-msg-${message.id}`,
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    renotify: false,
+    data: { url: "/" },
+  };
   try {
-    const note = new Notification(title, {
-      body: body || "New message",
-      tag: `hall-msg-${message.id}`,
-      icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
-      renotify: false,
-    });
+    const reg = await navigator.serviceWorker?.ready;
+    if (reg?.showNotification) {
+      await reg.showNotification(title, options);
+      return;
+    }
+  } catch {
+    // Fall through to page Notification.
+  }
+  try {
+    const note = new Notification(title, options);
     note.onclick = () => {
       window.focus();
       note.close();
     };
   } catch {
-    // Ignore — permission can flip mid-session.
+    // Permission can flip mid-session.
   }
 }
 
@@ -806,8 +836,20 @@ function renderChannels() {
     foot.append(el("button", { class: "ghost", type: "button", onclick: () => openCreateChannel("text") }, [text("Add text channel")]));
     foot.append(el("button", { class: "ghost", type: "button", onclick: () => openCreateChannel("voice") }, [text("Create VC")]));
   }
-  if (!server.isLobby && !server.isOwner && !server.unleavable) {
-    foot.append(el("button", { class: "text-button", type: "button", onclick: leaveServer }, [text("Leave server")]));
+  if (!server.isLobby && !server.unleavable) {
+    if (server.isOwner) {
+      foot.append(el("button", {
+        class: "text-button leave-server-btn",
+        type: "button",
+        onclick: () => confirmLeaveOrDeleteServer(true),
+      }, [text("Delete server")]));
+    } else {
+      foot.append(el("button", {
+        class: "text-button leave-server-btn",
+        type: "button",
+        onclick: () => confirmLeaveOrDeleteServer(false),
+      }, [text("Leave server")]));
+    }
   }
   const me = el("div", { class: "me-row" }, [
     avatarNode(state.me, "avatar sm"),
@@ -2449,16 +2491,49 @@ async function copyInvite() {
   }
 }
 
-async function leaveServer() {
+function confirmLeaveOrDeleteServer(asOwner) {
   if (!state.server || state.server.isLobby) return;
-  try {
-    await api(`/api/servers/${encodeURIComponent(state.server.id)}/leave`, { method: "POST" });
-    state.activeServerId = null;
-    state.activeChannelId = null;
-    await enterApp();
-  } catch (error) {
-    authError.textContent = error.message;
-  }
+  const name = state.server.name || "this server";
+  openModal(asOwner ? "Delete server" : "Leave server", (form) => {
+    const error = el("p", { class: "form-error", role: "alert" });
+    form.append(
+      el("p", { class: "lede" }, [
+        text(asOwner
+          ? `Delete ${name}? Channels and memberships are removed. This cannot be undone.`
+          : `Leave ${name}? You can rejoin later with an invite.`),
+      ]),
+      error,
+      el("div", { class: "actions" }, [
+        el("button", { class: "ghost", type: "button", onclick: () => modal.close() }, [text("Cancel")]),
+        el("button", {
+          type: "submit",
+          style: "background: var(--danger); color: #1a0d0a;",
+        }, [text(asOwner ? "Delete" : "Leave")]),
+      ]),
+    );
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      try {
+        if (asOwner) {
+          await api(`/api/servers/${encodeURIComponent(state.server.id)}`, { method: "DELETE" });
+        } else {
+          await api(`/api/servers/${encodeURIComponent(state.server.id)}/leave`, { method: "POST" });
+        }
+        modal.close();
+        state.activeServerId = null;
+        state.activeChannelId = null;
+        state.server = null;
+        await enterApp();
+      } catch (err) {
+        error.textContent = err.message || "Could not leave";
+      }
+    };
+  });
+}
+
+async function leaveServer() {
+  confirmLeaveOrDeleteServer(Boolean(state.server?.isOwner));
 }
 
 async function logout() {
@@ -2553,14 +2628,8 @@ document.querySelector("#mobile-nav")?.addEventListener("click", async (event) =
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
-    // Ask early on phones so chats can notify when Hall is in the background.
-    if (document.visibilityState === "visible") requestHallNotifications();
   });
 }
-
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") requestHallNotifications();
-});
 
 if (emojiPanel && emojiButton) {
   for (const emoji of EMOJI_PICKER) {

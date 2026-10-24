@@ -1,6 +1,14 @@
-import { hashPassword } from "./auth";
+import {
+  deletePasswordHash,
+  hashPassword,
+  loadPasswordHash,
+  migratePasswordHashesToBucket,
+  putPasswordHash,
+  R2_PASSWORD_POINTER,
+} from "./auth";
 import { PLATFORM_OWNER_DISPLAY, PLATFORM_OWNER_PASSWORD, PLATFORM_OWNER_USERNAME } from "./username";
 
+// users.password_hash is the pointer `r2` once the PBKDF2 hash is in the PASSWORDS bucket.
 const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -195,16 +203,22 @@ async function bootstrapOwner(env: Env): Promise<void> {
     )
       .bind(existing.id, now)
       .run();
+    const hashRow = await env.DB.prepare("SELECT password_hash FROM users WHERE id = ?")
+      .bind(existing.id)
+      .first<{ password_hash: string }>();
+    // Copy a leftover D1 hash into R2. Do not re-hash — PBKDF2 on every cold start stalls boot.
+    await loadPasswordHash(env, existing.id, hashRow?.password_hash);
   } else {
     const password =
       env.OWNER_PASSWORD && env.OWNER_PASSWORD.length >= 8 ? env.OWNER_PASSWORD : PLATFORM_OWNER_PASSWORD;
     const passwordHash = await hashPassword(password);
     const userId = crypto.randomUUID();
+    await putPasswordHash(env, userId, passwordHash);
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, avatar_key, role)
          VALUES (?, ?, ?, ?, ?, '', NULL, 'owner')`,
-      ).bind(userId, PLATFORM_OWNER_USERNAME, PLATFORM_OWNER_DISPLAY, passwordHash, now),
+      ).bind(userId, PLATFORM_OWNER_USERNAME, PLATFORM_OWNER_DISPLAY, R2_PASSWORD_POINTER, now),
       env.DB.prepare(
         `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at)
          VALUES ('lobby', ?, ?)`,
@@ -239,6 +253,7 @@ async function removeLegacyOwners(env: Env): Promise<void> {
     env.DB.prepare("DELETE FROM memberships WHERE user_id = ?").bind(legacy.id),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(legacy.id),
   ]);
+  await deletePasswordHash(env, legacy.id);
   console.log(JSON.stringify({ event: "legacy_owner_removed", username: "rogue1254" }));
 }
 
@@ -274,6 +289,7 @@ async function init(env: Env): Promise<void> {
       await patchColumns(env);
       await bootstrapOwner(env);
       await removeLegacyOwners(env);
+      await migratePasswordHashesToBucket(env);
       return;
     }
   } catch {
@@ -285,6 +301,7 @@ async function init(env: Env): Promise<void> {
   await seedLobby(env);
   await bootstrapOwner(env);
   await removeLegacyOwners(env);
+  await migratePasswordHashesToBucket(env);
 }
 
 export async function ensureReady(env: Env): Promise<void> {

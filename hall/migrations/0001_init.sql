@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
+  -- Pointer `r2` after the PBKDF2 hash is written to the hall-passwords R2 bucket.
   password_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );

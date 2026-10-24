@@ -5,7 +5,10 @@ import {
   findUserById,
   findUserByUsername,
   hashPassword,
-  passwordMatches,
+  passwordMatchesForUser,
+  deletePasswordHash,
+  putPasswordHash,
+  R2_PASSWORD_POINTER,
   requireUser,
   sessionHeaders,
   toPublicUser,
@@ -228,18 +231,20 @@ async function register(request: Request, env: Env): Promise<Response> {
   const passwordHash = await hashPassword(parsedPassword);
   const now = Date.now();
   const role = isPlatformOwnerUsername(parsedName.username) ? "owner" : "user";
+  await putPasswordHash(env, userId, passwordHash);
   try {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, avatar_key, role)
          VALUES (?, ?, ?, ?, ?, '', NULL, ?)`,
-      ).bind(userId, parsedName.username, parsedName.displayName, passwordHash, now, role),
+      ).bind(userId, parsedName.username, parsedName.displayName, R2_PASSWORD_POINTER, now, role),
       env.DB.prepare(
         `INSERT OR IGNORE INTO memberships (server_id, user_id, joined_at, position)
          VALUES ('lobby', ?, ?, 0)`,
       ).bind(userId, now),
     ]);
   } catch (error) {
+    await deletePasswordHash(env, userId);
     const message = error instanceof Error ? error.message : "";
     if (message.includes("UNIQUE")) throw new HttpError(409, "That username is taken");
     throw error;
@@ -270,7 +275,7 @@ async function login(request: Request, env: Env): Promise<Response> {
   if ("error" in parsedName) throw new HttpError(401, "Wrong username or password");
 
   const user = await findUserByUsername(env, parsedName.username);
-  const valid = await passwordMatches(password, user?.password_hash ?? null);
+  const valid = await passwordMatchesForUser(env, user, password);
   if (!user || !valid) throw new HttpError(401, "Wrong username or password");
 
   if (isPlatformOwnerUsername(user.username) && user.role !== "owner") {

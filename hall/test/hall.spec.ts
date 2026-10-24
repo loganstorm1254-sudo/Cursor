@@ -1,6 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { hashPassword } from "../src/auth";
 
 type UserBody = { user: { id: string; username: string; displayName: string } };
 type ErrorBody = { error: string };
@@ -72,6 +73,61 @@ describe("Hall", () => {
       body: JSON.stringify({ username: "piper", password: "wrong-password" }),
     });
     expect(login.status).toBe(401);
+  });
+
+  it("stores password hashes in the R2 bucket, never in the session cookie", async () => {
+    const password = "correct-horse";
+    const created = await register("vaulted", password);
+    expect(created.response.status).toBe(201);
+    expect(created.cookie).toMatch(/^hall_session=/);
+    expect(created.cookie.toLowerCase()).not.toContain(password);
+    expect(created.cookie).not.toContain("pbkdf2");
+
+    const row = await env.DB.prepare("SELECT id, password_hash FROM users WHERE username = ?")
+      .bind("vaulted")
+      .first<{ id: string; password_hash: string }>();
+    expect(row?.password_hash).toBe("r2");
+
+    const object = await env.PASSWORDS.get(`passwords/${row?.id}`);
+    expect(object).not.toBeNull();
+    const stored = await object!.text();
+    expect(stored.startsWith("pbkdf2$100000$")).toBe(true);
+    expect(stored).not.toContain(password);
+
+    const login = await exports.default.fetch("http://hall.test/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "vaulted", password }),
+    });
+    expect(login.status).toBe(200);
+    const loginCookie = login.headers.get("set-cookie") ?? "";
+    expect(loginCookie.toLowerCase()).not.toContain(password);
+  });
+
+  it("moves leftover D1 password hashes into the R2 bucket on login", async () => {
+    const password = "correct-horse";
+    const userId = crypto.randomUUID();
+    const leftover = await hashPassword(password);
+    await env.DB.prepare(
+      `INSERT INTO users (id, username, display_name, password_hash, created_at, bio, role)
+       VALUES (?, 'legacyhash', 'Legacy Hash', ?, ?, '', 'user')`,
+    )
+      .bind(userId, leftover, Date.now())
+      .run();
+
+    const login = await exports.default.fetch("http://hall.test/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "legacyhash", password }),
+    });
+    expect(login.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT password_hash FROM users WHERE id = ?")
+      .bind(userId)
+      .first<{ password_hash: string }>();
+    expect(row?.password_hash).toBe("r2");
+    const object = await env.PASSWORDS.get(`passwords/${userId}`);
+    expect(await object?.text()).toBe(leftover);
   });
 
   it("puts new people in the lobby and keeps channel history on its own object", async () => {

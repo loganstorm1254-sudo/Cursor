@@ -7,6 +7,8 @@ interface Env {
   VAPID_SUBJECT?: string;
   DB: D1Database;
   AVATARS: R2Bucket;
+  /** Private bucket for PBKDF2 password hashes. Never served over HTTP. */
+  PASSWORDS: R2Bucket;
   CHANNELS: DurableObjectNamespace<import("./src/channel").ChannelRoom>;
   SERVERS: DurableObjectNamespace<import("./src/hub").ServerHub>;
   ASSETS: Fetcher;

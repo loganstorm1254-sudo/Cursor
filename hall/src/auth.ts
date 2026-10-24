@@ -5,6 +5,9 @@ const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const PBKDF2_ITERATIONS = 100_000;
 const COOKIE = "hall_session";
 
+/** D1 placeholder once the real PBKDF2 hash lives in the PASSWORDS R2 bucket. */
+export const R2_PASSWORD_POINTER = "r2";
+
 // Valid format, not the hash of any chosen password. Used so a missing account
 // still pays for a full PBKDF2 derivation.
 const DUMMY_PASSWORD_HASH = "pbkdf2$100000$AQEBAQEBAQEBAQEBAQEBAQ$AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
@@ -59,6 +62,57 @@ export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await pbkdf2(password, salt, PBKDF2_ITERATIONS);
   return `pbkdf2$${PBKDF2_ITERATIONS}$${bytesToBase64Url(salt)}$${bytesToBase64Url(hash)}`;
+}
+
+export function passwordObjectKey(userId: string): string {
+  return `passwords/${userId}`;
+}
+
+export function isStoredPasswordHash(value: string | null | undefined): boolean {
+  return Boolean(value && value.startsWith("pbkdf2$"));
+}
+
+export async function putPasswordHash(env: Env, userId: string, hash: string): Promise<void> {
+  await env.PASSWORDS.put(passwordObjectKey(userId), hash, {
+    httpMetadata: { contentType: "text/plain; charset=utf-8" },
+    customMetadata: { kind: "password-hash" },
+  });
+}
+
+export async function deletePasswordHash(env: Env, userId: string): Promise<void> {
+  await env.PASSWORDS.delete(passwordObjectKey(userId));
+}
+
+export async function storePasswordHash(env: Env, userId: string, hash: string): Promise<void> {
+  await putPasswordHash(env, userId, hash);
+  await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(R2_PASSWORD_POINTER, userId).run();
+}
+
+/** Read the PBKDF2 hash from R2. Copy leftover D1 hashes into the bucket once. */
+export async function loadPasswordHash(env: Env, userId: string, d1Hash?: string | null): Promise<string | null> {
+  const object = await env.PASSWORDS.get(passwordObjectKey(userId));
+  if (object) {
+    const stored = await object.text();
+    if (isStoredPasswordHash(d1Hash)) {
+      await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(R2_PASSWORD_POINTER, userId).run();
+    }
+    return stored;
+  }
+  if (isStoredPasswordHash(d1Hash) && d1Hash) {
+    await storePasswordHash(env, userId, d1Hash);
+    return d1Hash;
+  }
+  return null;
+}
+
+export async function migratePasswordHashesToBucket(env: Env): Promise<void> {
+  const rows = await env.DB.prepare(`SELECT id, password_hash FROM users WHERE password_hash LIKE 'pbkdf2$%'`).all<{
+    id: string;
+    password_hash: string;
+  }>();
+  for (const row of rows.results ?? []) {
+    await storePasswordHash(env, row.id, row.password_hash);
+  }
 }
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
@@ -198,4 +252,14 @@ export async function findUserById(env: Env, id: string): Promise<UserRow | null
 
 export async function passwordMatches(password: string, stored: string | null): Promise<boolean> {
   return verifyPassword(password, stored ?? DUMMY_PASSWORD_HASH);
+}
+
+export async function passwordMatchesForUser(
+  env: Env,
+  user: Pick<UserRow, "id" | "password_hash"> | null,
+  password: string,
+): Promise<boolean> {
+  if (!user) return passwordMatches(password, null);
+  const stored = await loadPasswordHash(env, user.id, user.password_hash);
+  return passwordMatches(password, stored);
 }

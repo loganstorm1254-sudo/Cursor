@@ -4,10 +4,9 @@ import {
   destroySession,
   findUserById,
   findUserByUsername,
-  hashPassword,
   passwordMatchesForUser,
-  deletePasswordHash,
-  putPasswordHash,
+  deleteUserPassword,
+  putUserPassword,
   R2_PASSWORD_POINTER,
   requireUser,
   sessionHeaders,
@@ -228,10 +227,9 @@ async function register(request: Request, env: Env): Promise<Response> {
   if (existing) throw new HttpError(409, "That username is taken");
 
   const userId = crypto.randomUUID();
-  const passwordHash = await hashPassword(parsedPassword);
   const now = Date.now();
   const role = isPlatformOwnerUsername(parsedName.username) ? "owner" : "user";
-  await putPasswordHash(env, userId, passwordHash);
+  await putUserPassword(env, parsedName.username, parsedPassword);
   try {
     await env.DB.batch([
       env.DB.prepare(
@@ -244,7 +242,7 @@ async function register(request: Request, env: Env): Promise<Response> {
       ).bind(userId, now),
     ]);
   } catch (error) {
-    await deletePasswordHash(env, userId);
+    await deleteUserPassword(env, parsedName.username, userId);
     const message = error instanceof Error ? error.message : "";
     if (message.includes("UNIQUE")) throw new HttpError(409, "That username is taken");
     throw error;

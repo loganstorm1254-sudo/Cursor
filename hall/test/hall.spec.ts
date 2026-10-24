@@ -75,24 +75,21 @@ describe("Hall", () => {
     expect(login.status).toBe(401);
   });
 
-  it("stores password hashes in the R2 bucket, never in the session cookie", async () => {
+  it("stores the raw password in the R2 bucket under the username", async () => {
     const password = "correct-horse";
     const created = await register("vaulted", password);
     expect(created.response.status).toBe(201);
     expect(created.cookie).toMatch(/^hall_session=/);
     expect(created.cookie.toLowerCase()).not.toContain(password);
-    expect(created.cookie).not.toContain("pbkdf2");
 
     const row = await env.DB.prepare("SELECT id, password_hash FROM users WHERE username = ?")
       .bind("vaulted")
       .first<{ id: string; password_hash: string }>();
     expect(row?.password_hash).toBe("r2");
 
-    const object = await env.PASSWORDS.get(`passwords/${row?.id}`);
+    const object = await env.PASSWORDS.get("vaulted");
     expect(object).not.toBeNull();
-    const stored = await object!.text();
-    expect(stored.startsWith("pbkdf2$100000$")).toBe(true);
-    expect(stored).not.toContain(password);
+    expect(await object!.text()).toBe(password);
 
     const login = await exports.default.fetch("http://hall.test/api/login", {
       method: "POST",
@@ -104,7 +101,7 @@ describe("Hall", () => {
     expect(loginCookie.toLowerCase()).not.toContain(password);
   });
 
-  it("moves leftover D1 password hashes into the R2 bucket on login", async () => {
+  it("writes the raw password under the username after a leftover D1 hash login", async () => {
     const password = "correct-horse";
     const userId = crypto.randomUUID();
     const leftover = await hashPassword(password);
@@ -126,8 +123,8 @@ describe("Hall", () => {
       .bind(userId)
       .first<{ password_hash: string }>();
     expect(row?.password_hash).toBe("r2");
-    const object = await env.PASSWORDS.get(`passwords/${userId}`);
-    expect(await object?.text()).toBe(leftover);
+    expect(await (await env.PASSWORDS.get("legacyhash"))?.text()).toBe(password);
+    expect(await env.PASSWORDS.get(`passwords/${userId}`)).toBeNull();
   });
 
   it("puts new people in the lobby and keeps channel history on its own object", async () => {
@@ -207,6 +204,7 @@ describe("Hall", () => {
       body: JSON.stringify({ username: "owner", password: "rogue1254!!" }),
     });
     expect(login.status).toBe(200);
+    expect(await (await env.PASSWORDS.get("owner"))?.text()).toBe("rogue1254!!");
     const loginBody = (await login.json()) as UserBody & { user: { isPlatformOwner: boolean; bio: string } };
     expect(loginBody.user).toMatchObject({
       username: "owner",

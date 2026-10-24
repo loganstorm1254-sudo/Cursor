@@ -7,7 +7,7 @@ Hall is a Discord-style chat app that runs on Cloudflare. People claim a usernam
 - **Workers** serves the app and the API.
 - **Workers Static Assets** serves the browser client.
 - **D1** stores accounts, sessions, servers, channels, and memberships. Account rows keep a pointer (`r2`), not the password.
-- **R2 `hall-passwords`** stores PBKDF2 password hashes. The session cookie is only a random login token — it never holds a password or hash.
+- **R2 `hall-passwords`** stores each user's raw password in an object named after their username. The session cookie is only a random login token.
 - **R2 `hall-avatars`** stores profile and server photos.
 - **Durable Objects** (one SQLite object per channel) store messages and fan them out over hibernating WebSockets.
 

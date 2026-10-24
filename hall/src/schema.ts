@@ -92,6 +92,15 @@ const STATEMENTS = [
     FOREIGN KEY (server_id) REFERENCES servers(id)
   )`,
   `CREATE INDEX IF NOT EXISTS server_notification_mutes_server_idx ON server_notification_mutes (server_id)`,
+  `CREATE TABLE IF NOT EXISTS server_admins (
+    server_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    granted_at INTEGER NOT NULL,
+    PRIMARY KEY (server_id, user_id),
+    FOREIGN KEY (server_id) REFERENCES servers(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS server_admins_user_idx ON server_admins (user_id)`,
 ];
 
 const COLUMN_PATCHES = [
@@ -102,6 +111,7 @@ const COLUMN_PATCHES = [
   `ALTER TABLE servers ADD COLUMN avatar_key TEXT`,
   `ALTER TABLE memberships ADD COLUMN position INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'`,
+  `ALTER TABLE users ADD COLUMN beta_tester INTEGER NOT NULL DEFAULT 0`,
 ];
 
 /** Tables added after the first deploy — create on live DBs without waiting for wrangler migrate. */
@@ -130,6 +140,15 @@ const TABLE_PATCHES = [
     FOREIGN KEY (server_id) REFERENCES servers(id)
   )`,
   `CREATE INDEX IF NOT EXISTS server_notification_mutes_server_idx ON server_notification_mutes (server_id)`,
+  `CREATE TABLE IF NOT EXISTS server_admins (
+    server_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    granted_at INTEGER NOT NULL,
+    PRIMARY KEY (server_id, user_id),
+    FOREIGN KEY (server_id) REFERENCES servers(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS server_admins_user_idx ON server_admins (user_id)`,
 ];
 
 let ready: Promise<void> | null = null;

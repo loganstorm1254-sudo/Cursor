@@ -66,12 +66,16 @@
         <div id="voice-mini" class="voice-mini" hidden></div>
         <div id="transcript" class="transcript" aria-live="polite"></div>
         <form id="composer" class="composer">
+          <div id="reply-bar" class="reply-bar" hidden></div>
           <label class="sr-only" for="message">Message</label>
           <div class="composer-tools">
             <button id="emoji-button" class="ghost emoji-button" type="button" aria-label="Emoji" title="Emoji">☺</button>
             <div id="emoji-panel" class="emoji-panel" hidden></div>
           </div>
-          <textarea id="message" rows="1" maxlength="2000" placeholder="Message · /poll Q | A | B" enterkeyhint="send"></textarea>
+          <div class="composer-input-wrap">
+            <div id="mention-menu" class="mention-menu" hidden></div>
+            <textarea id="message" rows="1" maxlength="2000" placeholder="Message · @name to ping · /poll Q | A | B" enterkeyhint="send"></textarea>
+          </div>
           <button type="submit">Send</button>
         </form>
       </main>
@@ -101,6 +105,7 @@
       <p>Hall</p>
     </div>
 
+    <div id="context-menu" class="context-menu" hidden></div>
     <dialog id="modal">
       <form id="modal-form" method="dialog"></form>
     </dialog>

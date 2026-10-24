@@ -31,6 +31,7 @@ import {
   normalizePassword,
   normalizeServerName,
   normalizeUsername,
+  extractMentions,
   POLL_PREFIX,
 } from "./username";
 
@@ -58,9 +59,11 @@ type ChannelRow = {
   owner_id: string;
 };
 
-function publicServer(row: ServerRow, userId: string, user?: PublicUser) {
+function publicServer(row: ServerRow, userId: string, user?: PublicUser, extras?: { isAdmin?: boolean }) {
   const isLobby = row.id === "lobby";
-  const canManage = isLobby ? Boolean(user?.isPlatformOwner) : row.owner_id === userId;
+  const isOwner = row.owner_id === userId;
+  const isAdmin = Boolean(extras?.isAdmin) && !isOwner;
+  const canManage = Boolean(user?.isPlatformOwner) || (!isLobby && (isOwner || Boolean(extras?.isAdmin)));
   return {
     id: row.id,
     name: row.name,
@@ -70,16 +73,41 @@ function publicServer(row: ServerRow, userId: string, user?: PublicUser) {
     ownerId: row.owner_id,
     bio: row.bio ?? "",
     avatarUrl: row.avatar_key ? `/api/avatars/${encodeURIComponent(row.avatar_key)}` : null,
-    isOwner: row.owner_id === userId,
+    isOwner,
+    isAdmin,
     isLobby,
     canManage,
     unleavable: isLobby,
   };
 }
 
-function canManageServer(server: { id: string; owner_id: string }, user: PublicUser): boolean {
-  if (server.id === "lobby") return user.isPlatformOwner;
-  return server.owner_id === user.id;
+async function isServerAdmin(env: Env, serverId: string, userId: string): Promise<boolean> {
+  if (!serverId || serverId === "lobby" || serverId === "dm") return false;
+  const row = await env.DB.prepare("SELECT 1 AS ok FROM server_admins WHERE server_id = ? AND user_id = ?")
+    .bind(serverId, userId)
+    .first<{ ok: number }>();
+  return Boolean(row);
+}
+
+async function adminIdsForServer(env: Env, serverId: string): Promise<Set<string>> {
+  const { results } = await env.DB.prepare("SELECT user_id AS id FROM server_admins WHERE server_id = ?")
+    .bind(serverId)
+    .all<{ id: string }>();
+  return new Set((results ?? []).map((row) => row.id));
+}
+
+async function adminServerIdsForUser(env: Env, userId: string): Promise<Set<string>> {
+  const { results } = await env.DB.prepare("SELECT server_id AS id FROM server_admins WHERE user_id = ?")
+    .bind(userId)
+    .all<{ id: string }>();
+  return new Set((results ?? []).map((row) => row.id));
+}
+
+async function userCanManage(env: Env, server: { id: string; owner_id: string }, user: PublicUser): Promise<boolean> {
+  if (user.isPlatformOwner) return true;
+  if (server.id === "lobby") return false;
+  if (server.owner_id === user.id) return true;
+  return isServerAdmin(env, server.id, user.id);
 }
 
 async function memberOf(env: Env, serverId: string, userId: string): Promise<boolean> {
@@ -271,20 +299,13 @@ async function updateProfile(request: Request, env: Env, user: PublicUser): Prom
   return json({ user: toPublicUser(row) });
 }
 
-async function uploadAvatar(request: Request, env: Env, user: PublicUser): Promise<Response> {
-  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
-  if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength === 0) throw new HttpError(400, "Empty image");
-  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(413, "Image must be under 512KB");
-
-  const key = `${user.id}/${crypto.randomUUID()}`;
+async function storeUserAvatar(env: Env, targetId: string, bytes: ArrayBuffer, type: string) {
+  const key = `${targetId}/${crypto.randomUUID()}`;
   await env.AVATARS.put(key, bytes, {
     httpMetadata: { contentType: type, cacheControl: "public, max-age=31536000, immutable" },
   });
-
-  const previous = await findUserById(env, user.id);
-  await env.DB.prepare(`UPDATE users SET avatar_key = ? WHERE id = ?`).bind(key, user.id).run();
+  const previous = await findUserById(env, targetId);
+  await env.DB.prepare(`UPDATE users SET avatar_key = ? WHERE id = ?`).bind(key, targetId).run();
   if (previous?.avatar_key && previous.avatar_key !== key) {
     try {
       await env.AVATARS.delete(previous.avatar_key);
@@ -292,15 +313,23 @@ async function uploadAvatar(request: Request, env: Env, user: PublicUser): Promi
       // Best-effort cleanup.
     }
   }
-
-  const row = await findUserById(env, user.id);
+  const row = await findUserById(env, targetId);
   if (!row) throw new HttpError(404, "User not found");
-  return json({ user: toPublicUser(row) });
+  return toPublicUser(row);
 }
 
-async function clearAvatar(env: Env, user: PublicUser): Promise<Response> {
-  const previous = await findUserById(env, user.id);
-  await env.DB.prepare(`UPDATE users SET avatar_key = NULL WHERE id = ?`).bind(user.id).run();
+async function uploadAvatar(request: Request, env: Env, user: PublicUser): Promise<Response> {
+  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) throw new HttpError(400, "Empty image");
+  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(413, "Image must be under 512KB");
+  return json({ user: await storeUserAvatar(env, user.id, bytes, type) });
+}
+
+async function clearAvatar(env: Env, user: PublicUser, targetId = user.id): Promise<Response> {
+  const previous = await findUserById(env, targetId);
+  await env.DB.prepare(`UPDATE users SET avatar_key = NULL WHERE id = ?`).bind(targetId).run();
   if (previous?.avatar_key) {
     try {
       await env.AVATARS.delete(previous.avatar_key);
@@ -308,9 +337,37 @@ async function clearAvatar(env: Env, user: PublicUser): Promise<Response> {
       // Best-effort cleanup.
     }
   }
-  const row = await findUserById(env, user.id);
+  const row = await findUserById(env, targetId);
   if (!row) throw new HttpError(404, "User not found");
   return json({ user: toPublicUser(row) });
+}
+
+async function uploadUserAvatar(
+  request: Request,
+  env: Env,
+  actor: PublicUser,
+  usernameRaw: string,
+): Promise<Response> {
+  if (!actor.isPlatformOwner) throw new HttpError(403, "Only the Hall owner can change someone else's photo");
+  const parsed = normalizeUsername(usernameRaw);
+  if ("error" in parsed) throw new HttpError(400, parsed.error);
+  const target = await findUserByUsername(env, parsed.username);
+  if (!target || target.id === "system") throw new HttpError(404, "User not found");
+  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) throw new HttpError(400, "Empty image");
+  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(413, "Image must be under 512KB");
+  return json({ user: await storeUserAvatar(env, target.id, bytes, type) });
+}
+
+async function clearUserAvatar(env: Env, actor: PublicUser, usernameRaw: string): Promise<Response> {
+  if (!actor.isPlatformOwner) throw new HttpError(403, "Only the Hall owner can change someone else's photo");
+  const parsed = normalizeUsername(usernameRaw);
+  if ("error" in parsed) throw new HttpError(400, parsed.error);
+  const target = await findUserByUsername(env, parsed.username);
+  if (!target || target.id === "system") throw new HttpError(404, "User not found");
+  return clearAvatar(env, actor, target.id);
 }
 
 async function getAvatar(env: Env, keyPath: string): Promise<Response> {
@@ -343,7 +400,10 @@ async function listServers(env: Env, user: PublicUser): Promise<Response> {
   )
     .bind(user.id)
     .all<ServerRow>();
-  return json({ servers: (results ?? []).map((row) => publicServer(row, user.id, user)) });
+  const adminServers = await adminServerIdsForUser(env, user.id);
+  return json({
+    servers: (results ?? []).map((row) => publicServer(row, user.id, user, { isAdmin: adminServers.has(row.id) })),
+  });
 }
 
 async function reorderServers(request: Request, env: Env, user: PublicUser): Promise<Response> {
@@ -380,9 +440,11 @@ async function updateServer(request: Request, env: Env, user: PublicUser, server
     .bind(serverId)
     .first<ServerRow>();
   if (!server) throw new HttpError(404, "Server not found");
-  if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
-  if (!canManageServer(server, user)) {
-    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can edit this server");
+  if (!user.isPlatformOwner && !(await memberOf(env, server.id, user.id))) {
+    throw new HttpError(403, "You are not in this server");
+  }
+  if (!(await userCanManage(env, server, user))) {
+    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner or an admin can edit this server");
   }
 
   const body = asRecord(await readJson(request, 4_096));
@@ -434,7 +496,9 @@ async function updateServer(request: Request, env: Env, user: PublicUser, server
     .bind(server.id)
     .first<ServerRow>();
   if (!updated) throw new HttpError(404, "Server not found");
-  return json({ server: publicServer(updated, user.id, user) });
+  return json({
+    server: publicServer(updated, user.id, user, { isAdmin: await isServerAdmin(env, updated.id, user.id) }),
+  });
 }
 
 async function uploadServerAvatar(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
@@ -444,8 +508,10 @@ async function uploadServerAvatar(request: Request, env: Env, user: PublicUser, 
     .bind(serverId)
     .first<ServerRow>();
   if (!server) throw new HttpError(404, "Server not found");
-  if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
-  if (!canManageServer(server, user)) throw new HttpError(403, "Only the server owner can change the icon");
+  if (!user.isPlatformOwner && !(await memberOf(env, server.id, user.id))) {
+    throw new HttpError(403, "You are not in this server");
+  }
+  if (!(await userCanManage(env, server, user))) throw new HttpError(403, "Only the server owner or an admin can change the icon");
 
   const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
   if (!AVATAR_TYPES.has(type)) throw new HttpError(415, "Use a JPEG, PNG, WebP, or GIF image");
@@ -471,7 +537,9 @@ async function uploadServerAvatar(request: Request, env: Env, user: PublicUser, 
     .bind(server.id)
     .first<ServerRow>();
   if (!updated) throw new HttpError(404, "Server not found");
-  return json({ server: publicServer(updated, user.id, user) });
+  return json({
+    server: publicServer(updated, user.id, user, { isAdmin: await isServerAdmin(env, updated.id, user.id) }),
+  });
 }
 
 async function nextMembershipPosition(env: Env, userId: string): Promise<number> {
@@ -566,7 +634,9 @@ async function joinServer(request: Request, env: Env, user: PublicUser): Promise
       .bind(server.id, user.id, Date.now(), position)
       .run();
   }
-  return json({ server: publicServer(server, user.id, user) });
+  return json({
+    server: publicServer(server, user.id, user, { isAdmin: await isServerAdmin(env, server.id, user.id) }),
+  });
 }
 
 async function serverDetail(env: Env, user: PublicUser, serverId: string): Promise<Response> {
@@ -580,7 +650,7 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
 
   const channels = await listChannelRows(env, server.id);
   const members = await env.DB.prepare(
-    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role
+    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, COALESCE(u.beta_tester, 0) AS beta_tester
      FROM memberships m
      JOIN users u ON u.id = m.user_id
      WHERE m.server_id = ? AND u.id != 'system'
@@ -594,17 +664,23 @@ async function serverDetail(env: Env, user: PublicUser, serverId: string): Promi
       bio: string | null;
       avatar_key: string | null;
       role: string | null;
+      beta_tester: number | null;
     }>();
 
   const notificationsMuted = await isServerMuted(env, user.id, server.id);
+  const adminIds = await adminIdsForServer(env, server.id);
   return json({
-    server: { ...publicServer(server, user.id, user), notificationsMuted },
+    server: {
+      ...publicServer(server, user.id, user, { isAdmin: adminIds.has(user.id) }),
+      notificationsMuted,
+    },
     channels,
     members: (members.results ?? []).map((member) => {
       const profile = toPublicUser(member);
       return {
         ...profile,
         isOwner: member.id === server.owner_id,
+        isAdmin: adminIds.has(member.id),
       };
     }),
   });
@@ -626,8 +702,8 @@ async function createChannel(request: Request, env: Env, user: PublicUser, serve
     .first<{ id: string; owner_id: string }>();
   if (!server) throw new HttpError(404, "Server not found");
   if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
-  if (!canManageServer(server, user)) {
-    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can add channels");
+  if (!(await userCanManage(env, server, user))) {
+    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner or an admin can add channels");
   }
 
   const body = asRecord(await readJson(request, 2_048));
@@ -666,8 +742,8 @@ async function reorderChannels(request: Request, env: Env, user: PublicUser, ser
     .first<{ id: string; owner_id: string }>();
   if (!server) throw new HttpError(404, "Server not found");
   if (!(await memberOf(env, server.id, user.id))) throw new HttpError(403, "You are not in this server");
-  if (!canManageServer(server, user)) {
-    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can reorder channels");
+  if (!(await userCanManage(env, server, user))) {
+    throw new HttpError(403, server.id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner or an admin can reorder channels");
   }
 
   const body = asRecord(await readJson(request, 8_192));
@@ -699,10 +775,10 @@ async function deleteChannel(env: Env, user: PublicUser, channelId: string): Pro
   const channel = await getChannel(env, channelId);
   if (!channel) throw new HttpError(404, "Channel not found");
   if (!(await memberOf(env, channel.server_id, user.id))) throw new HttpError(403, "You are not in this server");
-  if (!canManageServer({ id: channel.server_id, owner_id: channel.owner_id }, user)) {
+  if (!(await userCanManage(env, { id: channel.server_id, owner_id: channel.owner_id }, user))) {
     throw new HttpError(
       403,
-      channel.server_id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner can delete channels",
+      channel.server_id === "lobby" ? "Only the Hall owner can edit Hall Official" : "Only the server owner or an admin can delete channels",
     );
   }
   const kindRow = await env.DB.prepare(`SELECT COALESCE(kind, 'text') AS kind FROM channels WHERE id = ?`)
@@ -741,6 +817,7 @@ async function leaveServer(env: Env, user: PublicUser, serverId: string): Promis
       server.id,
       user.id,
     ),
+    env.DB.prepare("DELETE FROM server_admins WHERE server_id = ? AND user_id = ?").bind(server.id, user.id),
     env.DB.prepare("DELETE FROM memberships WHERE server_id = ? AND user_id = ?").bind(server.id, user.id),
   ]);
   return json({ ok: true });
@@ -770,6 +847,7 @@ async function deleteServer(request: Request, env: Env, user: PublicUser, server
     .all<{ id: string }>();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM server_notification_mutes WHERE server_id = ?").bind(server.id),
+    env.DB.prepare("DELETE FROM server_admins WHERE server_id = ?").bind(server.id),
     env.DB.prepare("DELETE FROM memberships WHERE server_id = ?").bind(server.id),
     env.DB.prepare("DELETE FROM channels WHERE server_id = ?").bind(server.id),
     env.DB.prepare("DELETE FROM servers WHERE id = ?").bind(server.id),
@@ -817,6 +895,7 @@ async function postMessage(
   await requireChannelMember(env, channelId, user);
   const body = asRecord(await readJson(request, 8_192));
   const text = asString(body.body, "Message");
+  const replyTo = typeof body.replyTo === "string" && body.replyTo ? body.replyTo : null;
   const poll = parsePollCommand(text);
   const payload = poll ? encodePollBody(poll.question, poll.options) : text;
   const result = await room(env, channelId).postMessage(
@@ -827,6 +906,7 @@ async function postMessage(
       avatarUrl: user.avatarUrl,
     },
     payload,
+    replyTo,
   );
   if (!result.ok) throw new HttpError(400, result.error);
   const channel = await getChannel(env, channelId);
@@ -842,6 +922,15 @@ async function postMessage(
         .first<{ name: string }>();
       serverName = server?.name ?? null;
     }
+    const mentionNames = extractMentions(text);
+    let mentionIds: string[] = [];
+    if (mentionNames.length > 0) {
+      const placeholders = mentionNames.map(() => "?").join(",");
+      const mentioned = await env.DB.prepare(`SELECT id FROM users WHERE username IN (${placeholders})`)
+        .bind(...mentionNames)
+        .all<{ id: string }>();
+      mentionIds = (mentioned.results ?? []).map((row) => row.id).filter((id) => id !== user.id);
+    }
     ctx.waitUntil(
       notifyChannelMessage(env, {
         channelId,
@@ -849,10 +938,91 @@ async function postMessage(
         message: result.message,
         channelName: channel?.name ?? null,
         serverName,
+        mentionIds,
       }),
     );
   }
   return json({ message: result.message satisfies ChatMessage }, 201);
+}
+
+async function deleteChannelMessage(
+  env: Env,
+  user: PublicUser,
+  channelId: string,
+  messageId: string,
+): Promise<Response> {
+  await requireChannelMember(env, channelId, user);
+  const existing = await room(env, channelId).getMessage(messageId);
+  if (!existing) throw new HttpError(404, "Message not found");
+  const isAuthor = existing.userId === user.id;
+  let canModerate = user.isPlatformOwner;
+  if (!canModerate && !channelId.startsWith("dm:")) {
+    const channel = await getChannel(env, channelId);
+    if (channel) {
+      canModerate = await userCanManage(env, { id: channel.server_id, owner_id: channel.owner_id }, user);
+    }
+  }
+  if (!isAuthor && !canModerate) throw new HttpError(403, "You can only delete your own messages");
+  const result = await room(env, channelId).deleteMessage(messageId);
+  if (!result.ok) throw new HttpError(400, result.error);
+  return json({ ok: true, messageId });
+}
+
+async function addServerAdmin(request: Request, env: Env, user: PublicUser, serverId: string): Promise<Response> {
+  const server = await env.DB.prepare("SELECT id, owner_id FROM servers WHERE id = ?")
+    .bind(serverId)
+    .first<{ id: string; owner_id: string }>();
+  if (!server) throw new HttpError(404, "Server not found");
+  if (server.id === "lobby") throw new HttpError(400, "Hall Official does not use extra admins");
+  if (server.owner_id !== user.id && !user.isPlatformOwner) {
+    throw new HttpError(403, "Only the server owner can add admins");
+  }
+  const body = asRecord(await readJson(request, 1_024));
+  let target = typeof body.userId === "string" ? await findUserById(env, body.userId) : null;
+  if (!target && typeof body.username === "string") {
+    const parsed = normalizeUsername(asString(body.username, "Username"));
+    if ("error" in parsed) throw new HttpError(400, parsed.error);
+    target = await findUserByUsername(env, parsed.username);
+  }
+  if (!target) throw new HttpError(404, "User not found");
+  if (target.id === server.owner_id) throw new HttpError(400, "The owner is already in charge");
+  if (!(await memberOf(env, server.id, target.id))) throw new HttpError(400, "That person is not in this server");
+  await env.DB.prepare(
+    `INSERT INTO server_admins (server_id, user_id, granted_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(server_id, user_id) DO UPDATE SET granted_at = excluded.granted_at`,
+  )
+    .bind(server.id, target.id, Date.now())
+    .run();
+  return json({ ok: true, user: { ...toPublicUser(target), isAdmin: true } });
+}
+
+async function removeServerAdmin(env: Env, user: PublicUser, serverId: string, targetId: string): Promise<Response> {
+  const server = await env.DB.prepare("SELECT id, owner_id FROM servers WHERE id = ?")
+    .bind(serverId)
+    .first<{ id: string; owner_id: string }>();
+  if (!server) throw new HttpError(404, "Server not found");
+  if (server.owner_id !== user.id && !user.isPlatformOwner) {
+    throw new HttpError(403, "Only the server owner can remove admins");
+  }
+  await env.DB.prepare("DELETE FROM server_admins WHERE server_id = ? AND user_id = ?")
+    .bind(server.id, targetId)
+    .run();
+  return json({ ok: true, userId: targetId });
+}
+
+async function setBetaTester(request: Request, env: Env, user: PublicUser, usernameRaw: string): Promise<Response> {
+  if (!user.isPlatformOwner) throw new HttpError(403, "Only the Hall owner can add beta testers");
+  const parsed = normalizeUsername(usernameRaw);
+  if ("error" in parsed) throw new HttpError(400, parsed.error);
+  const target = await findUserByUsername(env, parsed.username);
+  if (!target) throw new HttpError(404, "User not found");
+  const body = asRecord(await readJson(request, 512));
+  const beta = Boolean(body.beta);
+  await env.DB.prepare("UPDATE users SET beta_tester = ? WHERE id = ?")
+    .bind(beta ? 1 : 0, target.id)
+    .run();
+  return json({ user: { ...toPublicUser(target), isBetaTester: beta } });
 }
 
 async function pushVapidKey(env: Env): Promise<Response> {
@@ -937,7 +1107,7 @@ async function openSocket(request: Request, env: Env, user: PublicUser, channelI
 
 async function listFriends(env: Env, user: PublicUser): Promise<Response> {
   const accepted = await env.DB.prepare(
-    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role
+    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, COALESCE(u.beta_tester, 0) AS beta_tester
      FROM friends f
      JOIN users u ON u.id = f.friend_id
      WHERE f.user_id = ? AND f.status = 'accepted'
@@ -946,7 +1116,7 @@ async function listFriends(env: Env, user: PublicUser): Promise<Response> {
     .bind(user.id)
     .all();
   const incoming = await env.DB.prepare(
-    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, f.created_at
+    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, COALESCE(u.beta_tester, 0) AS beta_tester, f.created_at
      FROM friends f
      JOIN users u ON u.id = f.user_id
      WHERE f.friend_id = ? AND f.status = 'pending'
@@ -955,7 +1125,7 @@ async function listFriends(env: Env, user: PublicUser): Promise<Response> {
     .bind(user.id)
     .all();
   const outgoing = await env.DB.prepare(
-    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, f.created_at
+    `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, COALESCE(u.beta_tester, 0) AS beta_tester, f.created_at
      FROM friends f
      JOIN users u ON u.id = f.friend_id
      WHERE f.user_id = ? AND f.status = 'pending'
@@ -1147,6 +1317,15 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, url: URL
 
   const profileMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
   if (profileMatch && method === "GET") return getProfile(env, decodeURIComponent(profileMatch[1] ?? ""));
+  const betaMatch = pathname.match(/^\/api\/users\/([^/]+)\/beta$/);
+  if (betaMatch && method === "PUT") return setBetaTester(request, env, user, decodeURIComponent(betaMatch[1] ?? ""));
+  const userAvatarMatch = pathname.match(/^\/api\/users\/([^/]+)\/avatar$/);
+  if (userAvatarMatch && method === "PUT") {
+    return uploadUserAvatar(request, env, user, decodeURIComponent(userAvatarMatch[1] ?? ""));
+  }
+  if (userAvatarMatch && method === "DELETE") {
+    return clearUserAvatar(env, user, decodeURIComponent(userAvatarMatch[1] ?? ""));
+  }
 
   if (method === "GET" && pathname === "/api/servers") return listServers(env, user);
   if (method === "POST" && pathname === "/api/servers") return createServer(request, env, user);
@@ -1180,12 +1359,33 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, url: URL
     if (action === "notifications" && method === "PUT") {
       return updateServerNotifications(request, env, user, serverId);
     }
+    if (action === "admins" && method === "POST") return addServerAdmin(request, env, user, serverId);
     if (action === "websocket" && method === "GET") return openServerHub(request, env, user, serverId);
+  }
+
+  const adminMatch = pathname.match(/^\/api\/servers\/([^/]+)\/admins\/([^/]+)$/);
+  if (adminMatch && method === "DELETE") {
+    return removeServerAdmin(
+      env,
+      user,
+      decodeURIComponent(adminMatch[1] ?? ""),
+      decodeURIComponent(adminMatch[2] ?? ""),
+    );
   }
 
   const channelOnly = pathname.match(/^\/api\/channels\/([^/]+)$/);
   if (channelOnly && method === "DELETE") {
     return deleteChannel(env, user, decodeURIComponent(channelOnly[1] ?? ""));
+  }
+
+  const messageDelete = pathname.match(/^\/api\/channels\/([^/]+)\/messages\/([^/]+)$/);
+  if (messageDelete && method === "DELETE") {
+    return deleteChannelMessage(
+      env,
+      user,
+      decodeURIComponent(messageDelete[1] ?? ""),
+      decodeURIComponent(messageDelete[2] ?? ""),
+    );
   }
 
   const channelMatch = pathname.match(/^\/api\/channels\/([^/]+)\/(messages|websocket|poll-vote)$/);

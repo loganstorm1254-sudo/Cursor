@@ -33,6 +33,17 @@ export function isPlatformOwnerUsername(username: string): boolean {
   return username.toLowerCase() === PLATFORM_OWNER_USERNAME;
 }
 
+export function extractMentions(body: string): string[] {
+  const found = new Set<string>();
+  const pattern = /@([A-Za-z0-9_]{2,32})/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(body))) {
+    const name = match[1]?.toLowerCase();
+    if (name) found.add(name);
+  }
+  return [...found];
+}
+
 export function normalizeChannelName(input: string): string | null {
   const name = input
     .trim()

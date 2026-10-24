@@ -306,6 +306,7 @@ export async function notifyChannelMessage(
     message: ChatMessage;
     channelName?: string | null;
     serverName?: string | null;
+    mentionIds?: string[];
   },
 ): Promise<void> {
   const { channelId, serverId, message } = opts;
@@ -332,6 +333,9 @@ export async function notifyChannelMessage(
       .bind(serverId, message.userId)
       .all<{ id: string }>();
     userIds = (members.results ?? []).map((row) => row.id);
+  }
+  for (const id of opts.mentionIds ?? []) {
+    if (id && id !== message.userId && !userIds.includes(id)) userIds.push(id);
   }
   if (userIds.length === 0) return;
 

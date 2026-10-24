@@ -369,6 +369,110 @@ describe("Hall", () => {
     expect(sub.status).toBe(200);
   });
 
+  it("lets owners add admins, reply, delete messages, and mark beta testers", async () => {
+    const ada = await register("ada_admin");
+    const grace = await register("grace_admin");
+    const created = await authed(ada.cookie, "/api/servers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Crew Hall" }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as {
+      server: { id: string; inviteCode: string };
+      channel: { id: string };
+    };
+
+    const inviteJoin = await authed(grace.cookie, "/api/join", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: createdBody.server.inviteCode }),
+    });
+    expect(inviteJoin.status).toBe(200);
+
+    const guestChannel = await authed(grace.cookie, `/api/servers/${createdBody.server.id}/channels`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "secret-admin" }),
+    });
+    expect(guestChannel.status).toBe(403);
+
+    const promoted = await authed(ada.cookie, `/api/servers/${createdBody.server.id}/admins`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "grace_admin" }),
+    });
+    expect(promoted.status).toBe(200);
+
+    const adminChannel = await authed(grace.cookie, `/api/servers/${createdBody.server.id}/channels`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "admin-den" }),
+    });
+    expect(adminChannel.status).toBe(201);
+
+    const first = await authed(ada.cookie, `/api/channels/${createdBody.channel.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "hello @grace_admin" }),
+    });
+    expect(first.status).toBe(201);
+    const firstBody = (await first.json()) as { message: { id: string } };
+
+    const reply = await authed(grace.cookie, `/api/channels/${createdBody.channel.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "got it", replyTo: firstBody.message.id }),
+    });
+    expect(reply.status).toBe(201);
+    const replyBody = (await reply.json()) as { message: { replyTo?: { id: string } } };
+    expect(replyBody.message.replyTo?.id).toBe(firstBody.message.id);
+
+    const adminDeleted = await authed(grace.cookie, `/api/channels/${createdBody.channel.id}/messages/${firstBody.message.id}`, {
+      method: "DELETE",
+    });
+    expect(adminDeleted.status).toBe(200);
+
+    const ownerLogin = await exports.default.fetch("http://hall.test/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "owner", password: "rogue1254!!" }),
+    });
+    expect(ownerLogin.status).toBe(200);
+    const ownerCookie = ownerLogin.headers.get("set-cookie")?.split(";")[0] ?? "";
+    const beta = await authed(ownerCookie, "/api/users/grace_admin/beta", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ beta: true }),
+    });
+    expect(beta.status).toBe(200);
+    expect(((await beta.json()) as { user: { isBetaTester: boolean } }).user.isBetaTester).toBe(true);
+
+    const blockedBeta = await authed(ada.cookie, "/api/users/grace_admin/beta", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ beta: false }),
+    });
+    expect(blockedBeta.status).toBe(403);
+
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+    const ownerPhoto = await authed(ownerCookie, "/api/users/grace_admin/avatar", {
+      method: "PUT",
+      headers: { "content-type": "image/png" },
+      body: png,
+    });
+    expect(ownerPhoto.status).toBe(200);
+    const photoBody = (await ownerPhoto.json()) as { user: { avatarUrl: string | null } };
+    expect(photoBody.user.avatarUrl).toMatch(/^\/api\/avatars\//);
+
+    const strangerPhoto = await authed(ada.cookie, "/api/users/grace_admin/avatar", {
+      method: "PUT",
+      headers: { "content-type": "image/png" },
+      body: png,
+    });
+    expect(strangerPhoto.status).toBe(403);
+  });
+
   it("serves two concurrent visitors without hanging on boot", async () => {
     const started = Date.now();
     const [a, b, c, d] = await Promise.all([

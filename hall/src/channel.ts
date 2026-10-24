@@ -9,6 +9,14 @@ export type ChatMessage = {
   avatarUrl: string | null;
   body: string;
   createdAt: number;
+  replyTo?: {
+    id: string;
+    userId: string;
+    username: string;
+    displayName: string;
+    body: string;
+    deleted?: boolean;
+  } | null;
 };
 
 type PollPayload = {
@@ -46,6 +54,7 @@ type VoiceSignal = {
   sharing?: boolean;
   messageId?: string;
   optionIndex?: number;
+  replyTo?: string;
 };
 
 type MessageRow = {
@@ -56,12 +65,13 @@ type MessageRow = {
   avatar_url: string | null;
   body: string;
   created_at: number;
+  reply_to?: string | null;
 };
 
 const COOLDOWN_MS = 250;
 const MAX_BODY = 4000;
 
-function toMessage(row: MessageRow): ChatMessage {
+function toMessage(row: MessageRow, replyTo: ChatMessage["replyTo"] = null): ChatMessage {
   return {
     id: row.id,
     userId: row.user_id,
@@ -70,6 +80,7 @@ function toMessage(row: MessageRow): ChatMessage {
     avatarUrl: row.avatar_url,
     body: row.body,
     createdAt: row.created_at,
+    replyTo,
   };
 }
 
@@ -93,6 +104,11 @@ export class ChannelRoom extends DurableObject<Env> {
       } catch {
         // Column already exists on newer objects.
       }
+      try {
+        this.ctx.storage.sql.exec(`ALTER TABLE messages ADD COLUMN reply_to TEXT`);
+      } catch {
+        // Column already exists on newer objects.
+      }
       this.ctx.storage.sql.exec(`
         CREATE INDEX IF NOT EXISTS messages_created_idx ON messages (created_at)
       `);
@@ -106,13 +122,55 @@ export class ChannelRoom extends DurableObject<Env> {
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
+  private lookupReply(replyToId: string | null | undefined): ChatMessage["replyTo"] {
+    if (!replyToId) return null;
+    const parent = this.ctx.storage.sql
+      .exec<MessageRow>(
+        `SELECT id, user_id, username, display_name, avatar_url, body, created_at, reply_to
+         FROM messages WHERE id = ?`,
+        replyToId,
+      )
+      .toArray()[0];
+    if (!parent) return { id: replyToId, userId: "", username: "", displayName: "", body: "", deleted: true };
+    return {
+      id: parent.id,
+      userId: parent.user_id,
+      username: parent.username,
+      displayName: parent.display_name,
+      body: parent.body,
+    };
+  }
+
+  private hydrate(row: MessageRow): ChatMessage {
+    return toMessage(row, this.lookupReply(row.reply_to));
+  }
+
+  async getMessage(messageId: string): Promise<ChatMessage | null> {
+    const row = this.ctx.storage.sql
+      .exec<MessageRow>(
+        `SELECT id, user_id, username, display_name, avatar_url, body, created_at, reply_to
+         FROM messages WHERE id = ?`,
+        messageId,
+      )
+      .toArray()[0];
+    return row ? this.hydrate(row) : null;
+  }
+
+  async deleteMessage(messageId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const existing = await this.getMessage(messageId);
+    if (!existing) return { ok: false, error: "Message not found" };
+    this.ctx.storage.sql.exec(`DELETE FROM messages WHERE id = ?`, messageId);
+    this.broadcast(JSON.stringify({ type: "message_deleted", messageId }));
+    return { ok: true };
+  }
+
   async listMessages(limit: number, before: number | null): Promise<ChatMessage[]> {
     const capped = Math.min(Math.max(limit, 1), 100);
     const rows =
       before === null
         ? this.ctx.storage.sql
             .exec<MessageRow>(
-              `SELECT id, user_id, username, display_name, avatar_url, body, created_at
+              `SELECT id, user_id, username, display_name, avatar_url, body, created_at, reply_to
                FROM messages
                ORDER BY created_at DESC
                LIMIT ?`,
@@ -121,7 +179,7 @@ export class ChannelRoom extends DurableObject<Env> {
             .toArray()
         : this.ctx.storage.sql
             .exec<MessageRow>(
-              `SELECT id, user_id, username, display_name, avatar_url, body, created_at
+              `SELECT id, user_id, username, display_name, avatar_url, body, created_at, reply_to
                FROM messages
                WHERE created_at < ?
                ORDER BY created_at DESC
@@ -130,11 +188,15 @@ export class ChannelRoom extends DurableObject<Env> {
               capped,
             )
             .toArray();
-    return rows.reverse().map(toMessage);
+    return rows.reverse().map((row) => this.hydrate(row));
   }
 
-  async postMessage(author: PresenceUser, body: string): Promise<{ ok: true; message: ChatMessage } | { ok: false; error: string }> {
-    const saved = this.insertMessage(author, body);
+  async postMessage(
+    author: PresenceUser,
+    body: string,
+    replyToId?: string | null,
+  ): Promise<{ ok: true; message: ChatMessage } | { ok: false; error: string }> {
+    const saved = this.insertMessage(author, body, replyToId);
     if ("error" in saved) return { ok: false, error: saved.error };
     this.broadcast(JSON.stringify({ type: "message", message: saved }));
     return { ok: true, message: saved };
@@ -147,7 +209,7 @@ export class ChannelRoom extends DurableObject<Env> {
   ): Promise<{ ok: true; message: ChatMessage } | { ok: false; error: string }> {
     const row = this.ctx.storage.sql
       .exec<MessageRow>(
-        `SELECT id, user_id, username, display_name, avatar_url, body, created_at
+        `SELECT id, user_id, username, display_name, avatar_url, body, created_at, reply_to
          FROM messages WHERE id = ?`,
         messageId,
       )
@@ -173,7 +235,7 @@ export class ChannelRoom extends DurableObject<Env> {
     poll.votes[bucket] = list;
     const body = `${POLL_PREFIX}${JSON.stringify(poll)}`;
     this.ctx.storage.sql.exec(`UPDATE messages SET body = ? WHERE id = ?`, body, messageId);
-    const message = toMessage({ ...row, body });
+    const message = this.hydrate({ ...row, body });
     this.broadcast(JSON.stringify({ type: "poll_update", message }));
     return { ok: true, message };
   }
@@ -293,7 +355,8 @@ export class ChannelRoom extends DurableObject<Env> {
       return;
     }
     if (parsed.type !== "message" || typeof parsed.body !== "string") return;
-    const saved = this.insertMessage(attachment, parsed.body);
+    const replyTo = typeof parsed.replyTo === "string" ? parsed.replyTo : null;
+    const saved = this.insertMessage(attachment, parsed.body, replyTo);
     if ("error" in saved) {
       ws.send(JSON.stringify({ type: "error", error: saved.error }));
       return;
@@ -317,7 +380,11 @@ export class ChannelRoom extends DurableObject<Env> {
     }
   }
 
-  private insertMessage(author: PresenceUser, body: string): ChatMessage | { error: string } {
+  private insertMessage(
+    author: PresenceUser,
+    body: string,
+    replyToId?: string | null,
+  ): ChatMessage | { error: string } {
     const text = body.trim();
     if (!text) return { error: "Message is empty" };
     if (text.length > MAX_BODY) return { error: "Message is too long" };
@@ -328,6 +395,14 @@ export class ChannelRoom extends DurableObject<Env> {
     if (previous && now - previous.last_at < COOLDOWN_MS) {
       return { error: "Slow down a little" };
     }
+    let replyTo: ChatMessage["replyTo"] = null;
+    let storedReply: string | null = null;
+    if (replyToId) {
+      const parent = this.lookupReply(replyToId);
+      if (!parent || parent.deleted) return { error: "Message to reply to was not found" };
+      replyTo = parent;
+      storedReply = parent.id;
+    }
     const message: ChatMessage = {
       id: crypto.randomUUID(),
       userId: author.userId,
@@ -336,10 +411,11 @@ export class ChannelRoom extends DurableObject<Env> {
       avatarUrl: author.avatarUrl,
       body: text,
       createdAt: now,
+      replyTo,
     };
     this.ctx.storage.sql.exec(
-      `INSERT INTO messages (id, user_id, username, display_name, avatar_url, body, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, user_id, username, display_name, avatar_url, body, created_at, reply_to)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       message.id,
       message.userId,
       message.username,
@@ -347,6 +423,7 @@ export class ChannelRoom extends DurableObject<Env> {
       message.avatarUrl,
       message.body,
       message.createdAt,
+      storedReply,
     );
     this.ctx.storage.sql.exec(
       `INSERT INTO rate (user_id, last_at) VALUES (?, ?)

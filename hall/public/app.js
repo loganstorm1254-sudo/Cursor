@@ -25,6 +25,9 @@ const modal = document.querySelector("#modal");
 const modalForm = document.querySelector("#modal-form");
 const emojiButton = document.querySelector("#emoji-button");
 const emojiPanel = document.querySelector("#emoji-panel");
+const replyBar = document.querySelector("#reply-bar");
+const mentionMenu = document.querySelector("#mention-menu");
+const contextMenu = document.querySelector("#context-menu");
 
 const PUBLIC_ORIGIN = "https://hallchat.lopro.cc";
 const POLL_PREFIX = "§HALLPOLL§";
@@ -103,6 +106,7 @@ const state = {
   hubSocket: null,
   hubAbort: null,
   hubPing: null,
+  replyTo: null,
 };
 
 let socketGeneration = 0;
@@ -368,9 +372,16 @@ function armNotificationPrompt() {
   document.addEventListener("pointerdown", ask, true);
 }
 
+function messageMentionsMe(message) {
+  const name = state.me?.username;
+  if (!name || !message?.body) return false;
+  return new RegExp(`@${name}\\b`, "i").test(message.body);
+}
+
 async function maybeNotifyMessage(message) {
   if (!message || message.userId === state.me?.id) return;
-  if (state.server?.notificationsMuted) return;
+  const mentioned = messageMentionsMe(message);
+  if (state.server?.notificationsMuted && !mentioned) return;
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   // Fire when backgrounded, or when Hall is open but you’re not looking at this tab.
   if (!document.hidden && document.hasFocus()) return;
@@ -661,6 +672,12 @@ function renderRail() {
         else closeDrawers();
       },
     }, [icon]);
+    if (server.canManage || canEditAnyPhotos()) {
+      button.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        pickServerIcon(server);
+      });
+    }
     const wrap = el("div", { class: "server-slot" }, [
       button,
       el("div", { class: "server-move" }, [
@@ -757,7 +774,250 @@ function canManageActiveServer() {
   const server = state.server;
   if (!server) return false;
   if (server.canManage != null) return Boolean(server.canManage);
-  return server.isLobby ? Boolean(state.me?.isPlatformOwner) : Boolean(server.isOwner);
+  return server.isLobby ? Boolean(state.me?.isPlatformOwner) : Boolean(server.isOwner || server.isAdmin);
+}
+
+function canDeleteMessage(message) {
+  if (!message || !state.me) return false;
+  if (message.userId === state.me.id) return true;
+  if (state.me.isPlatformOwner) return true;
+  return canManageActiveServer();
+}
+
+function canAssignBeta() {
+  return Boolean(state.me?.isPlatformOwner || state.me?.username === "owner");
+}
+
+function canEditAnyPhotos() {
+  return canAssignBeta();
+}
+
+function canManageServerAdmins() {
+  return Boolean(state.server && !state.server.isLobby && (state.server.isOwner || canEditAnyPhotos()));
+}
+
+function avatarUploadPath(username) {
+  if (!username || username === state.me?.username) return "/api/me/avatar";
+  return `/api/users/${encodeURIComponent(username)}/avatar`;
+}
+
+function betaBadge(user) {
+  if (!user?.isBetaTester) return null;
+  return el("span", { class: "beta-badge", title: "Beta tester" }, [text("β")]);
+}
+
+function betaCheckbox(user) {
+  if (!canAssignBeta() || !user?.username) return betaBadge(user);
+  const box = el("input", {
+    type: "checkbox",
+    class: "beta-check",
+    checked: Boolean(user.isBetaTester) || null,
+    title: "Beta tester",
+    onclick: (event) => event.stopPropagation(),
+    onchange: (event) => {
+      event.stopPropagation();
+      toggleBeta(user, event.target.checked);
+    },
+  });
+  return el("label", {
+    class: user.isBetaTester ? "beta-check-wrap on" : "beta-check-wrap",
+    title: "Mark as beta tester",
+    onclick: (event) => event.stopPropagation(),
+  }, [box, text("β")]);
+}
+
+function displayNameNodes(user, editable = false) {
+  return [text(user?.displayName || user?.username || "Hall"), editable ? betaCheckbox(user) : betaBadge(user)];
+}
+
+function hideContextMenu() {
+  if (!contextMenu) return;
+  contextMenu.hidden = true;
+  contextMenu.replaceChildren();
+}
+
+function hideMentionMenu() {
+  if (!mentionMenu) return;
+  mentionMenu.hidden = true;
+  mentionMenu.replaceChildren();
+}
+
+function insertMention(username) {
+  const value = messageInput.value;
+  const caret = messageInput.selectionStart ?? value.length;
+  const before = value.slice(0, caret);
+  const after = value.slice(caret);
+  const replaced = before.replace(/@([A-Za-z0-9_]{0,32})$/, `@${username} `);
+  const next = replaced.endsWith(`@${username} `) ? replaced + after : `${before}@${username} ${after}`;
+  messageInput.value = next;
+  const pos = next.length - after.length;
+  messageInput.setSelectionRange(pos, pos);
+  messageInput.focus();
+  hideMentionMenu();
+}
+
+function setReplyTo(message) {
+  state.replyTo = message || null;
+  if (!replyBar) return;
+  if (!message) {
+    replyBar.hidden = true;
+    replyBar.replaceChildren();
+    return;
+  }
+  replyBar.hidden = false;
+  const preview = String(message.body || "").replace(/^§HALLPOLL§/, "Poll: ").slice(0, 80);
+  replyBar.replaceChildren(
+    el("div", { class: "reply-bar-meta" }, [
+      el("strong", {}, [text(`Replying to ${message.displayName || message.username}`)]),
+      el("span", {}, [text(preview || "Message")]),
+    ]),
+    el("button", {
+      class: "ghost",
+      type: "button",
+      "aria-label": "Cancel reply",
+      onclick: () => setReplyTo(null),
+    }, [text("×")]),
+  );
+}
+
+function jumpToMessage(messageId) {
+  const node = transcript.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+  if (!node) return;
+  node.scrollIntoView({ behavior: "smooth", block: "center" });
+  node.classList.add("flash");
+  setTimeout(() => node.classList.remove("flash"), 1200);
+}
+
+async function deleteMessage(message) {
+  if (!state.activeChannelId || !message?.id || !canDeleteMessage(message)) return;
+  try {
+    await api(
+      `/api/channels/${encodeURIComponent(state.activeChannelId)}/messages/${encodeURIComponent(message.id)}`,
+      { method: "DELETE" },
+    );
+    state.messages = state.messages.filter((item) => item.id !== message.id);
+    if (state.replyTo?.id === message.id) setReplyTo(null);
+    renderMessages(false);
+  } catch (error) {
+    openModal("Delete message", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not delete")]));
+    });
+  }
+}
+
+async function toggleAdmin(member, makeAdmin) {
+  if (!state.server?.id || !member?.id) return;
+  try {
+    if (makeAdmin) {
+      await api(`/api/servers/${encodeURIComponent(state.server.id)}/admins`, {
+        method: "POST",
+        body: JSON.stringify({ userId: member.id }),
+      });
+      member.isAdmin = true;
+    } else {
+      await api(`/api/servers/${encodeURIComponent(state.server.id)}/admins/${encodeURIComponent(member.id)}`, {
+        method: "DELETE",
+      });
+      member.isAdmin = false;
+    }
+    state.members = state.members.map((item) => (item.id === member.id ? { ...item, isAdmin: member.isAdmin } : item));
+    renderMembers();
+  } catch (error) {
+    openModal("Admins", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not update admin")]));
+    });
+  }
+}
+
+async function toggleBeta(member, add) {
+  if (!member?.username) return;
+  try {
+    const data = await api(`/api/users/${encodeURIComponent(member.username)}/beta`, {
+      method: "PUT",
+      body: JSON.stringify({ beta: add }),
+    });
+    const next = Boolean(data.user?.isBetaTester);
+    if (state.me?.id === member.id) state.me = { ...state.me, isBetaTester: next };
+    state.members = state.members.map((item) => (item.id === member.id ? { ...item, isBetaTester: next } : item));
+    state.messages = state.messages.map((item) => (
+      item.userId === member.id ? { ...item, isBetaTester: next } : item
+    ));
+    renderMembers();
+    renderMessages(false);
+    renderChannels();
+  } catch (error) {
+    openModal("Beta tester", (form) => {
+      form.append(el("p", { class: "form-error" }, [text(error.message || "Could not update")]));
+    });
+  }
+}
+
+function showContextMenu(event, opts) {
+  if (!contextMenu) return;
+  event.preventDefault();
+  const items = [];
+  if (opts.member || opts.message) {
+    const user = opts.member || {
+      id: opts.message.userId,
+      username: opts.message.username,
+      displayName: opts.message.displayName,
+      isBetaTester: opts.message.isBetaTester,
+    };
+    if (user.username) {
+      items.push({
+        label: `Ping @${user.username}`,
+        run: () => insertMention(user.username),
+      });
+    }
+    if (opts.message) {
+      items.push({ label: "Reply", run: () => setReplyTo(opts.message) });
+      if (canDeleteMessage(opts.message)) {
+        items.push({ label: "Delete message", danger: true, run: () => deleteMessage(opts.message) });
+      }
+    }
+    if (canManageServerAdmins() && user.id && user.id !== state.me?.id) {
+      const member = state.members.find((item) => item.id === user.id) || user;
+      if (!member.isOwner) {
+        if (member.isAdmin) {
+          items.push({ label: "Remove admin", danger: true, run: () => toggleAdmin(member, false) });
+        } else {
+          items.push({ label: "Make admin", run: () => toggleAdmin(member, true) });
+        }
+      }
+    }
+    if (canEditAnyPhotos() && user.username) {
+      items.push({ label: "Change photo", run: () => openEditProfile(user) });
+    }
+  }
+  if (items.length === 0) return;
+  contextMenu.replaceChildren(
+    ...items.map((item) => el("button", {
+      class: item.danger ? "context-item danger" : "context-item",
+      type: "button",
+      onclick: () => {
+        hideContextMenu();
+        item.run();
+      },
+    }, [text(item.label)])),
+  );
+  contextMenu.hidden = false;
+  const x = event.clientX ?? (event.touches?.[0]?.clientX ?? 16);
+  const y = event.clientY ?? (event.touches?.[0]?.clientY ?? 16);
+  contextMenu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
+  contextMenu.style.top = `${Math.min(y, window.innerHeight - 12 - items.length * 40)}px`;
+}
+
+function bindUserMenu(node, opts) {
+  node.addEventListener("contextmenu", (event) => showContextMenu(event, opts));
+  let press = 0;
+  node.addEventListener("touchstart", () => {
+    press = window.setTimeout(() => {
+      const fake = { preventDefault() {}, clientX: 24, clientY: 120 };
+      showContextMenu(fake, opts);
+    }, 480);
+  }, { passive: true });
+  node.addEventListener("touchend", () => clearTimeout(press));
+  node.addEventListener("touchmove", () => clearTimeout(press));
 }
 
 async function deleteChannel(channelId, channelName) {
@@ -936,7 +1196,7 @@ function renderChannels() {
   const me = el("div", { class: "me-row" }, [
     avatarNode(state.me, "avatar sm"),
     el("div", { class: "me-meta" }, [
-      el("strong", {}, [text(state.me.displayName)]),
+      el("strong", {}, displayNameNodes(state.me)),
       el("span", {}, [text(`@${state.me.username}`)]),
     ]),
     el("div", { class: "me-actions" }, [
@@ -1675,7 +1935,12 @@ function renderMessages(stick) {
       : state.messages;
     let previous = null;
     for (const message of visible) {
-      const grouped = previous && previous.userId === message.userId && message.createdAt - previous.createdAt < 5 * 60 * 1000;
+      const author = state.members.find((item) => item.id === message.userId);
+      const isBeta = Boolean(message.isBetaTester || author?.isBetaTester);
+      const grouped = previous
+        && previous.userId === message.userId
+        && message.createdAt - previous.createdAt < 5 * 60 * 1000
+        && !message.replyTo;
       const avatar = avatarNode(message);
       const header = el("header", {}, [
         el("button", {
@@ -1683,9 +1948,20 @@ function renderMessages(stick) {
           type: "button",
           onclick: () => openProfile(message.username, message.userId === state.me?.id),
         }, [text(message.displayName)]),
+        betaCheckbox({ ...message, isBetaTester: isBeta }),
         el("span", { class: "handle" }, [text(`@${message.username}`)]),
         el("time", { class: "time", datetime: formatTimeIso(message.createdAt) }, [text(formatTime(message.createdAt))]),
       ]);
+      const reply = message.replyTo
+        ? el("button", {
+            class: message.replyTo.deleted ? "reply-preview gone" : "reply-preview",
+            type: "button",
+            onclick: () => message.replyTo.deleted || jumpToMessage(message.replyTo.id),
+          }, [
+            el("strong", {}, [text(message.replyTo.deleted ? "Deleted message" : message.replyTo.displayName || message.replyTo.username)]),
+            el("span", {}, [text(message.replyTo.deleted ? "" : String(message.replyTo.body || "").replace(/^§HALLPOLL§/, "Poll: ").slice(0, 90))]),
+          ])
+        : null;
       const poll = parsePollBody(message.body);
       const body = poll
         ? renderPoll(message, poll)
@@ -1694,11 +1970,19 @@ function renderMessages(stick) {
             appendRichText(node, message.body ?? "");
             return node;
           })();
-      const column = el("div", {}, grouped && !poll ? [body] : [header, body]);
-      frag.append(el("article", {
-        class: `${grouped && !poll ? "message grouped" : "message"}${poll ? " has-poll" : ""}`,
+      const actions = el("div", { class: "message-actions" }, [
+        el("button", { class: "ghost", type: "button", title: "Reply", onclick: () => setReplyTo(message) }, [text("Reply")]),
+        canDeleteMessage(message)
+          ? el("button", { class: "ghost", type: "button", title: "Delete", onclick: () => deleteMessage(message) }, [text("Delete")])
+          : null,
+      ]);
+      const column = el("div", {}, grouped && !poll ? [reply, body, actions] : [header, reply, body, actions]);
+      const article = el("article", {
+        class: `${grouped && !poll ? "message grouped" : "message"}${poll ? " has-poll" : ""}${messageMentionsMe(message) ? " mentioned" : ""}`,
         "data-message-id": message.id,
-      }, [avatar, column]));
+      }, [avatar, column]);
+      bindUserMenu(article, { message: { ...message, isBetaTester: isBeta } });
+      frag.append(article);
       previous = message;
     }
     transcript.replaceChildren(frag);
@@ -1722,17 +2006,25 @@ function renderMembers() {
   for (const member of ordered) {
     const online = state.online.has(member.id);
     const voice = inVoice.get(member.id);
-    const roleLabel = member.isPlatformOwner ? "hall owner" : member.isOwner ? "owner" : null;
-    list.append(el("li", {
+    const roleLabel = member.isPlatformOwner
+      ? "hall owner"
+      : member.isOwner
+        ? "owner"
+        : member.isAdmin
+          ? "admin"
+          : null;
+    const row = el("li", {
       class: "member-item",
       onclick: () => openProfile(member.username, member.id === state.me?.id),
     }, [
       el("span", { class: online ? "dot on" : "dot" }),
       avatarNode(member, "avatar tiny"),
-      el("span", { class: "member-name" }, [text(member.displayName)]),
+      el("span", { class: "member-name" }, displayNameNodes(member, true)),
       voice ? el("span", { class: "role voice-tag" }, [text(voice.muted ? "muted" : "voice")]) : null,
       roleLabel ? el("span", { class: "role" }, [text(roleLabel)]) : null,
-    ]));
+    ]);
+    bindUserMenu(row, { member });
+    list.append(row);
   }
   membersEl.replaceChildren(
     el("div", { class: "side-head" }, [
@@ -1754,14 +2046,23 @@ function expandEmojiShortcodes(value) {
 
 function appendRichText(node, value) {
   const expanded = expandEmojiShortcodes(value);
-  const pattern = /https?:\/\/[^\s<]+/g;
+  const pattern = /https?:\/\/[^\s<]+|@([A-Za-z0-9_]{2,32})/g;
   let last = 0;
   for (const match of expanded.matchAll(pattern)) {
     const index = match.index ?? 0;
     if (index > last) node.append(text(expanded.slice(last, index)));
-    const href = match[0];
-    node.append(el("a", { href, target: "_blank", rel: "noreferrer noopener" }, [text(href)]));
-    last = index + href.length;
+    if (match[0].startsWith("http")) {
+      node.append(el("a", { href: match[0], target: "_blank", rel: "noreferrer noopener" }, [text(match[0])]));
+    } else {
+      const username = match[1]?.toLowerCase();
+      const mine = username && username === state.me?.username;
+      node.append(el("button", {
+        class: mine ? "mention mine" : "mention",
+        type: "button",
+        onclick: () => username && openProfile(username, mine),
+      }, [text(match[0])]));
+    }
+    last = index + match[0].length;
   }
   if (last < expanded.length) node.append(text(expanded.slice(last)));
 }
@@ -2002,7 +2303,7 @@ function renderHomeSidebar() {
       el("div", { class: "me-row" }, [
         avatarNode(state.me, "avatar sm"),
         el("div", { class: "me-meta" }, [
-          el("strong", {}, [text(state.me.displayName)]),
+          el("strong", {}, displayNameNodes(state.me)),
           el("span", {}, [text(`@${state.me.username}`)]),
         ]),
         el("div", { class: "me-actions" }, [
@@ -2189,6 +2490,11 @@ function connect(channelId) {
     }
     if (state.voice.channelId === channelId && voiceSession.handleSocketMessage(payload)) return;
     if (payload.type === "message" && payload.message) addMessage(payload.message);
+    if (payload.type === "message_deleted" && payload.messageId) {
+      state.messages = state.messages.filter((item) => item.id !== payload.messageId);
+      if (state.replyTo?.id === payload.messageId) setReplyTo(null);
+      renderMessages(false);
+    }
     if (payload.type === "poll_update" && payload.message) upsertMessage(payload.message);
     if (payload.type === "error" && payload.error) {
       messageInput.setCustomValidity(payload.error);
@@ -2247,10 +2553,12 @@ composer.addEventListener("submit", async (event) => {
   try {
     const data = await api(`/api/channels/${encodeURIComponent(state.activeChannelId)}/messages`, {
       method: "POST",
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body, replyTo: state.replyTo?.id || undefined }),
     });
     messageInput.value = "";
     messageInput.style.height = "auto";
+    setReplyTo(null);
+    hideMentionMenu();
     addMessage(data.message);
   } catch (error) {
     messageInput.setCustomValidity(error.message || "Could not send");
@@ -2263,8 +2571,50 @@ composer.addEventListener("submit", async (event) => {
   }
 });
 
+function updateMentionMenu() {
+  if (!mentionMenu) return;
+  const caret = messageInput.selectionStart ?? messageInput.value.length;
+  const before = messageInput.value.slice(0, caret);
+  const match = before.match(/@([A-Za-z0-9_]{0,32})$/);
+  if (!match || state.members.length === 0) {
+    hideMentionMenu();
+    return;
+  }
+  const query = match[1].toLowerCase();
+  const hits = state.members
+    .filter((member) => member.username.includes(query) || member.displayName.toLowerCase().includes(query))
+    .slice(0, 6);
+  if (hits.length === 0) {
+    hideMentionMenu();
+    return;
+  }
+  mentionMenu.hidden = false;
+  mentionMenu.replaceChildren(
+    ...hits.map((member) => el("button", {
+      class: "mention-item",
+      type: "button",
+      onclick: () => insertMention(member.username),
+    }, [
+      avatarNode(member, "avatar tiny"),
+      el("span", {}, displayNameNodes(member)),
+      el("span", { class: "handle" }, [text(`@${member.username}`)]),
+    ])),
+  );
+}
+
 messageInput.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    hideMentionMenu();
+    hideContextMenu();
+    return;
+  }
   if (event.key === "Enter" && !event.shiftKey) {
+    const first = mentionMenu && !mentionMenu.hidden ? mentionMenu.querySelector("button") : null;
+    if (first) {
+      event.preventDefault();
+      first.click();
+      return;
+    }
     event.preventDefault();
     if (!composerSending) composer.requestSubmit();
   }
@@ -2273,6 +2623,14 @@ messageInput.addEventListener("keydown", (event) => {
 messageInput.addEventListener("input", () => {
   messageInput.style.height = "auto";
   messageInput.style.height = `${Math.min(messageInput.scrollHeight, 160)}px`;
+  updateMentionMenu();
+});
+
+document.addEventListener("click", (event) => {
+  if (contextMenu && !contextMenu.hidden && !contextMenu.contains(event.target)) hideContextMenu();
+  if (mentionMenu && !mentionMenu.hidden && !mentionMenu.contains(event.target) && event.target !== messageInput) {
+    hideMentionMenu();
+  }
 });
 
 async function openProfile(username, editable = false) {
@@ -2298,21 +2656,64 @@ async function openProfile(username, editable = false) {
       el("div", { class: "profile-card" }, [
         avatarNode(profile, "avatar lg"),
         el("div", {}, [
-          el("h3", {}, [text(profile.displayName)]),
+          el("h3", {}, displayNameNodes(profile, true)),
           el("p", { class: "handle" }, [text(`@${profile.username}`)]),
           profile.isPlatformOwner ? el("p", { class: "role-pill" }, [text("Hall owner")]) : null,
         ]),
       ]),
       el("p", { class: "bio" }, [text(profile.bio || "No bio yet.")]),
-      state.me?.username === profile.username
-        ? el("button", { class: "ghost", type: "button", onclick: () => openEditProfile(profile) }, [text("Edit profile")])
+      state.me?.username === profile.username || canEditAnyPhotos()
+        ? el("button", {
+            class: "ghost",
+            type: "button",
+            onclick: () => openEditProfile(profile),
+          }, [text(state.me?.username === profile.username ? "Edit profile" : "Change photo")])
         : null,
     );
   });
 }
 
+async function pickServerIcon(server) {
+  const file = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/gif" });
+  file.style.display = "none";
+  document.body.append(file);
+  file.addEventListener("change", async () => {
+    const picked = file.files?.[0];
+    file.remove();
+    if (!picked) return;
+    try {
+      const response = await fetch(`/api/servers/${encodeURIComponent(server.id)}/avatar`, {
+        method: "PUT",
+        headers: { "content-type": picked.type || "application/octet-stream" },
+        body: picked,
+        credentials: "same-origin",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Upload failed");
+      state.servers = state.servers.map((item) => (item.id === data.server.id ? { ...item, ...data.server } : item));
+      if (state.server?.id === data.server.id) state.server = { ...state.server, ...data.server };
+      renderRail();
+      renderChannels();
+    } catch (error) {
+      openModal("Server icon", (form) => {
+        form.append(el("p", { class: "form-error" }, [text(error.message || "Could not update icon")]));
+      });
+    }
+  }, { once: true });
+  file.click();
+}
+
+function applyUserPhoto(updated) {
+  if (updated.id === state.me?.id) state.me = { ...state.me, ...updated };
+  syncMember(updated);
+  renderChannels();
+  renderMembers();
+  renderMessages(false);
+}
+
 function openEditProfile(profile) {
-  openModal("Edit profile", (form) => {
+  const mine = profile.username === state.me?.username;
+  openModal(mine ? "Edit profile" : `Change photo · @${profile.username}`, (form) => {
     const previewWrap = el("div", {});
     previewWrap.append(avatarNode(profile, "avatar lg"));
     const bio = el("textarea", {
@@ -2334,7 +2735,7 @@ function openEditProfile(profile) {
         ]),
       ]),
       el("label", {}, [text("Photo"), file]),
-      el("label", {}, [text("Bio"), bio]),
+      mine ? el("label", {}, [text("Bio"), bio]) : el("p", { class: "lede" }, [text("Hall owner can replace this photo.")]),
       status,
       error,
       el("div", { class: "actions" }, [
@@ -2344,19 +2745,15 @@ function openEditProfile(profile) {
           onclick: async () => {
             error.textContent = "";
             try {
-              const data = await api("/api/me/avatar", { method: "DELETE" });
-              state.me = data.user;
-              syncMember(data.user);
+              const data = await api(avatarUploadPath(profile.username), { method: "DELETE" });
+              applyUserPhoto(data.user);
               modal.close();
-              renderChannels();
-              renderMembers();
-              renderMessages(false);
             } catch (err) {
               error.textContent = err.message;
             }
           },
         }, [text("Remove photo")]),
-        el("button", { type: "submit" }, [text("Save")]),
+        mine ? el("button", { type: "submit" }, [text("Save")]) : el("button", { class: "ghost", type: "button", onclick: () => modal.close() }, [text("Done")]),
       ]),
     );
     file.addEventListener("change", async () => {
@@ -2365,7 +2762,7 @@ function openEditProfile(profile) {
       error.textContent = "";
       status.textContent = "Uploading…";
       try {
-        const response = await fetch("/api/me/avatar", {
+        const response = await fetch(avatarUploadPath(profile.username), {
           method: "PUT",
           headers: { "content-type": picked.type || "application/octet-stream" },
           body: picked,
@@ -2373,13 +2770,9 @@ function openEditProfile(profile) {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || "Upload failed");
-        state.me = data.user;
-        syncMember(data.user);
+        applyUserPhoto(data.user);
         previewWrap.replaceChildren(avatarNode(data.user, "avatar lg"));
         status.textContent = "Photo updated.";
-        renderChannels();
-        renderMembers();
-        renderMessages(false);
       } catch (err) {
         error.textContent = err.message;
         status.textContent = "";
@@ -2389,6 +2782,10 @@ function openEditProfile(profile) {
     });
     form.onsubmit = async (event) => {
       event.preventDefault();
+      if (!mine) {
+        modal.close();
+        return;
+      }
       error.textContent = "";
       try {
         const data = await api("/api/me", {
@@ -2445,6 +2842,28 @@ function openServerSettings() {
       el("label", {}, [text("Icon / pfp"), file]),
       status,
       error,
+    );
+    if ((server.isOwner || canEditAnyPhotos()) && !server.isLobby) {
+      const adminBox = el("div", { class: "admin-list" }, [
+        el("p", { class: "lede" }, [text("Admins can edit the server, channels, and delete any message.")]),
+      ]);
+      for (const member of state.members.filter((item) => !item.isOwner)) {
+        adminBox.append(el("div", { class: "admin-row" }, [
+          el("span", {}, displayNameNodes(member)),
+          el("span", { class: "handle" }, [text(`@${member.username}`)]),
+          el("button", {
+            class: "ghost",
+            type: "button",
+            onclick: async () => {
+              await toggleAdmin(member, !member.isAdmin);
+              openServerSettings();
+            },
+          }, [text(member.isAdmin ? "Remove admin" : "Make admin")]),
+        ]));
+      }
+      form.append(adminBox);
+    }
+    form.append(
       el("div", { class: "actions" }, [
         el("button", { class: "ghost", type: "button", onclick: () => modal.close() }, [text("Cancel")]),
         el("button", { type: "submit" }, [text("Save")]),

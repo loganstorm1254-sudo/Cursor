@@ -16,6 +16,7 @@ export type PublicUser = {
   bio: string;
   avatarUrl: string | null;
   isPlatformOwner: boolean;
+  isBetaTester: boolean;
 };
 
 export type UserRow = {
@@ -26,6 +27,7 @@ export type UserRow = {
   bio: string | null;
   avatar_key: string | null;
   role: string | null;
+  beta_tester?: number | null;
 };
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -112,6 +114,7 @@ export function toPublicUser(row: {
   bio?: string | null;
   avatar_key?: string | null;
   role?: string | null;
+  beta_tester?: number | null;
 }): PublicUser {
   return {
     id: row.id,
@@ -120,6 +123,7 @@ export function toPublicUser(row: {
     bio: row.bio ?? "",
     avatarUrl: avatarUrlFor(row.avatar_key),
     isPlatformOwner: row.role === "owner" || isPlatformOwnerUsername(row.username),
+    isBetaTester: Boolean(row.beta_tester),
   };
 }
 
@@ -139,7 +143,7 @@ export async function destroySession(env: Env, request: Request): Promise<void> 
   await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(tokenHash).run();
 }
 
-const USER_SELECT = `u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role`;
+const USER_SELECT = `u.id, u.username, u.display_name, u.bio, u.avatar_key, u.role, COALESCE(u.beta_tester, 0) AS beta_tester`;
 
 export async function currentUser(env: Env, request: Request): Promise<PublicUser | null> {
   const token = readCookie(request);
@@ -159,6 +163,7 @@ export async function currentUser(env: Env, request: Request): Promise<PublicUse
       bio: string | null;
       avatar_key: string | null;
       role: string | null;
+      beta_tester: number | null;
       expires_at: number;
     }>();
   if (!row) return null;
@@ -177,7 +182,7 @@ export async function requireUser(env: Env, request: Request): Promise<PublicUse
 
 export async function findUserByUsername(env: Env, username: string): Promise<UserRow | null> {
   return env.DB.prepare(
-    `SELECT id, username, display_name, password_hash, bio, avatar_key, role FROM users WHERE username = ?`,
+    `SELECT id, username, display_name, password_hash, bio, avatar_key, role, COALESCE(beta_tester, 0) AS beta_tester FROM users WHERE username = ?`,
   )
     .bind(username)
     .first<UserRow>();
@@ -185,7 +190,7 @@ export async function findUserByUsername(env: Env, username: string): Promise<Us
 
 export async function findUserById(env: Env, id: string): Promise<UserRow | null> {
   return env.DB.prepare(
-    `SELECT id, username, display_name, password_hash, bio, avatar_key, role FROM users WHERE id = ?`,
+    `SELECT id, username, display_name, password_hash, bio, avatar_key, role, COALESCE(beta_tester, 0) AS beta_tester FROM users WHERE id = ?`,
   )
     .bind(id)
     .first<UserRow>();

@@ -4,32 +4,55 @@ One Home Screen tap → a menu with **everything useful**: accessibility toggles
 
 | Shortcut | What it does |
 |----------|----------------|
-| **[iOS Toolkit](iOS-Toolkit.shortcut)** | Full toolkit menu (8 categories, 70+ actions) |
-| **[Toggle Color Invert](Toggle-Color-Invert.shortcut)** | One-tap Classic Invert |
-| **[Toggle Smart Invert](Toggle-Smart-Invert.shortcut)** | One-tap Smart Invert |
+| **iOS Toolkit** | Full toolkit menu (8 categories, 70+ actions) |
+| **Toggle Color Invert** | One-tap Classic Invert |
+| **Toggle Smart Invert** | One-tap Smart Invert |
 
-## Install on iPhone
+## Install on iPhone (works)
 
-Open these in **Safari on your iPhone**, then tap **Add Shortcut**.
+Apple’s `shortcuts://import-shortcut?url=…` **only accepts iCloud links**, so GitHub/raw links show “shortcut URL is invalid.” Use a **download → open** flow instead:
+
+1. On your **iPhone**, open one of the **Download** links below in **Safari** (not Chrome).
+2. When the file downloads, tap the **Downloads** (↑ arrow / blue icon) → tap **`iOS-Toolkit.shortcut`**.
+3. Tap **Add Shortcut** / **Open in Shortcuts**.
+4. If asked: **Settings → Shortcuts → Allow Untrusted Shortcuts**.
+5. In Shortcuts: open **iOS Toolkit** → share sheet → **Add to Home Screen**.
 
 ### iOS Toolkit (recommended)
 
-- File: https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/iOS-Toolkit.shortcut
-- One-tap import: [Add iOS Toolkit](shortcuts://import-shortcut?url=https%3A%2F%2Fraw.githubusercontent.com%2Floganstorm1254-sudo%2FCursor%2Fcursor%2Fios-toolkit-shortcut-7a9a%2Freleases%2Fios-shortcuts%2FiOS-Toolkit.shortcut&name=iOS%20Toolkit)
+| Host | Link |
+|------|------|
+| **Direct download (best)** | https://h.uguu.se/KGDDYOGh.shortcut |
+| Gofile page | https://gofile.io/d/cIxDZGm0 |
+| GitHub (permanent) | https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/iOS-Toolkit.shortcut |
+| jsDelivr CDN | https://cdn.jsdelivr.net/gh/loganstorm1254-sudo/Cursor@cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/iOS-Toolkit.shortcut |
 
 ### Classic Invert
 
-- File: https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/Toggle-Color-Invert.shortcut
-- One-tap import: [Add Toggle Color Invert](shortcuts://import-shortcut?url=https%3A%2F%2Fraw.githubusercontent.com%2Floganstorm1254-sudo%2FCursor%2Fcursor%2Fios-toolkit-shortcut-7a9a%2Freleases%2Fios-shortcuts%2FToggle-Color-Invert.shortcut&name=Toggle%20Color%20Invert)
+| Host | Link |
+|------|------|
+| **Direct download** | https://d.uguu.se/QXAHTpbu.shortcut |
+| Gofile | https://gofile.io/d/oQa6CDJ1 |
+| GitHub | https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/Toggle-Color-Invert.shortcut |
 
 ### Smart Invert
 
-- File: https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/Toggle-Smart-Invert.shortcut
-- One-tap import: [Add Toggle Smart Invert](shortcuts://import-shortcut?url=https%3A%2F%2Fraw.githubusercontent.com%2Floganstorm1254-sudo%2FCursor%2Fcursor%2Fios-toolkit-shortcut-7a9a%2Freleases%2Fios-shortcuts%2FToggle-Smart-Invert.shortcut&name=Toggle%20Smart%20Invert)
+| Host | Link |
+|------|------|
+| **Direct download** | https://n.uguu.se/AATdJNlr.shortcut |
+| Gofile | https://gofile.io/d/gKGrIv4B |
+| GitHub | https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/Toggle-Smart-Invert.shortcut |
 
-If prompted: **Settings → Shortcuts → Allow Untrusted Shortcuts**.
+> Uguu links expire after ~48 hours. GitHub / jsDelivr / Gofile stay available longer.
+> If Safari shows the file as gibberish instead of downloading: long-press the link → **Download Linked File**, then open it from Downloads.
 
-Then open the shortcut → share sheet → **Add to Home Screen** (or pin it in the Shortcuts widget).
+### Still stuck?
+
+AirDrop / Files method:
+
+1. On a computer, download the `.shortcut` from GitHub (links above).
+2. AirDrop it to your iPhone, or save it to **iCloud Drive**.
+3. On the phone: **Files** → tap the `.shortcut` → **Add Shortcut**.
 
 ## What’s inside iOS Toolkit
 
@@ -71,3 +94,5 @@ Requires network for HubSign (RoutineHub). On a Mac you can instead:
 ```bash
 shortcuts sign --mode anyone --input iOS-Toolkit.unsigned.shortcut --output iOS-Toolkit.shortcut
 ```
+
+To publish a true one-tap **iCloud** install link (the only kind `shortcuts://` accepts): import the signed file on a Mac/iPhone → Share → **Copy iCloud Link**.

@@ -34,6 +34,12 @@ Two apps that send phone notifications over **Bluetooth** — no Wi‑Fi, data, 
 
 Ready APKs: [`releases/`](releases/) · Protocol: [`shared/PROTOCOL.md`](shared/PROTOCOL.md)
 
+## iOS Toolkit (Shortcuts)
+
+One Home Screen shortcut with accessibility toggles, system controls, clipboard/device info, text tools, timers, network checks, media, and Settings deep links — plus one-tap Classic/Smart Invert.
+
+Install from [`releases/ios-shortcuts/`](releases/ios-shortcuts/) (open the Safari links on your iPhone → **Add Shortcut**).
+
 ## Reel — Wi‑Fi movie stream (PC)
 
 Stream **MKV** and **MP4** files from **`D:\Movies`** to any phone on the same Wi‑Fi. Stdlib Python only — run on the PC with the movies, open the printed URL on your phone.

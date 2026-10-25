@@ -9,6 +9,7 @@
 | [`NovaAI.apk`](NovaAI.apk) | **Nova AI** — your own AI trained from scratch + Wikipedia lookups, unlocks with your master API key |
 | [`NovaAI-Windows.zip`](NovaAI-Windows.zip) | **Nova AI for Windows** — unzip, double-click `NovaAI.exe`, chat in your browser |
 | [`Reel-Windows.zip`](Reel-Windows.zip) | **Reel** — Wi‑Fi movie stream from `D:\Movies` (MKV/MP4). Unzip, double-click `Reel.bat` |
+| [`ios-shortcuts/`](ios-shortcuts/) | **iOS Toolkit** + Invert shortcuts for iPhone (Shortcuts app) |
 
 ## Install on Samsung
 
@@ -49,3 +50,9 @@
 3. Run **`Reel.bat`** → **Yes** to Administrator.
 4. On PC: scan the **QR** with your phone, or open PHONE-URL.txt (`http://YOUR-IP:8787/`).
 5. Tap a movie → **Open in VLC** (best audio) or **Play here**.
+
+### iOS Toolkit (iPhone Shortcuts)
+
+1. On your iPhone, open the install links in [`ios-shortcuts/README.md`](ios-shortcuts/README.md) (Safari → **Add Shortcut**).
+2. Start with **iOS Toolkit** for the full menu, or the Invert shortcuts for one-tap color inversion.
+3. Add to Home Screen from the shortcut’s share sheet.

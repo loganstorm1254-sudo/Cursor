@@ -1,0 +1,21 @@
+iOS Toolkit — install (iPhone / Safari)
+
+Apple rejects shortcuts://import-shortcut for non-iCloud URLs
+("shortcut URL is invalid"). Download the file instead:
+
+1) Open this in Safari:
+   https://h.uguu.se/KGDDYOGh.shortcut
+
+2) Open the downloaded iOS-Toolkit.shortcut → Add Shortcut
+
+3) Settings → Shortcuts → Allow Untrusted Shortcuts (if asked)
+
+4) Add to Home Screen from the shortcut share sheet
+
+Backups:
+  Gofile:   https://gofile.io/d/cIxDZGm0
+  GitHub:   https://raw.githubusercontent.com/loganstorm1254-sudo/Cursor/cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/iOS-Toolkit.shortcut
+  jsDelivr: https://cdn.jsdelivr.net/gh/loganstorm1254-sudo/Cursor@cursor/ios-toolkit-shortcut-7a9a/releases/ios-shortcuts/iOS-Toolkit.shortcut
+
+Classic Invert: https://d.uguu.se/QXAHTpbu.shortcut
+Smart Invert:   https://n.uguu.se/AATdJNlr.shortcut

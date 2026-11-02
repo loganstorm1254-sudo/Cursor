@@ -20,10 +20,11 @@
 
 ### TapShare (tap phones to share)
 
-1. Install `TapShare.apk` on **both** phones. Open once → allow photos, nearby devices / Bluetooth, location, notifications. Turn **Bluetooth** on. Tap **Allow background**.
-2. Phone A: **Open Gallery** → pick a photo.
-3. Hold the **tops** of both phones together (or press **Share over Bluetooth**).
-4. Ripple animation plays — the photo opens full screen on phone B.
+1. Install `TapShare.apk` on **both** phones. Allow permissions. Turn Bluetooth + Location on. Tap **Allow background**.
+2. In TapShare: **Enable for Samsung Gallery** → turn TapShare ON in Accessibility.
+3. Phone A: open a photo in **Samsung Gallery**. Phone B: leave TapShare running.
+4. Knock the **tops** of both phones together (no Share button). Photo opens on phone B.
+5. It only shares when both phones actually tap — not when they are just near each other.
 
 ### Notify apps
 

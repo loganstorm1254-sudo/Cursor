@@ -22,9 +22,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Expanding rings while Nearby Connections finds the other phone and sends the photo.
- */
 class TapAnimationActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityTapAnimationBinding
@@ -48,7 +45,7 @@ class TapAnimationActivity : AppCompatActivity() {
 
         binding.label.text = when (mode) {
             MODE_RECEIVE -> getString(R.string.receiving)
-            else -> getString(R.string.sharing_bluetooth)
+            else -> getString(R.string.sharing_tap)
         }
 
         vibrateTap()
@@ -56,7 +53,6 @@ class TapAnimationActivity : AppCompatActivity() {
 
         if (mode == MODE_SEND) {
             if (uri == null) {
-                Toast.makeText(this, R.string.pairing_failed, Toast.LENGTH_LONG).show()
                 finishSafe()
                 return
             }
@@ -69,7 +65,6 @@ class TapAnimationActivity : AppCompatActivity() {
             TapShareService.ensureRunning(this)
 
             lifecycleScope.launch {
-                binding.label.setText(R.string.sharing_bluetooth)
                 val ok = withContext(Dispatchers.IO) {
                     try {
                         var engine = TapShareService.sharedEngine
@@ -82,7 +77,7 @@ class TapAnimationActivity : AppCompatActivity() {
                         val use = engine ?: NearbyEngine(applicationContext).also {
                             it.start { _, _ -> }
                         }
-                        use.send(media)
+                        use.sendAfterTap(media)
                     } catch (_: Exception) {
                         false
                     }
@@ -92,11 +87,11 @@ class TapAnimationActivity : AppCompatActivity() {
                 if (!ok) {
                     Toast.makeText(
                         this@TapAnimationActivity,
-                        R.string.bluetooth_retry_hint,
+                        R.string.tap_both_phones_hint,
                         Toast.LENGTH_LONG
                     ).show()
                 }
-                binding.root.postDelayed({ finishSafe() }, if (ok) 900L else 2000L)
+                binding.root.postDelayed({ finishSafe() }, if (ok) 900L else 2200L)
             }
         } else {
             binding.root.postDelayed({
@@ -167,6 +162,7 @@ class TapAnimationActivity : AppCompatActivity() {
         const val EXTRA_MODE = "mode"
         const val EXTRA_URI = "uri"
         const val EXTRA_MIME = "mime"
+        const val EXTRA_AUTO = "auto"
         const val MODE_SEND = "send"
         const val MODE_RECEIVE = "receive"
     }

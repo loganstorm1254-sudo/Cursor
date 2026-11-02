@@ -27,19 +27,20 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Reliable phone-to-phone share via Google Nearby Connections
- * (Bluetooth + Wi‑Fi under the hood — works on Samsung with Play Services).
+ * Nearby Connections engine. Discovers peers quietly, but ONLY connects / sends
+ * when a real phone-top tap triggers [sendAfterTap].
  */
 class NearbyEngine(private val context: Context) {
 
     companion object {
         private const val TAG = "TapShareNearby"
         private const val SERVICE_ID = "com.tapshare.app.SHARE"
-        // CLUSTER is more reliable when both phones advertise + discover at once.
         private val STRATEGY = Strategy.P2P_CLUSTER
+        private const val BUMP_WINDOW_MS = 3500L
     }
 
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
@@ -54,6 +55,11 @@ class NearbyEngine(private val context: Context) {
     private val outboundDone = AtomicReference<CountDownLatch?>(null)
     private val outboundOk = AtomicBoolean(false)
     private var outboundPayloadId = -1L
+
+    /** Local bump time (ms). Peers exchange this so we only share on a real tap. */
+    private val localBumpAt = AtomicLong(0)
+    private val peerBumpAt = AtomicLong(0)
+    private val peerBumpLatch = AtomicReference<CountDownLatch?>(null)
 
     fun start(onReceived: (Uri, String) -> Unit) {
         this.onReceived = onReceived
@@ -73,7 +79,12 @@ class NearbyEngine(private val context: Context) {
     }
 
     fun restart() {
-        stop()
+        try {
+            client.stopAdvertising()
+            client.stopDiscovery()
+        } catch (_: Exception) {
+        }
+        // Keep existing connections if any; just ensure advertise/discover are on.
         running.set(true)
         val name = endpointName()
         client.startAdvertising(
@@ -98,6 +109,8 @@ class NearbyEngine(private val context: Context) {
         }
     }
 
+    fun hasNearbyPeers(): Boolean = found.isNotEmpty() || connected.isNotEmpty()
+
     private fun endpointName(): String {
         val model = PeerIdentity.displayName(context).replace(" ", "").take(10)
         val id = PeerIdentity.id(context).take(4)
@@ -108,8 +121,7 @@ class NearbyEngine(private val context: Context) {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             Log.i(TAG, "found ${info.endpointName}")
             found[endpointId] = info.endpointName
-            // Connect immediately so a tap/share can send right away.
-            request(endpointId)
+            // Do NOT auto-connect — waiting for a physical tap.
         }
 
         override fun onEndpointLost(endpointId: String) {
@@ -119,16 +131,22 @@ class NearbyEngine(private val context: Context) {
 
     private val lifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            Log.i(TAG, "accept ${info.endpointName}")
-            client.acceptConnection(endpointId, payloadCallback)
+            // Only accept if we (or they) bumped very recently — stops idle pairing.
+            val now = System.currentTimeMillis()
+            val recentLocal = now - localBumpAt.get() in 0..BUMP_WINDOW_MS * 2
+            if (recentLocal) {
+                client.acceptConnection(endpointId, payloadCallback)
+            } else {
+                // Still accept so the tapped sender can push — receiver may not bump as hard.
+                // Gate the *send* on dual bump instead.
+                client.acceptConnection(endpointId, payloadCallback)
+            }
         }
 
         override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
             if (resolution.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
-                Log.i(TAG, "connected $endpointId")
                 connected.add(endpointId)
             } else {
-                Log.w(TAG, "connect failed ${resolution.status}")
                 connected.remove(endpointId)
             }
         }
@@ -143,11 +161,18 @@ class NearbyEngine(private val context: Context) {
             when (payload.type) {
                 Payload.Type.BYTES -> {
                     val text = payload.asBytes()?.toString(StandardCharsets.UTF_8) ?: return
-                    if (text.startsWith("meta|")) {
-                        val parts = text.split("|", limit = 3)
-                        if (parts.size == 3) {
-                            lastMime = parts[1].ifBlank { "image/jpeg" }
-                            lastName = parts[2].ifBlank { "tapshare.jpg" }
+                    when {
+                        text.startsWith("bump|") -> {
+                            val ts = text.removePrefix("bump|").toLongOrNull() ?: return
+                            peerBumpAt.set(ts)
+                            peerBumpLatch.get()?.countDown()
+                        }
+                        text.startsWith("meta|") -> {
+                            val parts = text.split("|", limit = 3)
+                            if (parts.size == 3) {
+                                lastMime = parts[1].ifBlank { "image/jpeg" }
+                                lastName = parts[2].ifBlank { "tapshare.jpg" }
+                            }
                         }
                     }
                 }
@@ -200,30 +225,61 @@ class NearbyEngine(private val context: Context) {
             .addOnFailureListener { Log.w(TAG, "request failed", it) }
     }
 
-    /** Wait for a peer, then send the photo. Call from a background thread. */
-    fun send(media: ShareSession.ActiveMedia, timeoutMs: Long = 30_000): Boolean {
-        if (!running.get()) {
-            restart()
-        } else {
-            // Nudge discovery without tearing down live links.
-            found.keys.forEach { request(it) }
-        }
+    /**
+     * Called only after a real accelerometer tap. Connects, confirms the other
+     * phone also tapped (bump ping), then sends the photo.
+     */
+    fun sendAfterTap(media: ShareSession.ActiveMedia, timeoutMs: Long = 20_000): Boolean {
+        val bumpTime = System.currentTimeMillis()
+        localBumpAt.set(bumpTime)
+        peerBumpAt.set(0)
+        if (!running.get()) restart()
+
+        val latch = CountDownLatch(1)
+        peerBumpLatch.set(latch)
 
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline && connected.isEmpty()) {
             found.keys.forEach { request(it) }
             try {
-                Thread.sleep(300)
+                Thread.sleep(250)
             } catch (_: InterruptedException) {
                 return false
             }
         }
-        val endpoint = connected.firstOrNull()
-        if (endpoint == null) {
-            Log.e(TAG, "no peer connected in time")
+        if (connected.isEmpty()) {
+            Log.e(TAG, "no peer after tap")
             return false
         }
 
+        // Tell peers we tapped, and wait for their tap signal.
+        val bumpPayload = Payload.fromBytes("bump|$bumpTime".toByteArray(StandardCharsets.UTF_8))
+        connected.forEach { id ->
+            client.sendPayload(id, bumpPayload)
+        }
+
+        // Wait for peer bump — if they tapped tops together it arrives quickly.
+        // If not, abort (this stops share-when-not-tapped).
+        val peerSignaled = latch.await(BUMP_WINDOW_MS, TimeUnit.MILLISECONDS) ||
+            peerBumpAt.get() > 0
+        val peerTs = peerBumpAt.get()
+        val tapsAligned = peerSignaled &&
+            peerTs > 0 &&
+            kotlin.math.abs(peerTs - bumpTime) <= BUMP_WINDOW_MS
+
+        // Also accept if peer bumped slightly before us (their signal already arrived).
+        if (!tapsAligned && peerTs == 0L) {
+            // Give one more short wait — other phone's detector may fire a beat later.
+            latch.await(1200, TimeUnit.MILLISECONDS)
+        }
+        val peerTs2 = peerBumpAt.get()
+        val okTap = peerTs2 > 0 && kotlin.math.abs(peerTs2 - bumpTime) <= BUMP_WINDOW_MS + 1200
+        if (!okTap) {
+            Log.w(TAG, "peer did not tap — aborting send")
+            return false
+        }
+
+        val endpoint = connected.firstOrNull() ?: return false
         return try {
             val meta = "meta|${media.mimeType}|${media.displayName}"
             client.sendPayload(
@@ -231,25 +287,43 @@ class NearbyEngine(private val context: Context) {
                 Payload.fromBytes(meta.toByteArray(StandardCharsets.UTF_8))
             )
 
-            val latch = CountDownLatch(1)
-            outboundDone.set(latch)
+            val done = CountDownLatch(1)
+            outboundDone.set(done)
             outboundOk.set(false)
-
             val filePayload = toFilePayload(media) ?: return false
             outboundPayloadId = filePayload.id
             client.sendPayload(endpoint, filePayload)
                 .addOnFailureListener {
-                    Log.e(TAG, "sendPayload failed", it)
                     outboundOk.set(false)
-                    latch.countDown()
+                    done.countDown()
                 }
-
-            val finished = latch.await(90, TimeUnit.SECONDS)
-            finished && outboundOk.get()
+            done.await(90, TimeUnit.SECONDS) && outboundOk.get()
         } catch (t: Throwable) {
             Log.e(TAG, "send error", t)
             false
         }
+    }
+
+    /** Receiver side: record that this phone was tapped so sender's bump check passes. */
+    fun signalLocalTap() {
+        val bumpTime = System.currentTimeMillis()
+        localBumpAt.set(bumpTime)
+        if (!running.get()) restart()
+        found.keys.forEach { request(it) }
+        val payload = Payload.fromBytes("bump|$bumpTime".toByteArray(StandardCharsets.UTF_8))
+        // Send to anyone already connected; also after connections land.
+        connected.forEach { id -> client.sendPayload(id, payload) }
+        // Retry shortly as connections complete.
+        Thread {
+            try {
+                Thread.sleep(800)
+                connected.forEach { id -> client.sendPayload(id, payload) }
+                found.keys.forEach { request(it) }
+                Thread.sleep(800)
+                connected.forEach { id -> client.sendPayload(id, payload) }
+            } catch (_: Exception) {
+            }
+        }.start()
     }
 
     private fun toFilePayload(media: ShareSession.ActiveMedia): Payload? {

@@ -8,7 +8,8 @@ import android.hardware.SensorManager
 import kotlin.math.sqrt
 
 /**
- * Detects a firm phone-to-phone tap (tops knocking) via accelerometer spike.
+ * Detects a firm phone-to-phone knock (tops tapping). Tuned to ignore walking /
+ * putting the phone down — only sharp spikes count.
  */
 class BumpDetector(
     context: Context,
@@ -18,10 +19,13 @@ class BumpDetector(
     private val sensorManager = context.getSystemService(SensorManager::class.java)
     private val accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
     private var lastBumpAt = 0L
-    private var lastMagnitude = 0f
+    private var lastMagnitude = SensorManager.GRAVITY_EARTH
+    private var armedAt = 0L
 
     fun start() {
         val sensor = accelerometer ?: return
+        lastMagnitude = SensorManager.GRAVITY_EARTH
+        armedAt = System.currentTimeMillis() + 800L // ignore spikes right as we start
         sensorManager?.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
     }
 
@@ -34,18 +38,27 @@ class BumpDetector(
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
+        val now = System.currentTimeMillis()
+        if (now < armedAt) {
+            lastMagnitude = magnitude(event)
+            return
+        }
+        val mag = magnitude(event)
+        val delta = kotlin.math.abs(mag - lastMagnitude)
+        lastMagnitude = mag
+        // Require a hard knock: big delta AND absolute jerk above gravity band.
+        if (delta < 18f) return
+        if (mag < 16f && mag > 4f && delta < 22f) return
+        if (now - lastBumpAt < 2200L) return
+        lastBumpAt = now
+        onBump()
+    }
+
+    private fun magnitude(event: SensorEvent): Float {
         val x = event.values[0]
         val y = event.values[1]
         val z = event.values[2]
-        val magnitude = sqrt(x * x + y * y + z * z)
-        val delta = kotlin.math.abs(magnitude - lastMagnitude)
-        lastMagnitude = magnitude
-        // Quiet gravity ~9.8; a knock spikes hard. Threshold tuned for phone tops tapping.
-        if (delta < 14f) return
-        val now = System.currentTimeMillis()
-        if (now - lastBumpAt < 1600L) return
-        lastBumpAt = now
-        onBump()
+        return sqrt(x * x + y * y + z * z)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit

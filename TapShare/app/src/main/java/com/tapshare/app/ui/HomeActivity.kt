@@ -18,6 +18,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.tapshare.app.R
 import com.tapshare.app.databinding.ActivityHomeBinding
+import com.tapshare.app.service.GalleryWatchService
 import com.tapshare.app.service.TapShareService
 
 class HomeActivity : AppCompatActivity() {
@@ -42,6 +43,10 @@ class HomeActivity : AppCompatActivity() {
         startPulse(binding.pulseOuter, 1.55f, 2200L)
         startPulse(binding.pulseInner, 1.25f, 1600L)
 
+        binding.accessButton.setOnClickListener {
+            Toast.makeText(this, R.string.enable_accessibility_short, Toast.LENGTH_LONG).show()
+            GalleryWatchService.openSettings(this)
+        }
         binding.galleryButton.setOnClickListener {
             startActivity(Intent(this, GalleryActivity::class.java))
         }
@@ -58,7 +63,13 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun refreshStatus() {
-        binding.statusText.setText(R.string.status_active)
+        val accessOn = GalleryWatchService.isEnabled()
+        binding.statusText.setText(
+            if (accessOn) R.string.status_active else R.string.status_need_access
+        )
+        binding.accessButton.setText(
+            if (accessOn) R.string.access_enabled else R.string.enable_gallery_access
+        )
         val pm = getSystemService(PowerManager::class.java)
         val ignoring = pm.isIgnoringBatteryOptimizations(packageName)
         binding.batteryButton.setText(
@@ -91,7 +102,6 @@ class HomeActivity : AppCompatActivity() {
                 needed += Manifest.permission.NEARBY_WIFI_DEVICES
             }
         }
-        // Nearby Connections needs location on most Samsung builds.
         if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
             needed += Manifest.permission.ACCESS_FINE_LOCATION
         }

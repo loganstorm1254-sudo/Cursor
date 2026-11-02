@@ -1,26 +1,19 @@
 package com.tapshare.app.ui
 
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothManager
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.tapshare.app.R
 import com.tapshare.app.databinding.ActivityPhotoViewerBinding
 import com.tapshare.app.service.TapShareService
-import com.tapshare.app.transfer.BumpDetector
 import com.tapshare.app.util.ShareSession
 
+/**
+ * Optional in-app viewer. Sharing is done by physically tapping phone tops —
+ * handled by TapShareService + GalleryWatchService, not a Share button.
+ */
 class PhotoViewerActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityPhotoViewerBinding
-    private var uri: Uri? = null
-    private var mime: String = "image/jpeg"
-    private var name: String = "photo.jpg"
-    private var bumpDetector: BumpDetector? = null
-    private var sharing = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,75 +22,46 @@ class PhotoViewerActivity : AppCompatActivity() {
 
         TapShareService.ensureRunning(this)
 
-        uri = intent.getStringExtra(EXTRA_URI)?.let(Uri::parse)
-        mime = intent.getStringExtra(EXTRA_MIME) ?: "image/jpeg"
-        name = intent.getStringExtra(EXTRA_NAME) ?: "photo.jpg"
-        val mediaUri = uri
-        if (mediaUri == null) {
+        val uri = intent.getStringExtra(EXTRA_URI)?.let(Uri::parse)
+        val mime = intent.getStringExtra(EXTRA_MIME) ?: "image/jpeg"
+        val name = intent.getStringExtra(EXTRA_NAME) ?: "photo.jpg"
+        if (uri == null) {
             finish()
             return
         }
         try {
-            binding.photoView.setImageURI(mediaUri)
+            binding.photoView.setImageURI(uri)
         } catch (_: Exception) {
             finish()
             return
         }
-        ShareSession.set(ShareSession.ActiveMedia(mediaUri, mime, name))
-
-        binding.tapHint.setOnClickListener { beginShare() }
-        bumpDetector = BumpDetector(this) {
-            runOnUiThread { beginShare() }
-        }
+        ShareSession.set(ShareSession.ActiveMedia(uri, mime, name))
+        binding.tapHint.text = getString(com.tapshare.app.R.string.tap_phones_now)
+        // No click-to-share — physical tap only (service accelerometer).
+        binding.tapHint.isClickable = false
+        binding.tapHint.isFocusable = false
     }
 
     override fun onResume() {
         super.onResume()
-        uri?.let {
-            ShareSession.set(ShareSession.ActiveMedia(it, mime, name))
+        intent.getStringExtra(EXTRA_URI)?.let { raw ->
+            val uri = Uri.parse(raw)
+            ShareSession.set(
+                ShareSession.ActiveMedia(
+                    uri,
+                    intent.getStringExtra(EXTRA_MIME) ?: "image/jpeg",
+                    intent.getStringExtra(EXTRA_NAME) ?: "photo.jpg"
+                )
+            )
         }
         TapShareService.ensureRunning(this)
-        ensureBluetoothOn()
-        bumpDetector?.start()
-    }
-
-    override fun onPause() {
-        bumpDetector?.stop()
-        super.onPause()
     }
 
     override fun onDestroy() {
-        bumpDetector?.stop()
-        bumpDetector = null
-        super.onDestroy()
-    }
-
-    private fun ensureBluetoothOn() {
-        val adapter = getSystemService(BluetoothManager::class.java)?.adapter ?: return
-        if (!adapter.isEnabled) {
-            try {
-                @Suppress("DEPRECATION")
-                startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-            } catch (_: Exception) {
-            }
-            Toast.makeText(this, R.string.turn_on_bluetooth, Toast.LENGTH_LONG).show()
+        if (isFinishing) {
+            // Keep session briefly so an in-flight tap can still read it.
         }
-    }
-
-    private fun beginShare() {
-        if (sharing) return
-        val mediaUri = uri ?: return
-        ShareSession.set(ShareSession.ActiveMedia(mediaUri, mime, name))
-        TapShareService.ensureRunning(this)
-        sharing = true
-        startActivity(
-            Intent(this, TapAnimationActivity::class.java).apply {
-                putExtra(TapAnimationActivity.EXTRA_MODE, TapAnimationActivity.MODE_SEND)
-                putExtra(TapAnimationActivity.EXTRA_URI, mediaUri.toString())
-                putExtra(TapAnimationActivity.EXTRA_MIME, mime)
-            }
-        )
-        binding.root.postDelayed({ sharing = false }, 3000)
+        super.onDestroy()
     }
 
     companion object {

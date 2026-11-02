@@ -39,8 +39,8 @@
 
         <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="220dp"
-            android:layout_marginBottom="28dp">
+            android:layout_height="200dp"
+            android:layout_marginBottom="20dp">
 
             <View
                 android:id="@+id/pulseOuter"
@@ -72,17 +72,17 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center"
-            android:text="@string/status_active"
+            android:text="@string/status_need_access"
             android:textColor="@color/glow"
             android:textSize="15sp"
             android:fontFamily="sans-serif-medium" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/galleryButton"
+            android:id="@+id/accessButton"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:layout_marginTop="28dp"
-            android:text="@string/open_gallery"
+            android:layout_marginTop="24dp"
+            android:text="@string/enable_gallery_access"
             android:textAllCaps="false"
             android:textSize="16sp"
             app:backgroundTint="@color/sky"
@@ -93,8 +93,16 @@
             style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="4dp"
             android:text="@string/battery_exempt"
+            android:textColor="@color/white_70" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/galleryButton"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/open_gallery_optional"
             android:textColor="@color/white_70" />
     </LinearLayout>
 </FrameLayout>

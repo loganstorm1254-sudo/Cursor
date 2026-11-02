@@ -15,16 +15,19 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.tapshare.app.R
 import com.tapshare.app.databinding.ActivityTapAnimationBinding
+import com.tapshare.app.service.TapShareService
+import com.tapshare.app.transfer.BleBeacon
 import com.tapshare.app.transfer.MediaPipe
 import com.tapshare.app.util.ShareSession
 import kotlinx.coroutines.launch
 
 /**
- * Apple NameDrop-style expanding rings while the photo transfers over Bluetooth.
+ * Expanding rings while Bluetooth finds the other phone and transfers the photo.
  */
 class TapAnimationActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityTapAnimationBinding
+    private var finished = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,26 +37,26 @@ class TapAnimationActivity : AppCompatActivity() {
         val mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_SEND
         val uri = intent.getStringExtra(EXTRA_URI)?.let(Uri::parse)
         val mime = intent.getStringExtra(EXTRA_MIME) ?: "image/jpeg"
-        val peerBt = intent.getStringExtra(EXTRA_PEER_BT).orEmpty()
-        val peerId = intent.getStringExtra(EXTRA_PEER_ID).orEmpty()
-        val peerName = intent.getStringExtra(EXTRA_PEER_NAME).orEmpty()
 
         if (uri != null) {
-            binding.preview.setImageURI(uri)
+            try {
+                binding.preview.setImageURI(uri)
+            } catch (_: Exception) {
+            }
         }
 
         binding.label.text = when (mode) {
             MODE_RECEIVE -> getString(R.string.receiving)
-            else -> getString(R.string.sharing) + if (peerName.isNotBlank()) " → $peerName" else ""
+            else -> getString(R.string.sharing_bluetooth)
         }
 
         vibrateTap()
         playRings()
 
         if (mode == MODE_SEND) {
-            if (uri == null || (peerId.isBlank() && peerBt.isBlank())) {
+            if (uri == null) {
                 Toast.makeText(this, R.string.pairing_failed, Toast.LENGTH_LONG).show()
-                finish()
+                finishSafe()
                 return
             }
             val media = ShareSession.ActiveMedia(
@@ -61,47 +64,64 @@ class TapAnimationActivity : AppCompatActivity() {
                 mimeType = mime,
                 displayName = uri.lastPathSegment ?: "photo.jpg"
             )
+            ShareSession.set(media)
+            TapShareService.refreshBeacon(this)
+
             lifecycleScope.launch {
-                val ok = MediaPipe(applicationContext).sendTo(peerId, peerBt, media)
+                val beacon = BleBeacon(applicationContext)
+                beacon.signalBump()
+                val ok = try {
+                    MediaPipe(applicationContext).sendAfterTap(media, beacon)
+                } catch (_: Exception) {
+                    false
+                }
+                if (isFinishing || finished) return@launch
                 binding.label.setText(if (ok) R.string.shared else R.string.pairing_failed)
-                binding.root.postDelayed({ finish() }, if (ok) 900L else 1400L)
+                if (!ok) {
+                    Toast.makeText(
+                        this@TapAnimationActivity,
+                        R.string.bluetooth_retry_hint,
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                binding.root.postDelayed({ finishSafe() }, if (ok) 800L else 1600L)
             }
         } else {
-            // Receive path — show animation, then open the photo full screen.
             binding.root.postDelayed({
                 if (uri != null) {
-                    startActivity(
-                        Intent(this, ReceivedMediaActivity::class.java).apply {
-                            putExtra(ReceivedMediaActivity.EXTRA_URI, uri.toString())
-                            putExtra(ReceivedMediaActivity.EXTRA_MIME, mime)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        }
-                    )
+                    try {
+                        startActivity(
+                            Intent(this, ReceivedMediaActivity::class.java).apply {
+                                putExtra(ReceivedMediaActivity.EXTRA_URI, uri.toString())
+                                putExtra(ReceivedMediaActivity.EXTRA_MIME, mime)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            }
+                        )
+                    } catch (_: Exception) {
+                    }
                 }
-                finish()
-            }, 1600L)
+                finishSafe()
+            }, 1400L)
         }
+    }
+
+    private fun finishSafe() {
+        if (finished || isFinishing) return
+        finished = true
+        finish()
     }
 
     private fun playRings() {
         listOf(binding.ring1 to 0L, binding.ring2 to 180L, binding.ring3 to 360L).forEach { (ring, delay) ->
             expand(ring, delay)
         }
-        ObjectAnimator.ofFloat(binding.preview, View.SCALE_X, 0.6f, 1f).apply {
-            duration = 700
-            start()
-        }
-        ObjectAnimator.ofFloat(binding.preview, View.SCALE_Y, 0.6f, 1f).apply {
-            duration = 700
-            start()
-        }
-        ObjectAnimator.ofFloat(binding.preview, View.ALPHA, 0f, 1f).apply {
-            duration = 500
-            start()
-        }
+        ObjectAnimator.ofFloat(binding.preview, View.SCALE_X, 0.6f, 1f).setDuration(700).start()
+        ObjectAnimator.ofFloat(binding.preview, View.SCALE_Y, 0.6f, 1f).setDuration(700).start()
+        ObjectAnimator.ofFloat(binding.preview, View.ALPHA, 0f, 1f).setDuration(500).start()
     }
 
     private fun expand(ring: View, startDelay: Long) {
+        if (finished || isFinishing) return
         ring.scaleX = 0.4f
         ring.scaleY = 0.4f
         ring.alpha = 0.9f
@@ -115,8 +135,7 @@ class TapAnimationActivity : AppCompatActivity() {
         set.startDelay = startDelay
         set.interpolator = DecelerateInterpolator()
         set.start()
-        // Loop soft pulses
-        ring.postDelayed({ if (!isFinishing) expand(ring, 0L) }, 1500 + startDelay)
+        ring.postDelayed({ if (!finished && !isFinishing) expand(ring, 0L) }, 1500 + startDelay)
     }
 
     private fun vibrateTap() {
@@ -127,9 +146,7 @@ class TapAnimationActivity : AppCompatActivity() {
                 @Suppress("DEPRECATION")
                 getSystemService(VIBRATOR_SERVICE) as Vibrator
             }
-            vibrator.vibrate(
-                VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1)
-            )
+            vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1))
         } catch (_: Exception) {
         }
     }
@@ -138,9 +155,7 @@ class TapAnimationActivity : AppCompatActivity() {
         const val EXTRA_MODE = "mode"
         const val EXTRA_URI = "uri"
         const val EXTRA_MIME = "mime"
-        const val EXTRA_PEER_BT = "peer_bt"
-        const val EXTRA_PEER_ID = "peer_id"
-        const val EXTRA_PEER_NAME = "peer_name"
+        const val EXTRA_REASON = "reason"
         const val MODE_SEND = "send"
         const val MODE_RECEIVE = "receive"
     }

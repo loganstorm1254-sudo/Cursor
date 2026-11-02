@@ -12,37 +12,54 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.tapshare.app.R
 import com.tapshare.app.transfer.BleBeacon
+import com.tapshare.app.transfer.GattTransfer
 import com.tapshare.app.transfer.MediaPipe
 import com.tapshare.app.ui.HomeActivity
 import com.tapshare.app.ui.ReceivedMediaActivity
 import com.tapshare.app.ui.TapAnimationActivity
+import com.tapshare.app.util.ShareSession
 
 /**
- * Always-active TapShare engine. Survives swipe-away via START_STICKY + foreground
- * notification, and restarts on boot via BootCompletedReceiver.
+ * Always-active TapShare engine: BLE beacon + Bluetooth listener.
+ * Survives swipe-away via START_STICKY and restarts on boot.
  */
 class TapShareService : Service() {
 
-    private lateinit var mediaPipe: MediaPipe
-    private lateinit var bleBeacon: BleBeacon
+    private var mediaPipe: MediaPipe? = null
+    private var bleBeacon: BleBeacon? = null
+    private var gattTransfer: GattTransfer? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        createChannels()
-        promoteForeground()
-        acquireWakeLock()
-        mediaPipe = MediaPipe(applicationContext)
-        bleBeacon = BleBeacon(applicationContext)
-        bleBeacon.startAdvertising()
-        mediaPipe.startListening { uri, mime ->
-            onMediaReceived(uri, mime)
+        try {
+            createChannels()
+            promoteForeground()
+            acquireWakeLock()
+            val pipe = MediaPipe(applicationContext)
+            val beacon = BleBeacon(applicationContext)
+            val gatt = GattTransfer(applicationContext)
+            mediaPipe = pipe
+            bleBeacon = beacon
+            gattTransfer = gatt
+            beacon.startAdvertising()
+            gatt.startServer { uri, mime -> onMediaReceived(uri, mime) }
+            pipe.startListening { uri, mime ->
+                onMediaReceived(uri, mime)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "onCreate failed", t)
+            try {
+                promoteForeground()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -52,63 +69,125 @@ class TapShareService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_REFRESH_BEACON -> {
+                try {
+                    bleBeacon?.refreshAdvertising()
+                } catch (_: Exception) {
+                }
+            }
         }
-        promoteForeground()
+        try {
+            promoteForeground()
+            if (bleBeacon == null || mediaPipe == null || gattTransfer == null) {
+                if (bleBeacon == null) {
+                    bleBeacon = BleBeacon(applicationContext).also { it.startAdvertising() }
+                }
+                if (gattTransfer == null) {
+                    gattTransfer = GattTransfer(applicationContext).also { gatt ->
+                        gatt.startServer { uri, mime -> onMediaReceived(uri, mime) }
+                    }
+                }
+                if (mediaPipe == null) {
+                    mediaPipe = MediaPipe(applicationContext).also { pipe ->
+                        pipe.startListening { uri, mime -> onMediaReceived(uri, mime) }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "onStartCommand failed", t)
+        }
         return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // User swiped the app away — schedule ourselves back immediately.
-        ensureRunning(applicationContext)
+        try {
+            ensureRunning(applicationContext)
+        } catch (_: Exception) {
+        }
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        mediaPipe.stopListening()
-        bleBeacon.stopAdvertising()
-        wakeLock?.let {
-            if (it.isHeld) it.release()
+        try {
+            mediaPipe?.stopListening()
+        } catch (_: Exception) {
+        }
+        try {
+            gattTransfer?.stopServer()
+        } catch (_: Exception) {
+        }
+        try {
+            bleBeacon?.stopAdvertising()
+        } catch (_: Exception) {
+        }
+        mediaPipe = null
+        gattTransfer = null
+        bleBeacon = null
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {
         }
         wakeLock = null
-        // Best-effort restart if the system kills us.
-        ensureRunning(applicationContext)
+        try {
+            ensureRunning(applicationContext)
+        } catch (_: Exception) {
+        }
         super.onDestroy()
     }
 
     private fun onMediaReceived(uri: Uri, mime: String) {
-        // Full-screen receive animation, then open the photo.
-        val anim = Intent(this, TapAnimationActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            putExtra(TapAnimationActivity.EXTRA_MODE, TapAnimationActivity.MODE_RECEIVE)
-            putExtra(TapAnimationActivity.EXTRA_URI, uri.toString())
-            putExtra(TapAnimationActivity.EXTRA_MIME, mime)
-        }
-        startActivity(anim)
+        try {
+            ShareSession.clear()
+            bleBeacon?.refreshAdvertising()
 
-        val open = Intent(this, ReceivedMediaActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            putExtra(ReceivedMediaActivity.EXTRA_URI, uri.toString())
-            putExtra(ReceivedMediaActivity.EXTRA_MIME, mime)
+            val anim = Intent(this, TapAnimationActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+                putExtra(TapAnimationActivity.EXTRA_MODE, TapAnimationActivity.MODE_RECEIVE)
+                putExtra(TapAnimationActivity.EXTRA_URI, uri.toString())
+                putExtra(TapAnimationActivity.EXTRA_MIME, mime)
+            }
+            try {
+                startActivity(anim)
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not launch animation from service", t)
+            }
+
+            val open = Intent(this, ReceivedMediaActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra(ReceivedMediaActivity.EXTRA_URI, uri.toString())
+                putExtra(ReceivedMediaActivity.EXTRA_MIME, mime)
+            }
+            val pending = PendingIntent.getActivity(
+                this,
+                uri.hashCode(),
+                open,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val fullScreen = PendingIntent.getActivity(
+                this,
+                uri.hashCode() + 1,
+                anim,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(this, CHANNEL_INCOMING)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(getString(R.string.received_title))
+                .setContentText(getString(R.string.save_open))
+                .setContentIntent(pending)
+                .setFullScreenIntent(fullScreen, true)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .build()
+            getSystemService(NotificationManager::class.java)
+                .notify(INCOMING_NOTIFICATION_ID, notification)
+        } catch (t: Throwable) {
+            Log.e(TAG, "onMediaReceived failed", t)
         }
-        // ReceivedMediaActivity is also launched from the animation when it finishes;
-        // keep a high-priority heads-up as backup.
-        val pending = PendingIntent.getActivity(
-            this,
-            uri.hashCode(),
-            open,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = NotificationCompat.Builder(this, CHANNEL_INCOMING)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(getString(R.string.received_title))
-            .setContentText(getString(R.string.save_open))
-            .setContentIntent(pending)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .build()
-        getSystemService(NotificationManager::class.java)
-            .notify(INCOMING_NOTIFICATION_ID, notification)
     }
 
     private fun promoteForeground() {
@@ -118,8 +197,7 @@ class TapShareService : Service() {
                 this,
                 SERVICE_NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             )
         } else {
             startForeground(SERVICE_NOTIFICATION_ID, notification)
@@ -163,15 +241,20 @@ class TapShareService : Service() {
     }
 
     private fun acquireWakeLock() {
-        val pm = getSystemService(PowerManager::class.java)
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TapShare:KeepAlive").apply {
-            setReferenceCounted(false)
-            acquire(10 * 60 * 60 * 1000L) // refreshed by sticky restarts
+        try {
+            val pm = getSystemService(PowerManager::class.java)
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TapShare:KeepAlive").apply {
+                setReferenceCounted(false)
+                acquire(6 * 60 * 60 * 1000L)
+            }
+        } catch (_: Exception) {
         }
     }
 
     companion object {
+        private const val TAG = "TapShareService"
         const val ACTION_STOP = "com.tapshare.app.STOP"
+        const val ACTION_REFRESH_BEACON = "com.tapshare.app.REFRESH_BEACON"
         const val CHANNEL_SERVICE = "tapshare_service"
         const val CHANNEL_INCOMING = "tapshare_incoming"
         private const val SERVICE_NOTIFICATION_ID = 42
@@ -179,6 +262,17 @@ class TapShareService : Service() {
 
         fun ensureRunning(context: Context) {
             val intent = Intent(context, TapShareService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun refreshBeacon(context: Context) {
+            val intent = Intent(context, TapShareService::class.java).apply {
+                action = ACTION_REFRESH_BEACON
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

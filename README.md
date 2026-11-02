@@ -2,7 +2,7 @@
 
 ## TapShare — tap phones to share photos (Android / Samsung)
 
-Like Apple’s tap-to-share: open a photo, tap the **tops** of two phones with TapShare installed — ripple animation, photo lands full screen on the other phone. Always-on service, starts on boot.
+Like Apple’s tap-to-share: open a photo, tap the **tops** of two phones with TapShare installed — they connect over **Bluetooth**, ripple animation plays, photo lands full screen on the other phone. Always-on service, starts on boot.
 
 Project: [`TapShare/`](TapShare/) · Ready APK: [`releases/TapShare.apk`](releases/TapShare.apk)
 

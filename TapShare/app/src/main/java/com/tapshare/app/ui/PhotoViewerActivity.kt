@@ -1,5 +1,7 @@
 package com.tapshare.app.ui
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -7,23 +9,22 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.tapshare.app.R
 import com.tapshare.app.databinding.ActivityPhotoViewerBinding
-import com.tapshare.app.nfc.NfcTapController
 import com.tapshare.app.service.TapShareService
-import com.tapshare.app.transfer.PeerHandshake
-import com.tapshare.app.util.PeerIdentity
+import com.tapshare.app.transfer.BumpDetector
 import com.tapshare.app.util.ShareSession
 
 /**
- * Full-screen photo. NFC reader stays hot here — tap tops with another TapShare
- * phone to fire the NameDrop-style animation and send the file.
+ * Full-screen photo. Detects a physical top-tap via accelerometer, then hands
+ * off to Bluetooth discovery + transfer. Share button is a reliable backup.
  */
 class PhotoViewerActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityPhotoViewerBinding
-    private var nfc: NfcTapController? = null
     private var uri: Uri? = null
     private var mime: String = "image/jpeg"
     private var name: String = "photo.jpg"
+    private var bumpDetector: BumpDetector? = null
+    private var sharing = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,51 +41,73 @@ class PhotoViewerActivity : AppCompatActivity() {
             finish()
             return
         }
-        binding.photoView.setImageURI(mediaUri)
+        try {
+            binding.photoView.setImageURI(mediaUri)
+        } catch (_: Exception) {
+            Toast.makeText(this, R.string.pairing_failed, Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
         ShareSession.set(ShareSession.ActiveMedia(mediaUri, mime, name))
+        TapShareService.refreshBeacon(this)
 
-        nfc = NfcTapController(this) { peer -> onPeerTapped(peer) }
+        binding.tapHint.setOnClickListener { beginShare() }
+        bumpDetector = BumpDetector(this) {
+            runOnUiThread { beginShare() }
+        }
     }
 
     override fun onResume() {
         super.onResume()
         uri?.let {
             ShareSession.set(ShareSession.ActiveMedia(it, mime, name))
+            TapShareService.refreshBeacon(this)
         }
-        val controller = nfc ?: return
-        if (!controller.isEnabled()) {
-            Toast.makeText(this, R.string.nfc_required, Toast.LENGTH_LONG).show()
-        } else {
-            controller.start()
-        }
+        ensureBluetoothOn()
+        bumpDetector?.start()
     }
 
     override fun onPause() {
-        nfc?.stop()
+        bumpDetector?.stop()
         super.onPause()
     }
 
     override fun onDestroy() {
-        // Keep session while animation runs; clear only if finishing without share.
-        if (isFinishing) {
-            // Don't clear if TapAnimation is about to use it — animation copies extras.
-        }
+        bumpDetector?.stop()
+        bumpDetector = null
         super.onDestroy()
     }
 
-    private fun onPeerTapped(peer: PeerHandshake) {
-        if (peer.peerId == PeerIdentity.id(this)) return
+    private fun ensureBluetoothOn() {
+        val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+        if (adapter == null) {
+            Toast.makeText(this, R.string.no_bluetooth, Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!adapter.isEnabled) {
+            try {
+                @Suppress("DEPRECATION")
+                startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            } catch (_: Exception) {
+            }
+            Toast.makeText(this, R.string.turn_on_bluetooth, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun beginShare() {
+        if (sharing) return
         val mediaUri = uri ?: return
+        ShareSession.set(ShareSession.ActiveMedia(mediaUri, mime, name))
+        TapShareService.refreshBeacon(this)
+        sharing = true
         startActivity(
             Intent(this, TapAnimationActivity::class.java).apply {
                 putExtra(TapAnimationActivity.EXTRA_MODE, TapAnimationActivity.MODE_SEND)
                 putExtra(TapAnimationActivity.EXTRA_URI, mediaUri.toString())
                 putExtra(TapAnimationActivity.EXTRA_MIME, mime)
-                putExtra(TapAnimationActivity.EXTRA_PEER_BT, peer.bluetoothAddress)
-                putExtra(TapAnimationActivity.EXTRA_PEER_ID, peer.peerId)
-                putExtra(TapAnimationActivity.EXTRA_PEER_NAME, peer.displayName)
             }
         )
+        binding.root.postDelayed({ sharing = false }, 2500)
     }
 
     companion object {

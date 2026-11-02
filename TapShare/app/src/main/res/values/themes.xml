@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TapShare" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/sky</item>
+        <item name="colorPrimaryDark">@color/sky_deep</item>
+        <item name="colorSecondary">@color/aqua</item>
+        <item name="android:statusBarColor">@color/sky_deep</item>
+        <item name="android:navigationBarColor">@color/mist</item>
+        <item name="android:windowBackground">@color/mist</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+
+    <style name="Theme.TapShare.Immersive" parent="Theme.TapShare">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

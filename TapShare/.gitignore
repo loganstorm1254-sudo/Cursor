@@ -1,0 +1,5 @@
+tapshare.keystore
+local.properties
+/.gradle/
+/app/build/
+/build/

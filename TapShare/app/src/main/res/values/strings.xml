@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TapShare</string>
+    <string name="brand">TapShare</string>
+    <string name="tagline">Tap the tops of two phones to share what’s on screen.</string>
+    <string name="status_active">Always on — waiting for a tap</string>
+    <string name="status_stopped">Service stopped</string>
+    <string name="open_gallery">Open Gallery</string>
+    <string name="gallery_hint">Open a photo, then tap the top of your phone to another TapShare phone.</string>
+    <string name="battery_exempt">Allow background</string>
+    <string name="battery_exempt_done">Background already allowed</string>
+    <string name="nfc_required">Turn on NFC in Settings</string>
+    <string name="permissions_needed">Allow photos, nearby devices, and notifications</string>
+    <string name="service_channel">TapShare</string>
+    <string name="service_title">TapShare is active</string>
+    <string name="service_text">Ready to share when you tap phones</string>
+    <string name="incoming_channel">Incoming TapShare</string>
+    <string name="hce_description">TapShare peer identity</string>
+    <string name="hce_aid_group">TapShare</string>
+    <string name="tap_to_share">Hold tops together to share</string>
+    <string name="sharing">Sharing…</string>
+    <string name="receiving">Receiving…</string>
+    <string name="shared">Shared</string>
+    <string name="empty_gallery">No photos yet</string>
+    <string name="received_title">Just received</string>
+    <string name="save_open">Saved to gallery</string>
+    <string name="pairing_failed">Couldn’t reach the other phone</string>
+    <string name="no_photo">Open a photo first, then tap</string>
+</resources>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ink">#0A1628</color>
+    <color name="ink_soft">#1C2B3F</color>
+    <color name="mist">#E8F1F8</color>
+    <color name="sky">#2F7CF6</color>
+    <color name="sky_deep">#1854C9</color>
+    <color name="aqua">#1FC8B8</color>
+    <color name="glow">#7ADBFF</color>
+    <color name="white">#FFFFFF</color>
+    <color name="white_70">#B3FFFFFF</color>
+    <color name="scrim">#CC0A1628</color>
+    <color name="ic_launcher_background">#1854C9</color>
+</resources>

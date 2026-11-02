@@ -2,6 +2,7 @@
 
 | File | What it is |
 |------|------------|
+| [`TapShare.apk`](TapShare.apk) | **TapShare** — tap tops of two phones to share the photo on screen (NFC + Bluetooth, always on) |
 | [`Seekara.apk`](Seekara.apk) | The **Seekara** app — browse [seekara.pt](https://www.seekara.pt/) (needs internet) |
 | [`NotifyReceiver.apk`](NotifyReceiver.apk) | Notify: phone that should **get** notifications (Bluetooth only) |
 | [`NotifySender.apk`](NotifySender.apk) | Notify: phone that should **send** notifications (Bluetooth only) |
@@ -16,6 +17,13 @@
 2. Allow **Install unknown apps** if asked → **Install**.
 
 ## Use
+
+### TapShare (tap phones to share)
+
+1. Install `TapShare.apk` on **both** phones. Open once → allow photos, nearby devices, notifications. Turn **NFC** on. Tap **Allow background**.
+2. Phone A: **Open Gallery** → pick a photo.
+3. Hold the **tops** of both phones together.
+4. Ripple animation plays — the photo opens full screen on phone B.
 
 ### Notify apps
 

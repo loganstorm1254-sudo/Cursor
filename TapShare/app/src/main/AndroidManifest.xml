@@ -42,6 +42,11 @@
         android:theme="@style/Theme.TapShare"
         android:requestLegacyExternalStorage="true">
 
+        <!-- Helps Android/Samsung treat this as a real Accessibility tool. -->
+        <property
+            android:name="android.app.PROPERTY_ACCESSIBILITY_TOOL"
+            android:value="true" />
+
         <activity
             android:name=".ui.HomeActivity"
             android:exported="true"

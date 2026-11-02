@@ -322,7 +322,9 @@ class TapShareService : Service() {
             Intent(this, HomeActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val text = if (GalleryWatchService.isEnabled()) {
+        val text = if (GalleryWatchService.isEnabled(this) ||
+            GalleryWatchService.isEnabledViaManager(this)
+        ) {
             getString(R.string.service_text_ready)
         } else {
             getString(R.string.service_text_need_access)
@@ -379,10 +381,19 @@ class TapShareService : Service() {
 
         fun ensureRunning(context: Context) {
             val intent = Intent(context, TapShareService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (t: Throwable) {
+                // Background start can be blocked; try plain startService as fallback.
+                try {
+                    context.startService(intent)
+                } catch (t2: Throwable) {
+                    Log.w(TAG, "ensureRunning failed", t2)
+                }
             }
         }
     }

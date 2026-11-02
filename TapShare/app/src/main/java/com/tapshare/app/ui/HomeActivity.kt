@@ -1,8 +1,6 @@
 package com.tapshare.app.ui
 
 import android.Manifest
-import android.animation.ObjectAnimator
-import android.animation.PropertyValuesHolder
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,7 +9,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -40,12 +37,13 @@ class HomeActivity : AppCompatActivity() {
         binding = ActivityHomeBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        startPulse(binding.pulseOuter, 1.55f, 2200L)
-        startPulse(binding.pulseInner, 1.25f, 1600L)
-
+        binding.restrictedButton.setOnClickListener {
+            Toast.makeText(this, R.string.restricted_hint, Toast.LENGTH_LONG).show()
+            GalleryWatchService.openAppDetails(this)
+        }
         binding.accessButton.setOnClickListener {
             Toast.makeText(this, R.string.enable_accessibility_short, Toast.LENGTH_LONG).show()
-            GalleryWatchService.openSettings(this)
+            GalleryWatchService.openAccessibilitySettings(this)
         }
         binding.galleryButton.setOnClickListener {
             startActivity(Intent(this, GalleryActivity::class.java))
@@ -63,9 +61,13 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun refreshStatus() {
-        val accessOn = GalleryWatchService.isEnabled()
+        val accessOn = GalleryWatchService.isEnabled(this) ||
+            GalleryWatchService.isEnabledViaManager(this)
         binding.statusText.setText(
-            if (accessOn) R.string.status_active else R.string.status_need_access
+            when {
+                accessOn -> R.string.status_active
+                else -> R.string.status_need_restricted
+            }
         )
         binding.accessButton.setText(
             if (accessOn) R.string.access_enabled else R.string.enable_gallery_access
@@ -128,20 +130,6 @@ class HomeActivity : AppCompatActivity() {
             )
         } catch (_: Exception) {
             startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-        }
-    }
-
-    private fun startPulse(target: android.view.View, scale: Float, duration: Long) {
-        ObjectAnimator.ofPropertyValuesHolder(
-            target,
-            PropertyValuesHolder.ofFloat("scaleX", 1f, scale),
-            PropertyValuesHolder.ofFloat("scaleY", 1f, scale),
-            PropertyValuesHolder.ofFloat("alpha", 0.75f, 0f)
-        ).apply {
-            this.duration = duration
-            repeatCount = ObjectAnimator.INFINITE
-            interpolator = AccelerateDecelerateInterpolator()
-            start()
         }
     }
 }

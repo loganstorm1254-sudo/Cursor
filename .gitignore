@@ -17,6 +17,8 @@ captures/
 *.aab
 *.ap_
 *.dex
+*.keystore
+*.jks
 .DS_Store
 
 .android-sdk/

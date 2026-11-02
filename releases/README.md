@@ -2,6 +2,7 @@
 
 | File | What it is |
 |------|------------|
+| [`TapShare.apk`](TapShare.apk) | **TapShare** — tap tops of two phones to share the photo on screen (Bluetooth, always on) |
 | [`Seekara.apk`](Seekara.apk) | The **Seekara** app — browse [seekara.pt](https://www.seekara.pt/) (needs internet) |
 | [`NotifyReceiver.apk`](NotifyReceiver.apk) | Notify: phone that should **get** notifications (Bluetooth only) |
 | [`NotifySender.apk`](NotifySender.apk) | Notify: phone that should **send** notifications (Bluetooth only) |
@@ -16,6 +17,14 @@
 2. Allow **Install unknown apps** if asked → **Install**.
 
 ## Use
+
+### TapShare (tap phones to share)
+
+1. Install `TapShare.apk` on **both** phones. Allow permissions. Turn Bluetooth + Location on. Tap **Allow background**.
+2. In TapShare: **Enable for Samsung Gallery** → turn TapShare ON in Accessibility.
+3. Phone A: open a photo in **Samsung Gallery**. Phone B: leave TapShare running.
+4. Knock the **tops** of both phones together (no Share button). Photo opens on phone B.
+5. It only shares when both phones actually tap — not when they are just near each other.
 
 ### Notify apps
 

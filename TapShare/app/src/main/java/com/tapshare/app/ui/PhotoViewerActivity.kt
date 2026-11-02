@@ -13,10 +13,6 @@ import com.tapshare.app.service.TapShareService
 import com.tapshare.app.transfer.BumpDetector
 import com.tapshare.app.util.ShareSession
 
-/**
- * Full-screen photo. Detects a physical top-tap via accelerometer, then hands
- * off to Bluetooth discovery + transfer. Share button is a reliable backup.
- */
 class PhotoViewerActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityPhotoViewerBinding
@@ -44,12 +40,10 @@ class PhotoViewerActivity : AppCompatActivity() {
         try {
             binding.photoView.setImageURI(mediaUri)
         } catch (_: Exception) {
-            Toast.makeText(this, R.string.pairing_failed, Toast.LENGTH_SHORT).show()
             finish()
             return
         }
         ShareSession.set(ShareSession.ActiveMedia(mediaUri, mime, name))
-        TapShareService.refreshBeacon(this)
 
         binding.tapHint.setOnClickListener { beginShare() }
         bumpDetector = BumpDetector(this) {
@@ -61,8 +55,8 @@ class PhotoViewerActivity : AppCompatActivity() {
         super.onResume()
         uri?.let {
             ShareSession.set(ShareSession.ActiveMedia(it, mime, name))
-            TapShareService.refreshBeacon(this)
         }
+        TapShareService.ensureRunning(this)
         ensureBluetoothOn()
         bumpDetector?.start()
     }
@@ -79,11 +73,7 @@ class PhotoViewerActivity : AppCompatActivity() {
     }
 
     private fun ensureBluetoothOn() {
-        val adapter = getSystemService(BluetoothManager::class.java)?.adapter
-        if (adapter == null) {
-            Toast.makeText(this, R.string.no_bluetooth, Toast.LENGTH_LONG).show()
-            return
-        }
+        val adapter = getSystemService(BluetoothManager::class.java)?.adapter ?: return
         if (!adapter.isEnabled) {
             try {
                 @Suppress("DEPRECATION")
@@ -98,7 +88,7 @@ class PhotoViewerActivity : AppCompatActivity() {
         if (sharing) return
         val mediaUri = uri ?: return
         ShareSession.set(ShareSession.ActiveMedia(mediaUri, mime, name))
-        TapShareService.refreshBeacon(this)
+        TapShareService.ensureRunning(this)
         sharing = true
         startActivity(
             Intent(this, TapAnimationActivity::class.java).apply {
@@ -107,7 +97,7 @@ class PhotoViewerActivity : AppCompatActivity() {
                 putExtra(TapAnimationActivity.EXTRA_MIME, mime)
             }
         )
-        binding.root.postDelayed({ sharing = false }, 2500)
+        binding.root.postDelayed({ sharing = false }, 3000)
     }
 
     companion object {

@@ -79,7 +79,7 @@ class GalleryActivity : AppCompatActivity() {
 
     private fun openViewer(item: GalleryItem) {
         ShareSession.set(ShareSession.ActiveMedia(item.uri, item.mimeType, item.displayName))
-        TapShareService.refreshBeacon(this)
+        TapShareService.ensureRunning(this)
         startActivity(
             Intent(this, PhotoViewerActivity::class.java).apply {
                 putExtra(PhotoViewerActivity.EXTRA_URI, item.uri.toString())

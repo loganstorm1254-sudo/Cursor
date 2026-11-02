@@ -16,13 +16,14 @@ import androidx.lifecycle.lifecycleScope
 import com.tapshare.app.R
 import com.tapshare.app.databinding.ActivityTapAnimationBinding
 import com.tapshare.app.service.TapShareService
-import com.tapshare.app.transfer.BleBeacon
-import com.tapshare.app.transfer.MediaPipe
+import com.tapshare.app.transfer.NearbyEngine
 import com.tapshare.app.util.ShareSession
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
- * Expanding rings while Bluetooth finds the other phone and transfers the photo.
+ * Expanding rings while Nearby Connections finds the other phone and sends the photo.
  */
 class TapAnimationActivity : AppCompatActivity() {
 
@@ -65,15 +66,26 @@ class TapAnimationActivity : AppCompatActivity() {
                 displayName = uri.lastPathSegment ?: "photo.jpg"
             )
             ShareSession.set(media)
-            TapShareService.refreshBeacon(this)
+            TapShareService.ensureRunning(this)
 
             lifecycleScope.launch {
-                val beacon = BleBeacon(applicationContext)
-                beacon.signalBump()
-                val ok = try {
-                    MediaPipe(applicationContext).sendAfterTap(media, beacon)
-                } catch (_: Exception) {
-                    false
+                binding.label.setText(R.string.sharing_bluetooth)
+                val ok = withContext(Dispatchers.IO) {
+                    try {
+                        var engine = TapShareService.sharedEngine
+                        var waits = 0
+                        while (engine == null && waits < 30) {
+                            Thread.sleep(200)
+                            engine = TapShareService.sharedEngine
+                            waits++
+                        }
+                        val use = engine ?: NearbyEngine(applicationContext).also {
+                            it.start { _, _ -> }
+                        }
+                        use.send(media)
+                    } catch (_: Exception) {
+                        false
+                    }
                 }
                 if (isFinishing || finished) return@launch
                 binding.label.setText(if (ok) R.string.shared else R.string.pairing_failed)
@@ -84,7 +96,7 @@ class TapAnimationActivity : AppCompatActivity() {
                         Toast.LENGTH_LONG
                     ).show()
                 }
-                binding.root.postDelayed({ finishSafe() }, if (ok) 800L else 1600L)
+                binding.root.postDelayed({ finishSafe() }, if (ok) 900L else 2000L)
             }
         } else {
             binding.root.postDelayed({
@@ -155,7 +167,6 @@ class TapAnimationActivity : AppCompatActivity() {
         const val EXTRA_MODE = "mode"
         const val EXTRA_URI = "uri"
         const val EXTRA_MIME = "mime"
-        const val EXTRA_REASON = "reason"
         const val MODE_SEND = "send"
         const val MODE_RECEIVE = "receive"
     }

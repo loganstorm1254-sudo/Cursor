@@ -16,23 +16,18 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.tapshare.app.R
-import com.tapshare.app.transfer.BleBeacon
-import com.tapshare.app.transfer.GattTransfer
-import com.tapshare.app.transfer.MediaPipe
+import com.tapshare.app.transfer.NearbyEngine
 import com.tapshare.app.ui.HomeActivity
 import com.tapshare.app.ui.ReceivedMediaActivity
 import com.tapshare.app.ui.TapAnimationActivity
 import com.tapshare.app.util.ShareSession
 
 /**
- * Always-active TapShare engine: BLE beacon + Bluetooth listener.
- * Survives swipe-away via START_STICKY and restarts on boot.
+ * Always-on TapShare engine using Nearby Connections (Bluetooth/Wi‑Fi).
  */
 class TapShareService : Service() {
 
-    private var mediaPipe: MediaPipe? = null
-    private var bleBeacon: BleBeacon? = null
-    private var gattTransfer: GattTransfer? = null
+    private var nearby: NearbyEngine? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -43,17 +38,10 @@ class TapShareService : Service() {
             createChannels()
             promoteForeground()
             acquireWakeLock()
-            val pipe = MediaPipe(applicationContext)
-            val beacon = BleBeacon(applicationContext)
-            val gatt = GattTransfer(applicationContext)
-            mediaPipe = pipe
-            bleBeacon = beacon
-            gattTransfer = gatt
-            beacon.startAdvertising()
-            gatt.startServer { uri, mime -> onMediaReceived(uri, mime) }
-            pipe.startListening { uri, mime ->
-                onMediaReceived(uri, mime)
-            }
+            val engine = NearbyEngine(applicationContext)
+            nearby = engine
+            sharedEngine = engine
+            engine.start { uri, mime -> onMediaReceived(uri, mime) }
         } catch (t: Throwable) {
             Log.e(TAG, "onCreate failed", t)
             try {
@@ -69,29 +57,26 @@ class TapShareService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_REFRESH_BEACON -> {
+            ACTION_RESTART_NEARBY -> {
                 try {
-                    bleBeacon?.refreshAdvertising()
-                } catch (_: Exception) {
+                    val engine = nearby ?: NearbyEngine(applicationContext).also {
+                        nearby = it
+                        sharedEngine = it
+                        it.start { uri, mime -> onMediaReceived(uri, mime) }
+                    }
+                    engine.restart()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "restart nearby failed", t)
                 }
             }
         }
         try {
             promoteForeground()
-            if (bleBeacon == null || mediaPipe == null || gattTransfer == null) {
-                if (bleBeacon == null) {
-                    bleBeacon = BleBeacon(applicationContext).also { it.startAdvertising() }
-                }
-                if (gattTransfer == null) {
-                    gattTransfer = GattTransfer(applicationContext).also { gatt ->
-                        gatt.startServer { uri, mime -> onMediaReceived(uri, mime) }
-                    }
-                }
-                if (mediaPipe == null) {
-                    mediaPipe = MediaPipe(applicationContext).also { pipe ->
-                        pipe.startListening { uri, mime -> onMediaReceived(uri, mime) }
-                    }
-                }
+            if (nearby == null) {
+                val engine = NearbyEngine(applicationContext)
+                nearby = engine
+                sharedEngine = engine
+                engine.start { uri, mime -> onMediaReceived(uri, mime) }
             }
         } catch (t: Throwable) {
             Log.e(TAG, "onStartCommand failed", t)
@@ -109,20 +94,11 @@ class TapShareService : Service() {
 
     override fun onDestroy() {
         try {
-            mediaPipe?.stopListening()
+            nearby?.stop()
         } catch (_: Exception) {
         }
-        try {
-            gattTransfer?.stopServer()
-        } catch (_: Exception) {
-        }
-        try {
-            bleBeacon?.stopAdvertising()
-        } catch (_: Exception) {
-        }
-        mediaPipe = null
-        gattTransfer = null
-        bleBeacon = null
+        nearby = null
+        sharedEngine = null
         try {
             wakeLock?.let { if (it.isHeld) it.release() }
         } catch (_: Exception) {
@@ -138,8 +114,6 @@ class TapShareService : Service() {
     private fun onMediaReceived(uri: Uri, mime: String) {
         try {
             ShareSession.clear()
-            bleBeacon?.refreshAdvertising()
-
             val anim = Intent(this, TapAnimationActivity::class.java).apply {
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -153,7 +127,7 @@ class TapShareService : Service() {
             try {
                 startActivity(anim)
             } catch (t: Throwable) {
-                Log.w(TAG, "Could not launch animation from service", t)
+                Log.w(TAG, "launch anim failed", t)
             }
 
             val open = Intent(this, ReceivedMediaActivity::class.java).apply {
@@ -181,7 +155,6 @@ class TapShareService : Service() {
                 .setFullScreenIntent(fullScreen, true)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .build()
             getSystemService(NotificationManager::class.java)
                 .notify(INCOMING_NOTIFICATION_ID, notification)
@@ -218,7 +191,6 @@ class TapShareService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .setSilent(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
 
@@ -254,11 +226,14 @@ class TapShareService : Service() {
     companion object {
         private const val TAG = "TapShareService"
         const val ACTION_STOP = "com.tapshare.app.STOP"
-        const val ACTION_REFRESH_BEACON = "com.tapshare.app.REFRESH_BEACON"
+        const val ACTION_RESTART_NEARBY = "com.tapshare.app.RESTART_NEARBY"
         const val CHANNEL_SERVICE = "tapshare_service"
         const val CHANNEL_INCOMING = "tapshare_incoming"
         private const val SERVICE_NOTIFICATION_ID = 42
         private const val INCOMING_NOTIFICATION_ID = 43
+
+        @Volatile
+        var sharedEngine: NearbyEngine? = null
 
         fun ensureRunning(context: Context) {
             val intent = Intent(context, TapShareService::class.java)
@@ -269,9 +244,9 @@ class TapShareService : Service() {
             }
         }
 
-        fun refreshBeacon(context: Context) {
+        fun restartNearby(context: Context) {
             val intent = Intent(context, TapShareService::class.java).apply {
-                action = ACTION_REFRESH_BEACON
+                action = ACTION_RESTART_NEARBY
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

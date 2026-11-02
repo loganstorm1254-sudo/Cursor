@@ -86,7 +86,12 @@ class HomeActivity : AppCompatActivity() {
                 Manifest.permission.BLUETOOTH_ADVERTISE
             ).forEach { if (!granted(it)) needed += it }
         }
-        // Some Samsung builds still gate BLE scan behind location.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (!granted(Manifest.permission.NEARBY_WIFI_DEVICES)) {
+                needed += Manifest.permission.NEARBY_WIFI_DEVICES
+            }
+        }
+        // Nearby Connections needs location on most Samsung builds.
         if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
             needed += Manifest.permission.ACCESS_FINE_LOCATION
         }

@@ -2,8 +2,8 @@
 <resources>
     <string name="app_name">TapShare</string>
     <string name="brand">TapShare</string>
-    <string name="tagline">Tap the tops of two phones — they connect over Bluetooth and share what’s on screen.</string>
-    <string name="status_active">Always on — Bluetooth ready</string>
+    <string name="tagline">Open the same app on two phones, open a photo, then tap tops together or press Share.</string>
+    <string name="status_active">Always on — looking for nearby TapShare phones</string>
     <string name="status_stopped">Service stopped</string>
     <string name="open_gallery">Open Gallery</string>
     <string name="gallery_hint">Open a photo, then tap the top of your phone to another TapShare phone. Bluetooth does the rest.</string>
@@ -12,19 +12,19 @@
     <string name="permissions_needed">Allow photos, nearby devices / Bluetooth, and notifications</string>
     <string name="service_channel">TapShare</string>
     <string name="service_title">TapShare is active</string>
-    <string name="service_text">Bluetooth ready — tap phones to share</string>
+    <string name="service_text">Looking for nearby TapShare phones</string>
     <string name="incoming_channel">Incoming TapShare</string>
     <string name="tap_to_share">Tap tops together, or press Share</string>
     <string name="share_now">Share over Bluetooth</string>
     <string name="sharing">Sharing…</string>
-    <string name="sharing_bluetooth">Finding phone over Bluetooth…</string>
+    <string name="sharing_bluetooth">Connecting to nearby phone…</string>
     <string name="receiving">Receiving…</string>
     <string name="shared">Shared</string>
     <string name="empty_gallery">No photos yet</string>
     <string name="received_title">Just received</string>
     <string name="save_open">Saved to gallery</string>
     <string name="pairing_failed">Couldn’t reach the other phone</string>
-    <string name="bluetooth_retry_hint">Keep both phones unlocked with TapShare open, Bluetooth on, then tap tops again</string>
+    <string name="bluetooth_retry_hint">On BOTH phones: open TapShare, Bluetooth ON, Location ON, then press Share again while phones are close</string>
     <string name="no_photo">Open a photo first, then tap</string>
     <string name="no_bluetooth">This phone has no Bluetooth</string>
     <string name="turn_on_bluetooth">Turn on Bluetooth, then try again</string>

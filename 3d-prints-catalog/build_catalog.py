@@ -102,12 +102,10 @@ def build():
     full = W - 96
     y = place_pair(canvas, draw, 48, y, "phone-orange-single.jpg", "phone-orange-front.jpg", "Orange Phone", "£5", full, 210, 64)
     y += 14
-    y = place_pair(canvas, draw, 48, y, "phone-white-logo.jpg", "phone-classic-home.jpg", "Classic White Phone", "£5", full, 210, 64)
+    y = place_pair(canvas, draw, 48, y, "phone-orange-pro.jpg", "phone-matte-black.jpg", "Orange Pro", "£5", full, 210, 64)
     y += 14
-
-    y1 = place_item(canvas, draw, 48, y, "phone-orange-pro.jpg", "Orange Pro", "£5", half, 230, 64)
-    y2 = place_item(canvas, draw, 48 + half + gap, y, "phone-matte-black.jpg", "Matte Black", "£5", half, 230, 64)
-    y = max(y1, y2) + 28
+    y = place_pair(canvas, draw, 48, y, "phone-white-logo.jpg", "phone-classic-home.jpg", "Classic White Phone", "£5", full, 210, 64)
+    y += 28
 
     line1 = "Contact Logan on WhatsApp to buy anything here"
     line2 = "or for custom requests:"

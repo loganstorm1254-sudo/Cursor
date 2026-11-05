@@ -263,13 +263,6 @@ img {
   }
 }
 
-@media (min-width: 980px) {
-  .phone-rail {
-    grid-template-columns: repeat(3, 1fr);
-    gap: 1.5rem;
-  }
-}
-
 .phone {
   display: grid;
   gap: 0.75rem;
@@ -285,6 +278,33 @@ img {
 
 .phone:hover img {
   transform: scale(1.02);
+}
+
+.phone--pair {
+  grid-column: 1 / -1;
+}
+
+.phone__shots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+}
+
+.phone__shots figure {
+  margin: 0;
+  position: relative;
+}
+
+.phone__shots figcaption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0.35rem 0.55rem;
+  background: rgba(20, 23, 28, 0.82);
+  color: #e8ebf0;
+  font-size: 0.8rem;
+  font-weight: 500;
 }
 
 .phone__meta h3 {

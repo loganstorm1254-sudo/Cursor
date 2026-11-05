@@ -111,7 +111,7 @@ def build():
 
     line1 = "Contact Logan on WhatsApp to buy anything here"
     line2 = "or for custom requests:"
-    number = "+44 7359188808"
+    number = "+44 7359 188808"
     footer_h = 150
     final_h = y + footer_h
     canvas = canvas.crop((0, 0, W, final_h))
